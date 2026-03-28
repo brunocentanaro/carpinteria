@@ -60,6 +60,11 @@ class Quotation(BaseModel):
     notes: str = ""
 
 
+class ShippingQuote(BaseModel):
+    description: str
+    price: float
+
+
 class ImageAnalysisResult(BaseModel):
     pieces: list[CutPiece] = Field(default_factory=list)
     board_material: str = ""

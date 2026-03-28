@@ -10,6 +10,7 @@ from carpinteria.schemas import (
     Quotation,
     QuotationLine,
 )
+from carpinteria.schemas import ShippingQuote
 from carpinteria.settings import (
     CUTS_BASE_MAX,
     CUTS_PERCENT,
@@ -17,9 +18,13 @@ from carpinteria.settings import (
     MACHINERY_PERCENT,
     PARTIAL_BOARD_FULL_THRESHOLD,
     PARTIAL_BOARD_TIERS,
+    PAYMENT_DELAY_MAX_DAYS,
+    PAYMENT_DELAY_TIERS,
     PROFIT_PERCENT,
+    STATE_SURCHARGE_PERCENT,
     WASTE_PERCENT,
 )
+from carpinteria.shipping import ShippingProvider
 
 
 def _board_score(board_color_lower: str, color_words: list[str]) -> int:
@@ -152,6 +157,20 @@ def partial_board_surcharge(usage_pct: float) -> tuple[float, str]:
     return PARTIAL_BOARD_TIERS[-1][1], f"uso {usage_pct:.0f}% → +{PARTIAL_BOARD_TIERS[-1][1]:.0f}%"
 
 
+def payment_surcharge(payment_days: int) -> tuple[float, str]:
+    if payment_days > PAYMENT_DELAY_MAX_DAYS:
+        return -1.0, f">{PAYMENT_DELAY_MAX_DAYS} días — no cotizable"
+    delay_pct = 0.0
+    for max_days, pct in PAYMENT_DELAY_TIERS:
+        if payment_days <= max_days:
+            delay_pct = pct
+            break
+    else:
+        delay_pct = PAYMENT_DELAY_TIERS[-1][1]
+    total_pct = STATE_SURCHARGE_PERCENT + delay_pct
+    return total_pct, f"estado {STATE_SURCHARGE_PERCENT:.0f}% + demora {payment_days}d {delay_pct}%"
+
+
 def total_edge_banding_meters(pieces: list[CutPiece]) -> float:
     total_mm = 0.0
     for piece in pieces:
@@ -181,6 +200,9 @@ def calculate_quotation(
     cuts_percent: float = CUTS_PERCENT,
     cuts_base_max: int = CUTS_BASE_MAX,
     profit_percent: float = PROFIT_PERCENT,
+    payment_days: int | None = None,
+    shipping_provider: ShippingProvider | None = None,
+    destination: str = "",
 ) -> Quotation:
     lines: list[QuotationLine] = []
     notes_parts: list[str] = []
@@ -320,6 +342,28 @@ def calculate_quotation(
     subtotal = round(material_subtotal + machinery_amount + waste_amount + labor_amount + cuts_amount, 2)
     profit_amount = round(subtotal * profit_percent / 100, 2)
     total = round(subtotal + profit_amount, 2)
+
+    if payment_days is not None:
+        pay_pct, pay_label = payment_surcharge(payment_days)
+        if pay_pct < 0:
+            return Quotation(notes=pay_label)
+        pay_amount = round(total * pay_pct / 100, 2)
+        lines.append(QuotationLine(
+            concept=f"Recargo financiero ({pay_label} = {pay_pct:.1f}%)",
+            quantity=1, unit="recargo",
+            unit_price=pay_amount, subtotal=pay_amount,
+        ))
+        total = round(total + pay_amount, 2)
+
+    if shipping_provider and destination:
+        sq = shipping_provider.get_quote(destination)
+        if sq:
+            lines.append(QuotationLine(
+                concept=sq.description,
+                quantity=1, unit="flete",
+                unit_price=sq.price, subtotal=sq.price,
+            ))
+            total = round(total + sq.price, 2)
 
     return Quotation(
         lines=lines,

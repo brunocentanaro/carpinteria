@@ -58,11 +58,15 @@ def calculate_quote(
     color: str,
     boards_needed: int = 0,
     edge_banding_name: str = "",
+    payment_days: int = 0,
+    destination: str = "",
 ) -> str:
     import json
+    from carpinteria.shipping import FixedShippingProvider
     pieces_data = json.loads(pieces_json)
     pieces = [CutPiece(**p) for p in pieces_data]
     price_list = read_price_list()
+    shipping = FixedShippingProvider({"Rivera": 15000}) if destination else None
     quotation = calculate_quotation(
         pieces=pieces,
         price_list=price_list,
@@ -71,6 +75,9 @@ def calculate_quote(
         color=color,
         boards_needed=boards_needed if boards_needed > 0 else None,
         edge_banding_name=edge_banding_name or None,
+        payment_days=payment_days if payment_days > 0 else None,
+        shipping_provider=shipping,
+        destination=destination,
     )
     return _format_quotation(quotation)
 

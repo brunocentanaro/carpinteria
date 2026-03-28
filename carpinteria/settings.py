@@ -21,6 +21,15 @@ PARTIAL_BOARD_TIERS: list[tuple[float, float]] = [
     (0, 40),
 ]
 
+STATE_SURCHARGE_PERCENT = float(os.getenv("STATE_SURCHARGE_PERCENT", "5"))
+PAYMENT_DELAY_TIERS: list[tuple[int, float]] = [
+    (30, 7),
+    (45, 10),
+    (60, 12.5),
+    (90, 15),
+]
+PAYMENT_DELAY_MAX_DAYS = 90
+
 AGENT_MODEL_SETTINGS = ModelSettings(
     temperature=0.3,
 )
