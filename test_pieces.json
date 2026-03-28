@@ -1,0 +1,9 @@
+[
+  {
+    "width_mm": 600,
+    "height_mm": 450,
+    "quantity": 24,
+    "label": "pieza 18mm",
+    "edge_sides": ["top", "bottom", "left", "right"]
+  }
+]

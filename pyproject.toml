@@ -1,0 +1,14 @@
+[project]
+name = "carpinteria"
+version = "0.1.0"
+description = "Cotizador de carpintería con OpenAI Agents SDK"
+requires-python = ">=3.14"
+dependencies = [
+    "google-auth>=2.49.1",
+    "gspread>=6.2.1",
+    "openai-agents>=0.12.5",
+    "python-dotenv>=1.1.0",
+]
+
+[project.scripts]
+carpinteria = "main:main"
