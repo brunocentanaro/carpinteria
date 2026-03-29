@@ -8,3 +8,6 @@ wheels/
 .env
 secrets/**/*.json
 .claude/worktrees/
+web/.next/
+web/node_modules/
+node_modules/

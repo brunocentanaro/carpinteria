@@ -308,6 +308,23 @@ def calculate_quotation(
 
     material_subtotal = round(board_total + eb_total, 2)
 
+    n_cuts = total_cuts(pieces)
+    cuts_factor = n_cuts / cuts_base_max
+    cuts_effective = round(cuts_percent * cuts_factor, 1)
+    cuts_amount = round(material_subtotal * cuts_effective / 100, 2)
+    lines.append(QuotationLine(
+        concept=f"Cortes ({n_cuts}/{cuts_base_max} = {cuts_effective:.1f}%)",
+        quantity=1, unit="recargo",
+        unit_price=cuts_amount, subtotal=cuts_amount,
+    ))
+
+    labor_amount = round(material_subtotal * labor_percent / 100, 2)
+    lines.append(QuotationLine(
+        concept=f"Mano de obra ({labor_percent:.0f}%)",
+        quantity=1, unit="recargo",
+        unit_price=labor_amount, subtotal=labor_amount,
+    ))
+
     machinery_amount = round(material_subtotal * machinery_percent / 100, 2)
     lines.append(QuotationLine(
         concept=f"Maquinaria ({machinery_percent:.0f}%)",
@@ -322,24 +339,7 @@ def calculate_quotation(
         unit_price=waste_amount, subtotal=waste_amount,
     ))
 
-    labor_amount = round(material_subtotal * labor_percent / 100, 2)
-    lines.append(QuotationLine(
-        concept=f"Mano de obra ({labor_percent:.0f}%)",
-        quantity=1, unit="recargo",
-        unit_price=labor_amount, subtotal=labor_amount,
-    ))
-
-    n_cuts = total_cuts(pieces)
-    cuts_factor = n_cuts / cuts_base_max
-    cuts_effective = round(cuts_percent * cuts_factor, 1)
-    cuts_amount = round(material_subtotal * cuts_effective / 100, 2)
-    lines.append(QuotationLine(
-        concept=f"Cortes ({n_cuts}/{cuts_base_max} = {cuts_effective:.1f}%)",
-        quantity=1, unit="recargo",
-        unit_price=cuts_amount, subtotal=cuts_amount,
-    ))
-
-    subtotal = round(material_subtotal + machinery_amount + waste_amount + labor_amount + cuts_amount, 2)
+    subtotal = round(material_subtotal + cuts_amount + labor_amount + machinery_amount + waste_amount, 2)
     profit_amount = round(subtotal * profit_percent / 100, 2)
     total = round(subtotal + profit_amount, 2)
 

@@ -33,14 +33,19 @@ COL_PUB_CIMP = 10
 
 
 def _open_spreadsheet(spreadsheet_id: str, service_account_file: str) -> gspread.Spreadsheet:
-    service_account_path = Path(service_account_file)
-    if not service_account_path.exists():
-        raise FileNotFoundError(f"Service account file not found: {service_account_file}")
-
-    credentials = Credentials.from_service_account_file(
-        str(service_account_path),
-        scopes=SHEETS_SCOPES,
-    )
+    import json as _json
+    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if sa_json:
+        info = _json.loads(sa_json)
+        credentials = Credentials.from_service_account_info(info, scopes=SHEETS_SCOPES)
+    else:
+        service_account_path = Path(service_account_file)
+        if not service_account_path.exists():
+            raise FileNotFoundError(f"Service account file not found: {service_account_file}")
+        credentials = Credentials.from_service_account_file(
+            str(service_account_path),
+            scopes=SHEETS_SCOPES,
+        )
     client = gspread.authorize(credentials)
     try:
         return client.open_by_key(spreadsheet_id)

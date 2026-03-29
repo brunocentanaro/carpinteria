@@ -60,6 +60,17 @@ class Quotation(BaseModel):
     notes: str = ""
 
 
+class HardwareItem(BaseModel):
+    code: str
+    name: str
+    price_uyu: float
+    source: str
+
+
+class HardwareCatalog(BaseModel):
+    items: list[HardwareItem] = Field(default_factory=list)
+
+
 class ShippingQuote(BaseModel):
     description: str
     price: float
