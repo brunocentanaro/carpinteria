@@ -1,0 +1,9 @@
+.venv
+.env
+secrets/
+.git
+.claude/
+web/.next
+web/node_modules
+node_modules
+__pycache__
