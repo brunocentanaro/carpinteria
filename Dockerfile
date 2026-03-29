@@ -22,4 +22,4 @@ RUN cd web && npm run build
 ENV PROJECT_ROOT=/app
 EXPOSE 3000
 
-CMD ["npm", "--prefix", "web", "run", "start"]
+CMD ["npx", "--prefix", "web", "next", "start", "-H", "0.0.0.0", "-p", "3000"]
