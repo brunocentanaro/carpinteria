@@ -22,4 +22,4 @@ RUN cd web && npm run build
 ENV PROJECT_ROOT=/app
 EXPOSE 3000
 
-CMD ["npx", "--prefix", "web", "next", "start", "-H", "0.0.0.0", "-p", "3000"]
+CMD sh -c "cd web && npx next start -H 0.0.0.0 -p ${PORT:-3000}"
