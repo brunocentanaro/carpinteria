@@ -3,10 +3,18 @@ from __future__ import annotations
 from agents import Agent, function_tool
 
 from carpinteria.calculator import calculate_quotation
+from carpinteria.catalog import ProductCatalog
+from carpinteria.exchange_rate import fetch_bcu_usd
 from carpinteria.schemas import CutPiece, Quotation
 from carpinteria.settings import AGENT_MODEL, AGENT_MODEL_SETTINGS
-from carpinteria.sheets_reader import read_price_list
 from carpinteria.vision import analyze_cutting_plan
+
+
+def _tc() -> float:
+    try:
+        return fetch_bcu_usd()[0]
+    except Exception:
+        return 40.0
 
 
 @function_tool
@@ -37,16 +45,18 @@ def analyze_image(image_path: str) -> str:
 
 @function_tool
 def read_prices() -> str:
-    price_list = read_price_list()
+    catalog = ProductCatalog.from_activa()
+    placas = catalog.filter(tipo_producto="PLACA")
+    cantos = catalog.filter(tipo_producto="CANTO")
     lines = ["## Placas"]
-    for b in price_list.boards:
-        lines.append(f"  - {b.material} {b.thickness_mm}mm {b.color} ({b.width_mm}x{b.height_mm}mm): USD {b.price_usd}")
+    for p in placas:
+        lines.append(
+            f"  - {p.material or p.familia} {(p.espesor_mm or 0):.0f}mm {p.nombre} "
+            f"({p.ancho_mm or 0:.0f}x{p.largo_mm or 0:.0f}mm): USD {p.precio_usd_simp}"
+        )
     lines.append("\n## Cantos")
-    for eb in price_list.edge_bandings:
-        lines.append(f"  - {eb.type} {eb.color}: USD {eb.price_usd_per_meter}/m")
-    lines.append("\n## Cortes")
-    for cs in price_list.cut_services:
-        lines.append(f"  - {cs.description}: ${cs.price_per_cut}/corte")
+    for c in cantos:
+        lines.append(f"  - {c.familia} {c.nombre}: USD {c.precio_usd_simp}/m")
     return "\n".join(lines)
 
 
@@ -65,11 +75,12 @@ def calculate_quote(
     from carpinteria.shipping import FixedShippingProvider
     pieces_data = json.loads(pieces_json)
     pieces = [CutPiece(**p) for p in pieces_data]
-    price_list = read_price_list()
+    catalog = ProductCatalog.from_activa()
     shipping = FixedShippingProvider({"Rivera": 15000}) if destination else None
     quotation = calculate_quotation(
         pieces=pieces,
-        price_list=price_list,
+        catalog=catalog,
+        tc=_tc(),
         material=material,
         thickness_mm=thickness_mm,
         color=color,

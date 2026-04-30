@@ -17,26 +17,30 @@ def _get_tc() -> tuple[float, str]:
 
 
 def handle_prices() -> dict:
-    from carpinteria.sheets_reader import read_price_list
+    from dataclasses import asdict
+    from carpinteria.catalog import ProductCatalog
 
-    pl = read_price_list()
+    catalog = ProductCatalog.from_activa()
     tc, fecha = _get_tc()
+    placas = catalog.filter(tipo_producto="PLACA")
+    cantos = catalog.filter(tipo_producto="CANTO")
     return {
-        "boards": [b.model_dump() for b in pl.boards],
-        "edge_bandings": [eb.model_dump() for eb in pl.edge_bandings],
+        "placas": [asdict(p) for p in placas],
+        "cantos": [asdict(p) for p in cantos],
         "exchange_rate": {"buy": tc, "sell": tc},
         "tc_source": f"BCU {fecha}",
     }
 
 
 def handle_quote(data: dict) -> dict:
+    from carpinteria.catalog import ProductCatalog
     from carpinteria.calculator import calculate_quotation
     from carpinteria.schemas import CutPiece
-    from carpinteria.sheets_reader import read_price_list
     from carpinteria.shipping import FixedShippingProvider
 
     pieces = [CutPiece(**p) for p in data["pieces"]]
-    price_list = read_price_list()
+    catalog = ProductCatalog.from_activa()
+    tc, _ = _get_tc()
 
     destination = data.get("destination", "")
     shipping = FixedShippingProvider({"Rivera": 15000}) if destination else None
@@ -47,7 +51,8 @@ def handle_quote(data: dict) -> dict:
 
     q = calculate_quotation(
         pieces=pieces,
-        price_list=price_list,
+        catalog=catalog,
+        tc=tc,
         material=data["material"],
         thickness_mm=float(data["thickness_mm"]),
         color=data["color"],
@@ -74,11 +79,11 @@ def handle_analyze_pliego(data: dict) -> dict:
 
 
 def handle_quote_item(data: dict) -> dict:
-    from carpinteria.calculator import calculate_quotation, find_board, find_edge_banding
-    from carpinteria.hardware import find_hardware, read_hardware_catalog
+    from carpinteria.catalog import ProductCatalog
+    from carpinteria.calculator import calculate_quotation
+    from carpinteria.hardware_catalog import get_by_code
     from carpinteria.pliego import decompose_furniture
     from carpinteria.schemas import CutPiece
-    from carpinteria.sheets_reader import read_price_list
     from carpinteria.shipping import FixedShippingProvider
 
     item = data["item"]
@@ -111,18 +116,15 @@ def handle_quote_item(data: dict) -> dict:
             "missing_inputs": missing,
         }
 
-    price_list = read_price_list()
+    catalog = ProductCatalog.from_activa()
     tc, tc_fecha = _get_tc()
-    price_list.exchange_rate.buy = tc
-    price_list.exchange_rate.sell = tc
 
-    board_match = find_board(price_list, material, float(thickness), color)
-    if board_match is None:
-        available = sorted(set(
-            f"{b.material} {b.thickness_mm:.0f}mm — {b.color}"
-            for b in price_list.boards
-            if b.material.lower() == material.lower()
-        ))
+    placa_match = catalog.find_placa(material, float(thickness), color)
+    if placa_match is None:
+        available = sorted({
+            f"{p.material or p.familia} {(p.espesor_mm or 0):.0f}mm — {p.nombre}"
+            for p in catalog.filter(tipo_producto="PLACA")
+        })
         return {
             "error": f"No se encontro placa para {item.get('code', '?')}: {material} {thickness}mm color '{color}'",
             "missing_inputs": [
@@ -148,9 +150,9 @@ def handle_quote_item(data: dict) -> dict:
         }
 
     eb_name = item.get("edge_banding") or None
-    eb = find_edge_banding(price_list, eb_name or color)
+    canto = catalog.find_canto(eb_name or color)
     warnings: list[str] = []
-    if not eb:
+    if not canto:
         warnings.append(f"No se encontro canto para '{eb_name or color}'. Se cotiza sin canto.")
 
     destination = data.get("destination", "")
@@ -162,7 +164,8 @@ def handle_quote_item(data: dict) -> dict:
 
     q = calculate_quotation(
         pieces=pieces,
-        price_list=price_list,
+        catalog=catalog,
+        tc=tc,
         material=material,
         thickness_mm=float(thickness),
         color=color,
@@ -172,35 +175,45 @@ def handle_quote_item(data: dict) -> dict:
         destination=destination,
     )
 
-    hw_catalog = read_hardware_catalog()
+    # Hardware: agent already chose curated codes; we just attach the
+    # user-provided price (if any). Codes without a price stay at 0 and the
+    # front shows them as pending input.
+    hardware_prices: dict = data.get("hardware_prices") or {}
     hw_lines = []
+    pending_hardware: list[dict] = []
     for hw in decomposition.get("hardware", []):
-        qty = int(hw.get("quantity", 0))
+        code = (hw.get("code") or "").strip()
+        if not code:
+            continue
+        spec = get_by_code(code)
+        if spec is None:
+            warnings.append(f"Herraje fuera de catálogo: {code}")
+            continue
+        try:
+            qty = int(hw.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
         if qty <= 0:
             continue
-        hw_name = hw.get("name", "")
-        found = find_hardware(hw_catalog, hw_name)
-        if found:
-            hw_lines.append({
-                "concept": f"Herraje: {found.name} ({found.source})",
+        unit_price = float(hardware_prices.get(code, 0) or 0)
+        line = {
+            "code": spec.code,
+            "concept": f"Herraje: {spec.name}",
+            "category": spec.category,
+            "quantity": qty,
+            "unit": spec.unit,
+            "unit_price": round(unit_price, 2),
+            "subtotal": round(qty * unit_price, 2),
+        }
+        hw_lines.append(line)
+        if unit_price <= 0:
+            pending_hardware.append({
+                "code": spec.code,
+                "name": spec.name,
+                "category": spec.category,
+                "unit": spec.unit,
                 "quantity": qty,
-                "unit": "unidad",
-                "unit_price": found.price_uyu,
-                "subtotal": round(qty * found.price_uyu, 2),
             })
-        else:
-            usd = float(hw.get("unit_price_usd", 0))
-            if usd > 0:
-                uyu = round(usd * tc, 2)
-                hw_lines.append({
-                    "concept": f"Herraje: {hw_name} (estimado)",
-                    "quantity": qty,
-                    "unit": "unidad",
-                    "unit_price": uyu,
-                    "subtotal": round(qty * uyu, 2),
-                })
-            else:
-                warnings.append(f"No se encontro precio para herraje: {hw_name}")
 
     result = q.model_dump()
     result["_tc"] = tc
@@ -210,6 +223,7 @@ def handle_quote_item(data: dict) -> dict:
     result["item_quantity"] = int(item.get("quantity", 1))
     result["decomposition"] = decomposition
     result["hardware_lines"] = hw_lines
+    result["pending_hardware"] = pending_hardware
     if warnings:
         result["warnings"] = warnings
 
@@ -563,6 +577,73 @@ def handle_export_docx(data: dict) -> dict:
     return {"docx_path": docx_path}
 
 
+def handle_lista_precios_preview(data: dict) -> dict:
+    from dataclasses import asdict
+    from carpinteria.lista_precios_parser import parse_pdf
+    from carpinteria.lista_precios_sheets import read_activa
+    from carpinteria.lista_precios_diff import compute_diff
+
+    pdf_path = data["pdf_path"]
+    sheet_id = data.get("sheet_id")
+    tc, tc_source = _get_tc()
+
+    items = parse_pdf(pdf_path, tc=tc)
+    current_rows = read_activa(sheet_id)
+    diff = compute_diff(items, current_rows)
+
+    return {
+        "lista": items[0].lista if items else "",
+        "periodo": items[0].periodo if items else "",
+        "current_lista": diff["current_lista"],
+        "current_periodo": diff["current_periodo"],
+        "tc": tc,
+        "tc_source": f"BCU {tc_source}",
+        "summary": diff["summary"],
+        "nuevos": diff["nuevos"],
+        "removidos": diff["removidos"],
+        "cambios": diff["cambios"],
+        "items": [asdict(it) for it in items],
+    }
+
+
+def handle_lista_precios_confirm(data: dict) -> dict:
+    from carpinteria.lista_precios_sheets import items_from_dicts, write_items
+
+    items = items_from_dicts(data.get("items") or [])
+    if not items:
+        return {"error": "no items in payload"}
+    return write_items(items, sheet_id=data.get("sheet_id"))
+
+
+def handle_hardware_prices_get(data: dict) -> dict:
+    from carpinteria.hardware_prices_sheet import read_all
+    rows = read_all(sheet_id=data.get("sheet_id"))
+    return {"rows": list(rows.values())}
+
+
+def handle_hardware_prices_set(data: dict) -> dict:
+    from carpinteria.hardware_prices_sheet import upsert_price
+    code = (data.get("code") or "").strip()
+    if not code:
+        return {"error": "missing code"}
+    try:
+        price = float(data.get("price") or 0)
+    except (TypeError, ValueError):
+        return {"error": "invalid price"}
+    if price < 0:
+        return {"error": "price must be >= 0"}
+    try:
+        row = upsert_price(
+            code,
+            price,
+            updated_by=str(data.get("updated_by") or ""),
+            sheet_id=data.get("sheet_id"),
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"row": row}
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -583,6 +664,14 @@ def main() -> None:
             result = handle_export_excel(data)
         elif action == "export_docx":
             result = handle_export_docx(data)
+        elif action == "lista_precios_preview":
+            result = handle_lista_precios_preview(data)
+        elif action == "lista_precios_confirm":
+            result = handle_lista_precios_confirm(data)
+        elif action == "hardware_prices_get":
+            result = handle_hardware_prices_get(data)
+        elif action == "hardware_prices_set":
+            result = handle_hardware_prices_set(data)
         else:
             result = {"error": f"Unknown action: {action}"}
     except Exception as e:

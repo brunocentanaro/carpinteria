@@ -75,8 +75,14 @@ def analyze_pliego(file_paths: list[str]) -> dict:
 
 
 def decompose_furniture(item: dict) -> dict:
+    from carpinteria.hardware_catalog import catalog_prompt_block, get_by_code
+
     client = _get_client()
     model = os.getenv("OPENAI_AGENT_MODEL", "gpt-4.1-mini")
+
+    system_prompt = FURNITURE_DECOMPOSE.replace(
+        "{HARDWARE_CATALOG}", catalog_prompt_block()
+    )
 
     desc = (
         f"Mueble: {item.get('name', '')}\n"
@@ -91,11 +97,36 @@ def decompose_furniture(item: dict) -> dict:
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": FURNITURE_DECOMPOSE},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": desc},
         ],
         response_format={"type": "json_object"},
         temperature=0.2,
     )
 
-    return json.loads(response.choices[0].message.content or "{}")
+    out = json.loads(response.choices[0].message.content or "{}")
+
+    # Normalize hardware: drop unknown codes, enrich each with display name + category.
+    cleaned: list[dict] = []
+    for hw in out.get("hardware") or []:
+        code = (hw.get("code") or "").strip()
+        if not code:
+            continue
+        spec = get_by_code(code)
+        if spec is None:
+            continue
+        try:
+            qty = int(hw.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            continue
+        cleaned.append({
+            "code": spec.code,
+            "name": spec.name,
+            "category": spec.category,
+            "unit": spec.unit,
+            "quantity": qty,
+        })
+    out["hardware"] = cleaned
+    return out

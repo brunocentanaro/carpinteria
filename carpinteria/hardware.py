@@ -1,13 +1,38 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import gspread
+from google.oauth2.service_account import Credentials
 
 from carpinteria.schemas import HardwareCatalog, HardwareItem
-from carpinteria.sheets_reader import _open_spreadsheet, _safe_float
 
 PLANILLA_SHEET = "Paneles 1-4+detras caja "
+
+_SHEETS_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets.readonly",
+]
+
+
+def _open_spreadsheet(spreadsheet_id: str, service_account_file: str) -> gspread.Spreadsheet:
+    sa_path = Path(service_account_file)
+    if not sa_path.exists():
+        raise FileNotFoundError(f"Service account file not found: {service_account_file}")
+    credentials = Credentials.from_service_account_file(str(sa_path), scopes=_SHEETS_SCOPES)
+    client = gspread.authorize(credentials)
+    return client.open_by_key(spreadsheet_id)
+
+
+def _safe_float(value: str) -> float:
+    if not value:
+        return 0.0
+    cleaned = value.replace(",", ".").replace("$", "").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
 PLANILLA_COL_CODIGO = 0
 PLANILLA_COL_NOMBRE = 2
 PLANILLA_COL_SUBFAMILIA = 5
@@ -63,9 +88,8 @@ def read_hardware_catalog(
 
     tc = float(os.getenv("TC_COMPRA", "40"))
     try:
-        from carpinteria.sheets_reader import read_price_list
-        pl = read_price_list()
-        tc = pl.exchange_rate.buy
+        from carpinteria.exchange_rate import fetch_bcu_usd
+        tc, _ = fetch_bcu_usd()
     except Exception:
         pass
 

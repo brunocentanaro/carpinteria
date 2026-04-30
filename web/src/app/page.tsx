@@ -1,17 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import PieceEditor from "@/components/PieceEditor";
 import QuoteResult from "@/components/QuoteResult";
 import FileUpload from "@/components/FileUpload";
 import PliegoItems from "@/components/PliegoItems";
+import HardwarePricesPanel from "@/components/HardwarePricesPanel";
 import { CutPiece, Quotation, AnalysisPlan, PliegoResult, PliegoItem } from "@/lib/types";
+
+interface HardwareLine {
+  code: string;
+  concept: string;
+  category: string;
+  quantity: number;
+  unit: string;
+  unit_price: number;
+  subtotal: number;
+}
+
+interface PendingHardware {
+  code: string;
+  name: string;
+  category: string;
+  unit: string;
+  quantity: number;
+}
 
 interface ItemQuote {
   item: PliegoItem;
   quotation: Quotation;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  hardware_lines: any[];
+  hardware_lines: HardwareLine[];
+  pending_hardware: PendingHardware[];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   decomposition: any;
   total_with_hw: number;
@@ -19,6 +38,7 @@ interface ItemQuote {
   warnings?: string[];
   hasError: boolean;
 }
+
 
 type Tab = "file" | "manual";
 
@@ -40,6 +60,45 @@ export default function Home() {
   const [selectedCodes, setSelectedCodes] = useState<string[]>([]);
   const [itemQuotes, setItemQuotes] = useState<ItemQuote[]>([]);
   const [quotingProgress, setQuotingProgress] = useState("");
+  const [hardwarePrices, setHardwarePrices] = useState<Record<string, number>>({});
+  const [hardwarePricesDirty, setHardwarePricesDirty] = useState(false);
+  const [savingHardwareCode, setSavingHardwareCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/hardware-prices")
+      .then((r) => r.json())
+      .then((data) => {
+        if (cancelled) return;
+        const rows: Array<{ code: string; precio_uyu: number }> = data?.rows || [];
+        const next: Record<string, number> = {};
+        for (const r of rows) {
+          if (Number(r.precio_uyu) > 0) next[r.code] = Number(r.precio_uyu);
+        }
+        setHardwarePrices(next);
+      })
+      .catch(() => {
+        // first load failed; user will still see empty inputs and can fill them.
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  async function handleHardwarePriceChange(code: string, price: number) {
+    setHardwarePrices((prev) => ({ ...prev, [code]: price }));
+    setHardwarePricesDirty(true);
+    setSavingHardwareCode(code);
+    try {
+      await fetch("/api/hardware-prices", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, price }),
+      });
+    } catch {
+      // ignore — local state is still updated; recalcular sends prices to backend anyway.
+    } finally {
+      setSavingHardwareCode((c) => (c === code ? null : c));
+    }
+  }
 
   async function handleQuote() {
     if (pieces.length === 0) {
@@ -97,6 +156,7 @@ export default function Home() {
             color,
             payment_days: paymentDays || undefined,
             destination: destination || undefined,
+            hardware_prices: hardwarePrices,
           }),
         });
         const data = await res.json();
@@ -105,6 +165,7 @@ export default function Home() {
             item,
             quotation: data,
             hardware_lines: data.hardware_lines || [],
+            pending_hardware: data.pending_hardware || [],
             decomposition: data.decomposition || {},
             total_with_hw: data.total,
             warnings: data.warnings,
@@ -115,6 +176,7 @@ export default function Home() {
             item,
             quotation: { lines: [], subtotal: 0, margin_percent: 0, margin_amount: 0, total: 0, notes: data.error },
             hardware_lines: [],
+            pending_hardware: [],
             decomposition: {},
             total_with_hw: 0,
             missing_inputs: data.missing_inputs,
@@ -126,6 +188,7 @@ export default function Home() {
           item,
           quotation: { lines: [], subtotal: 0, margin_percent: 0, margin_amount: 0, total: 0, notes: "Error de conexion" },
           hardware_lines: [],
+          pending_hardware: [],
           decomposition: {},
           total_with_hw: 0,
           hasError: true,
@@ -136,6 +199,7 @@ export default function Home() {
     setItemQuotes(results);
     setQuotingProgress("");
     setLoading(false);
+    setHardwarePricesDirty(false);
   }
 
   function handleImageAnalyzed(newPlans: AnalysisPlan[]) {
@@ -157,6 +221,50 @@ export default function Home() {
   }
 
   const grandTotal = itemQuotes.reduce((s, q) => s + q.total_with_hw * q.item.quantity, 0);
+
+  const aggregatedHardware = useMemo(() => {
+    const byCode = new Map<string, {
+      code: string;
+      name: string;
+      category: string;
+      unit: string;
+      totalQuantity: number;
+      perItem: { itemCode: string; quantity: number }[];
+    }>();
+    for (const iq of itemQuotes) {
+      if (iq.hasError) continue;
+      const seen = new Set<string>();
+      // Combine pending + already-priced lines so the panel always shows
+      // every herraje that the agent picked, regardless of price status.
+      const allLines: { code: string; name: string; category: string; unit: string; quantity: number }[] = [];
+      for (const ph of iq.pending_hardware || []) allLines.push(ph);
+      for (const hl of iq.hardware_lines || []) {
+        allLines.push({ code: hl.code, name: hl.concept.replace(/^Herraje:\s*/, ""), category: hl.category, unit: hl.unit, quantity: hl.quantity });
+      }
+      for (const hw of allLines) {
+        if (seen.has(hw.code)) continue;
+        seen.add(hw.code);
+        const totalForItem = hw.quantity * iq.item.quantity;
+        const existing = byCode.get(hw.code);
+        if (existing) {
+          existing.totalQuantity += totalForItem;
+          existing.perItem.push({ itemCode: iq.item.code, quantity: totalForItem });
+        } else {
+          byCode.set(hw.code, {
+            code: hw.code,
+            name: hw.name,
+            category: hw.category,
+            unit: hw.unit,
+            totalQuantity: totalForItem,
+            perItem: [{ itemCode: iq.item.code, quantity: totalForItem }],
+          });
+        }
+      }
+    }
+    return [...byCode.values()].sort((a, b) =>
+      a.category.localeCompare(b.category) || a.name.localeCompare(b.name),
+    );
+  }, [itemQuotes]);
 
   async function handleExportExcel() {
     const quotes = itemQuotes.map((iq) => ({
@@ -330,6 +438,17 @@ export default function Home() {
               </div>
             )}
           </>
+        )}
+
+        {itemQuotes.length > 0 && aggregatedHardware.length > 0 && (
+          <HardwarePricesPanel
+            rows={aggregatedHardware}
+            prices={hardwarePrices}
+            onPriceChange={handleHardwarePriceChange}
+            onRecalculate={handleQuoteSelected}
+            recalculating={loading}
+            dirty={hardwarePricesDirty}
+          />
         )}
 
         {itemQuotes.length > 0 && (

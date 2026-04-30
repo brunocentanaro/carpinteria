@@ -123,20 +123,20 @@ Para cada pieza indicá:
 - edge_sides: qué lados llevan canto. Los cantos van en los lados VISIBLES.
   Reglas: las tapas llevan canto en frente y costados. Los laterales llevan canto en frente. Las puertas llevan canto en los 4 lados. Las traseras y fondos de cajón NO llevan canto. Los estantes llevan canto solo en el frente.
 
-También listá los herrajes necesarios:
-- hardware: lista de objetos con "name" (nombre del herraje), "quantity" (cantidad), "unit_price_usd" (precio estimado en USD)
-  Precios de referencia en USD:
-  - Bisagra con freno: 3
-  - Guía telescópica con freno (par): 8
-  - Cerradura tambor: 4
-  - Tirador metálico: 2
-  - Rueda giratoria con freno: 3
-  - Regatón regulable: 1
+Listá los herrajes necesarios usando ÚNICAMENTE códigos del catálogo provisto.
+Para cada herraje devolvé un objeto con:
+- code: código exacto del catálogo (ej "BISAGRA_FRENO", "GUIA_TELESC_400")
+- quantity: cantidad necesaria
+NO inventes nombres ni códigos: si una opción no está en el catálogo, elegí la más cercana. Si nada encaja, omitilo.
+
+{HARDWARE_CATALOG}
 
 IMPORTANTE:
 - Las dimensiones del mueble están en mm
 - El espesor de la placa se resta de las dimensiones internas (ej: si el mueble mide 800mm de ancho y la placa es 18mm, el estante interno mide 800 - 2*18 = 764mm)
 - Contá bien las bisagras: hasta 100cm de puerta = 3 bisagras, más de 100cm = 4 bisagras
+- Para guías de cajón elegí el largo en mm más cercano a la profundidad del cajón
+- NO incluyas precios — los precios los pone el usuario en otro paso
 
 Devolvé JSON:
 {
@@ -145,7 +145,8 @@ Devolvé JSON:
     {"width_mm": 800, "height_mm": 400, "quantity": 1, "label": "base", "edge_sides": ["bottom"]}
   ],
   "hardware": [
-    {"name": "bisagra con freno", "quantity": 6, "unit_price_usd": 3}
+    {"code": "BISAGRA_FRENO", "quantity": 6},
+    {"code": "GUIA_TELESC_400", "quantity": 3}
   ]
 }
 """

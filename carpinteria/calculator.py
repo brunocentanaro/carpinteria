@@ -1,16 +1,20 @@
+"""Cotización (placa + canto + recargos) on top of the new ProductCatalog.
+
+Quotation lines are produced in UYU because that's what the customer sees,
+even though the catalog stores USD-canonicalized prices. The TC used is
+explicit in the function signature so the caller controls conversion.
+"""
 from __future__ import annotations
 
 import math
 
+from carpinteria.catalog import PlacaMatch, ProductCatalog
+from carpinteria.lista_precios_parser import Producto
 from carpinteria.schemas import (
-    Board,
     CutPiece,
-    EdgeBanding,
-    PriceList,
     Quotation,
     QuotationLine,
 )
-from carpinteria.schemas import ShippingQuote
 from carpinteria.settings import (
     CUTS_BASE_MAX,
     CUTS_PERCENT,
@@ -27,121 +31,20 @@ from carpinteria.settings import (
 from carpinteria.shipping import ShippingProvider
 
 
-def _board_score(board_color_lower: str, color_words: list[str]) -> int:
-    score = sum(1 for w in color_words if w in board_color_lower)
-    if "1/cara" in board_color_lower:
-        score -= 10
-    if "laca" in board_color_lower:
-        score -= 1
-    return score
+# ---------------------------------------------------------------------------
+# Geometry / surcharge helpers (unchanged from the legacy code)
+# ---------------------------------------------------------------------------
 
-
-class BoardMatch:
-    def __init__(self, board: Board, requested_thickness: float):
-        self.board = board
-        self.requested_thickness = requested_thickness
-        self.is_approx = board.thickness_mm != requested_thickness
-
-    @property
-    def thickness_note(self) -> str:
-        if not self.is_approx:
-            return ""
-        return f"(no hay {self.requested_thickness:.0f}mm, se usó {self.board.thickness_mm:.0f}mm más cercano)"
-
-
-def _find_in_candidates(candidates: list[Board], material_l: str, color_l: str, color_words: list[str]) -> Board | None:
-    for board in candidates:
-        if board.material.lower() == material_l and board.color.lower() == color_l:
-            return board
-
-    substring_matches = []
-    for board in candidates:
-        if board.material.lower() == material_l:
-            bl = board.color.lower()
-            if color_l in bl or bl in color_l:
-                substring_matches.append((_board_score(bl, color_words), board))
-    if substring_matches:
-        substring_matches.sort(key=lambda x: x[0], reverse=True)
-        return substring_matches[0][1]
-
-    scored = []
-    for board in candidates:
-        if board.material.lower() == material_l:
-            s = _board_score(board.color.lower(), color_words)
-            if s > 0:
-                scored.append((s, board))
-    if scored:
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1]
-
-    scored = []
-    for board in candidates:
-        s = _board_score(board.color.lower(), color_words)
-        if s > 0:
-            scored.append((s, board))
-    if scored:
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1]
-
-    return None
-
-
-def find_board(price_list: PriceList, material: str, thickness_mm: float, color: str) -> BoardMatch | None:
-    material_l = material.lower()
-    color_l = color.lower()
-    color_words = [w for w in color_l.split() if len(w) > 2]
-
-    exact = [b for b in price_list.boards if b.thickness_mm == thickness_mm]
-    result = _find_in_candidates(exact, material_l, color_l, color_words)
-    if result:
-        return BoardMatch(result, thickness_mm)
-
-    available = sorted(set(b.thickness_mm for b in price_list.boards))
-    closest = min(available, key=lambda t: abs(t - thickness_mm)) if available else None
-    if closest is not None and closest != thickness_mm:
-        approx = [b for b in price_list.boards if b.thickness_mm == closest]
-        result = _find_in_candidates(approx, material_l, color_l, color_words)
-        if result:
-            return BoardMatch(result, thickness_mm)
-
-    return None
-
-
-def find_edge_banding(price_list: PriceList, name: str) -> EdgeBanding | None:
-    name_l = name.lower()
-    for eb in price_list.edge_bandings:
-        if eb.color.lower() == name_l:
-            return eb
-    for eb in price_list.edge_bandings:
-        if name_l in eb.color.lower() or eb.color.lower() in name_l:
-            return eb
-    words = [w for w in name_l.split() if len(w) > 2]
-    scored = []
-    for eb in price_list.edge_bandings:
-        eb_l = eb.color.lower()
-        s = sum(1 for w in words if w in eb_l)
-        if s > 0:
-            scored.append((s, eb))
-    if scored:
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return scored[0][1]
-    return None
-
-
-def find_cut_service(price_list: PriceList) -> CutService | None:
-    if price_list.cut_services:
-        return price_list.cut_services[0]
-    return None
-
-
-def estimate_boards_needed(pieces: list[CutPiece], board: Board) -> int:
-    board_area = board.width_mm * board.height_mm
+def estimate_boards_needed(pieces: list[CutPiece], placa: Producto) -> int:
+    board_area = (placa.ancho_mm or 0) * (placa.largo_mm or 0)
+    if board_area <= 0:
+        return 1
     total_piece_area = sum(p.width_mm * p.height_mm * p.quantity for p in pieces)
     return max(1, math.ceil(total_piece_area / board_area * 1.15))
 
 
-def board_usage_percent(pieces: list[CutPiece], board: Board, boards_needed: int) -> float:
-    board_area = board.width_mm * board.height_mm * boards_needed
+def board_usage_percent(pieces: list[CutPiece], placa: Producto, boards_needed: int) -> float:
+    board_area = (placa.ancho_mm or 0) * (placa.largo_mm or 0) * boards_needed
     if board_area <= 0:
         return 100.0
     piece_area = sum(p.width_mm * p.height_mm * p.quantity for p in pieces)
@@ -186,12 +89,17 @@ def total_cuts(pieces: list[CutPiece]) -> int:
     return sum(p.quantity * 2 for p in pieces)
 
 
+# ---------------------------------------------------------------------------
+# Public quote function
+# ---------------------------------------------------------------------------
+
 def calculate_quotation(
     pieces: list[CutPiece],
-    price_list: PriceList,
+    catalog: ProductCatalog,
     material: str,
     thickness_mm: float,
     color: str,
+    tc: float,
     boards_needed: int | None = None,
     edge_banding_name: str | None = None,
     machinery_percent: float = MACHINERY_PERCENT,
@@ -204,100 +112,106 @@ def calculate_quotation(
     shipping_provider: ShippingProvider | None = None,
     destination: str = "",
 ) -> Quotation:
+    """Calcular cotización para una pieza/placa de placa + cantos + recargos.
+
+    `tc` se usa para convertir precios USD del catálogo a UYU (la moneda en la
+    que el cliente recibe la cotización).
+    """
     lines: list[QuotationLine] = []
     notes_parts: list[str] = []
 
-    match = find_board(price_list, material, thickness_mm, color)
+    match: PlacaMatch | None = catalog.find_placa(material, thickness_mm, color)
     if match is None:
-        available = [
-            f"  - {b.material} {b.thickness_mm}mm: {b.color} (USD {b.price_usd})"
-            for b in price_list.boards
-            if b.material.lower() == material.lower()
+        sample = [
+            f"  - {p.material} {p.espesor_mm or '?'}mm: {p.nombre} (USD {p.precio_usd_simp})"
+            for p in catalog.filter(tipo_producto="PLACA")[:10]
         ]
-        avail_str = "\n".join(available[:10]) if available else "  (ninguna)"
         return Quotation(
-            notes=f"No se encontró placa: {material} {thickness_mm}mm {color}\n\nPlacas disponibles de {material}:\n{avail_str}"
+            notes=(
+                f"No se encontró placa: {material} {thickness_mm}mm {color}\n\n"
+                f"Algunas placas disponibles:\n" + "\n".join(sample)
+            )
         )
 
-    board = match.board
+    placa = match.producto
     if match.is_approx:
         notes_parts.append(match.thickness_note)
 
+    placa_label = (
+        f"Placa {placa.material or placa.familia} "
+        f"{(placa.espesor_mm or 0):.0f}mm {placa.nombre}"
+    )
+    placa_unit_uyu = round(placa.precio_usd_simp * tc, 2)
+    approx_suffix = f" {match.thickness_note}" if match.is_approx else ""
+
+    # Quantity of placas
     from_plan = boards_needed is not None
     if boards_needed is None:
-        boards_needed = estimate_boards_needed(pieces, board)
-
-    tc = price_list.exchange_rate.buy
-    board_cost_uyu = round(board.price_usd * tc, 2)
-    approx_suffix = f" {match.thickness_note}" if match.is_approx else ""
-    board_label = f"Placa {board.material} {board.thickness_mm}mm {board.color}"
+        boards_needed = estimate_boards_needed(pieces, placa)
 
     if from_plan:
-        board_total = round(boards_needed * board_cost_uyu, 2)
+        placa_total_uyu = round(boards_needed * placa_unit_uyu, 2)
         lines.append(QuotationLine(
-            concept=f"{board_label}{approx_suffix}",
+            concept=f"{placa_label}{approx_suffix}",
             quantity=boards_needed,
             unit="placa",
-            unit_price=board_cost_uyu,
-            subtotal=board_total,
+            unit_price=placa_unit_uyu,
+            subtotal=placa_total_uyu,
         ))
     else:
-        board_area = board.width_mm * board.height_mm
+        board_area = (placa.ancho_mm or 0) * (placa.largo_mm or 0)
         piece_area = sum(p.width_mm * p.height_mm * p.quantity for p in pieces)
 
-        full_boards = max(0, int(piece_area // board_area))
+        full_boards = max(0, int(piece_area // board_area)) if board_area > 0 else 0
         leftover_area = piece_area - full_boards * board_area
         leftover_pct = round(leftover_area / board_area * 100, 1) if board_area > 0 else 0.0
 
-        board_total = 0.0
-
+        placa_total_uyu = 0.0
         if full_boards > 0:
-            full_total = round(full_boards * board_cost_uyu, 2)
-            board_total += full_total
+            full_total = round(full_boards * placa_unit_uyu, 2)
+            placa_total_uyu += full_total
             lines.append(QuotationLine(
-                concept=f"{board_label}{approx_suffix}",
+                concept=f"{placa_label}{approx_suffix}",
                 quantity=full_boards,
                 unit="placa",
-                unit_price=board_cost_uyu,
+                unit_price=placa_unit_uyu,
                 subtotal=full_total,
             ))
-
         if leftover_area > 0:
             surcharge_pct, surcharge_label = partial_board_surcharge(leftover_pct)
             if leftover_pct >= PARTIAL_BOARD_FULL_THRESHOLD:
-                partial_price = board_cost_uyu
+                partial_price = placa_unit_uyu
             else:
-                proportional = round(board_cost_uyu * leftover_pct / 100, 2)
+                proportional = round(placa_unit_uyu * leftover_pct / 100, 2)
                 partial_price = round(proportional * (1 + surcharge_pct / 100), 2)
-            board_total += partial_price
+            placa_total_uyu += partial_price
             lines.append(QuotationLine(
-                concept=f"{board_label} parcial ({surcharge_label}){approx_suffix}",
+                concept=f"{placa_label} parcial ({surcharge_label}){approx_suffix}",
                 quantity=1,
                 unit="placa",
                 unit_price=partial_price,
                 subtotal=partial_price,
             ))
+        placa_total_uyu = round(placa_total_uyu, 2)
 
-        board_total = round(board_total, 2)
-
+    # Cantos
     has_edge_sides = any(p.edge_sides for p in pieces)
-    eb_total = 0.0
+    canto_total_uyu = 0.0
     if has_edge_sides:
-        eb = find_edge_banding(price_list, edge_banding_name or color)
-        if eb:
-            meters = total_edge_banding_meters(pieces)
-            if meters > 0:
-                eb_cost_uyu = round(eb.price_usd_per_meter * tc, 2)
-                eb_total = round(meters * eb_cost_uyu, 2)
-                lines.append(QuotationLine(
-                    concept=f"Canto {eb.color}",
-                    quantity=round(meters, 2),
-                    unit="metro",
-                    unit_price=eb_cost_uyu,
-                    subtotal=eb_total,
-                ))
-        else:
-            meters = total_edge_banding_meters(pieces)
+        canto_query = edge_banding_name or color
+        canto = catalog.find_canto(canto_query)
+        meters = total_edge_banding_meters(pieces)
+        if canto and meters > 0:
+            canto_unit_uyu = round(canto.precio_usd_simp * tc, 2)
+            canto_total_uyu = round(meters * canto_unit_uyu, 2)
+            lines.append(QuotationLine(
+                concept=f"Canto {canto.nombre}",
+                quantity=round(meters, 2),
+                unit="metro",
+                unit_price=canto_unit_uyu,
+                subtotal=canto_total_uyu,
+            ))
+        elif meters > 0:
             lines.append(QuotationLine(
                 concept="Canto (sin precio - especificar tipo)",
                 quantity=round(meters, 2),
@@ -306,10 +220,11 @@ def calculate_quotation(
                 subtotal=0.0,
             ))
 
-    material_subtotal = round(board_total + eb_total, 2)
+    # Recargos sobre material (placa + canto)
+    material_subtotal = round(placa_total_uyu + canto_total_uyu, 2)
 
     n_cuts = total_cuts(pieces)
-    cuts_factor = n_cuts / cuts_base_max
+    cuts_factor = n_cuts / cuts_base_max if cuts_base_max else 0
     cuts_effective = round(cuts_percent * cuts_factor, 1)
     cuts_amount = round(material_subtotal * cuts_effective / 100, 2)
     lines.append(QuotationLine(
@@ -373,3 +288,15 @@ def calculate_quotation(
         total=total,
         notes="\n".join(notes_parts) if notes_parts else "",
     )
+
+
+# ---------------------------------------------------------------------------
+# Back-compat helpers (callers may still import these names)
+# ---------------------------------------------------------------------------
+
+def find_board(catalog: ProductCatalog, material: str, thickness_mm: float, color: str) -> PlacaMatch | None:
+    return catalog.find_placa(material, thickness_mm, color)
+
+
+def find_edge_banding(catalog: ProductCatalog, name: str) -> Producto | None:
+    return catalog.find_canto(name)

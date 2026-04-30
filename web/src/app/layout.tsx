@@ -27,7 +27,15 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        <header className="border-b bg-white sticky top-0 z-10">
+          <nav className="max-w-7xl mx-auto px-6 py-3 flex gap-6 text-sm">
+            <a href="/" className="font-semibold">Cotizador</a>
+            <a href="/lista-precios" className="text-gray-700 hover:text-gray-900">Lista de precios</a>
+          </nav>
+        </header>
+        {children}
+      </body>
     </html>
   );
 }
