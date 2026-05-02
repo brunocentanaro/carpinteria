@@ -1,6 +1,156 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+@plugin "@tailwindcss/typography";
 
 @theme inline {
-  --font-sans: var(--font-geist-sans);
+  --font-sans: var(--font-sans);
   --font-mono: var(--font-geist-mono);
+  --font-heading: var(--font-sans);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --color-foreground: var(--foreground);
+  --color-background: var(--background);
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+/*
+ * Theme: La Casa del Carpintero — based on the MongoDB design system from
+ * VoltAgent/awesome-design-md, with two intentional deviations:
+ * 1. Brand green is forest/sage (the shop's logo green), not the original neon.
+ * 2. Buttons are 8px rectangles, not pills — fits a B2B quoting tool better.
+ *
+ * Custom tokens prefixed `--brand-*` and `--surface-*` extend shadcn for
+ * carpentry-specific surfaces (mint feature cards, deep teal headers, etc.).
+ */
+:root {
+  /* Brand */
+  --brand-green: oklch(0.55 0.16 148);          /* primary, ~#2d7a3e */
+  --brand-green-deep: oklch(0.42 0.13 148);     /* pressed / dark variant */
+  --brand-green-soft: oklch(0.92 0.06 148);     /* subtle highlights */
+  --brand-teal-deep: oklch(0.21 0.04 220);      /* hero bands */
+  --surface-feature: oklch(0.97 0.04 150);      /* feature cards (mint) */
+  --warning-bg: oklch(0.97 0.05 90);
+  --warning-text: oklch(0.55 0.10 75);
+
+  /* shadcn token overrides — wired to the brand green */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.18 0.03 220);           /* ink, slightly bluish-black */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.03 220);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.03 220);
+  --primary: var(--brand-green);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.97 0.005 220);
+  --secondary-foreground: oklch(0.21 0.04 220);
+  --muted: oklch(0.97 0.005 220);
+  --muted-foreground: oklch(0.50 0.02 220);
+  --accent: var(--brand-green-soft);
+  --accent-foreground: var(--brand-green-deep);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.92 0.005 220);
+  --input: oklch(0.92 0.005 220);
+  --ring: var(--brand-green);
+  --chart-1: var(--brand-green);
+  --chart-2: oklch(0.65 0.10 200);
+  --chart-3: oklch(0.55 0.12 50);
+  --chart-4: oklch(0.65 0.13 80);
+  --chart-5: oklch(0.50 0.10 280);
+  --radius: 0.5rem;                             /* 8px rectangles, not pills */
+  --sidebar: oklch(0.985 0.003 220);
+  --sidebar-foreground: oklch(0.18 0.03 220);
+  --sidebar-primary: var(--brand-green);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: var(--brand-green-soft);
+  --sidebar-accent-foreground: var(--brand-green-deep);
+  --sidebar-border: oklch(0.92 0.005 220);
+  --sidebar-ring: var(--brand-green);
+}
+
+.dark {
+  --brand-green: oklch(0.65 0.18 148);
+  --brand-green-deep: oklch(0.50 0.15 148);
+  --brand-green-soft: oklch(0.30 0.10 148);
+  --brand-teal-deep: oklch(0.16 0.04 220);
+  --surface-feature: oklch(0.25 0.05 150);
+
+  --background: var(--brand-teal-deep);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.21 0.04 220);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.21 0.04 220);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: var(--brand-green);
+  --primary-foreground: oklch(0.18 0.03 220);
+  --secondary: oklch(0.27 0.02 220);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.27 0.02 220);
+  --muted-foreground: oklch(0.70 0.02 220);
+  --accent: var(--brand-green-soft);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: var(--brand-green);
+  --chart-1: var(--brand-green);
+  --chart-2: oklch(0.70 0.12 200);
+  --chart-3: oklch(0.62 0.13 50);
+  --chart-4: oklch(0.72 0.14 80);
+  --chart-5: oklch(0.58 0.12 280);
+  --sidebar: oklch(0.21 0.04 220);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: var(--brand-green);
+  --sidebar-primary-foreground: oklch(0.18 0.03 220);
+  --sidebar-accent: var(--brand-green-soft);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: var(--brand-green);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
+  }
 }

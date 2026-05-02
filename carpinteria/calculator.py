@@ -111,16 +111,27 @@ def calculate_quotation(
     payment_days: int | None = None,
     shipping_provider: ShippingProvider | None = None,
     destination: str = "",
+    placa_sku: str | None = None,
 ) -> Quotation:
     """Calcular cotización para una pieza/placa de placa + cantos + recargos.
 
     `tc` se usa para convertir precios USD del catálogo a UYU (la moneda en la
     que el cliente recibe la cotización).
+
+    Si `placa_sku` se pasa, se usa esa placa exacta del catálogo y se saltea el
+    matching heurístico por material/grosor/color. Útil cuando el usuario eligió
+    manualmente una placa desde la UI tras un mismatch.
     """
     lines: list[QuotationLine] = []
     notes_parts: list[str] = []
 
-    match: PlacaMatch | None = catalog.find_placa(material, thickness_mm, color)
+    match: PlacaMatch | None = None
+    if placa_sku:
+        pinned = catalog.find_by_sku(placa_sku)
+        if pinned is not None:
+            match = PlacaMatch(pinned, thickness_mm, is_approx=False)
+    if match is None:
+        match = catalog.find_placa(material, thickness_mm, color)
     if match is None:
         sample = [
             f"  - {p.material} {p.espesor_mm or '?'}mm: {p.nombre} (USD {p.precio_usd_simp})"

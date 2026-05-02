@@ -1,15 +1,19 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { Providers } from "./providers";
+import { AppSidebar } from "@/components/AppSidebar";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-sans",
   subsets: ["latin"],
+  display: "swap",
 });
 
-const geistMono = Geist_Mono({
+const jetbrainsMono = JetBrains_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -24,17 +28,15 @@ export default function RootLayout({
 }>) {
   return (
     <html
-      lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      lang="es"
+      className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
-        <header className="border-b bg-white sticky top-0 z-10">
-          <nav className="max-w-7xl mx-auto px-6 py-3 flex gap-6 text-sm">
-            <a href="/" className="font-semibold">Cotizador</a>
-            <a href="/lista-precios" className="text-gray-700 hover:text-gray-900">Lista de precios</a>
-          </nav>
-        </header>
-        {children}
+      <body className="min-h-full">
+        <AppSidebar />
+        {/* Margin matches the fixed sidebar width (w-14 = 56px). */}
+        <Providers>
+          <main className="ml-14 min-h-screen">{children}</main>
+        </Providers>
       </body>
     </html>
   );

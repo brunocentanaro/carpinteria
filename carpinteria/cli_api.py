@@ -644,6 +644,423 @@ def handle_hardware_prices_set(data: dict) -> dict:
     return {"row": row}
 
 
+# ---------------------------------------------------------------------------
+# Chat / sessions
+# ---------------------------------------------------------------------------
+
+def handle_session_create(data: dict) -> dict:
+    from carpinteria.quotation_session import create_session, ensure_indexes
+    ensure_indexes()
+    s = create_session(
+        user_id=str(data.get("user_id") or "anonymous"),
+        title=str(data.get("title") or ""),
+    )
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_session_get(data: dict) -> dict:
+    from carpinteria.quotation_session import get_session
+    s = get_session(str(data.get("session_id") or ""))
+    if s is None:
+        return {"error": "session not found"}
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_session_list(data: dict) -> dict:
+    from carpinteria.quotation_session import list_sessions
+    rows = list_sessions(
+        user_id=data.get("user_id") if data.get("user_id") else None,
+        limit=int(data.get("limit") or 30),
+    )
+    return {"sessions": rows}
+
+
+def handle_session_ingest_pliego(data: dict) -> dict:
+    """Direct ingest: upload + decompose without going through the chat agent."""
+    from carpinteria.agents.cotizador_chat import _ingest_pliego_into_session
+    from carpinteria.quotation_session import append_message, get_session
+
+    sid = str(data.get("session_id") or "")
+    file_paths = list(data.get("file_paths") or [])
+    if not sid or not file_paths:
+        return {"error": "missing session_id or file_paths"}
+
+    summary = _ingest_pliego_into_session(sid, file_paths)
+    # Direct (non-chat) ingest: surface the summary in the conversation so the
+    # UI shows it after reload. The chat path handles its own persistence.
+    append_message(sid, "assistant", summary)
+    s = get_session(sid)
+    return {"summary": summary, "session": s.model_dump(mode="json") if s else None}
+
+
+def _recalc_all_items(session) -> None:
+    """Reuse one catalog/TC/hw_prices fetch across every item recalculation.
+
+    Direct-mutation handlers below all need this same boilerplate, so it lives
+    here instead of being duplicated.
+    """
+    from carpinteria.agents.cotizador_chat import _recalculate_item, _hw_prices_map, _tc
+    from carpinteria.catalog import ProductCatalog
+    catalog = ProductCatalog.from_activa()
+    tc = _tc()
+    hw_prices = _hw_prices_map()
+    for it in session.items:
+        try:
+            _recalculate_item(it, session, catalog=catalog, tc=tc, hw_prices=hw_prices)
+        except Exception:
+            pass
+
+
+def handle_session_update(data: dict) -> dict:
+    """Patch session-level fields and recalculate every item.
+
+    Accepts any subset of: color_default, payment_days, destination.
+    Empty strings/None clear the field.
+    """
+    from carpinteria.quotation_session import get_session, save_session
+    sid = str(data.get("session_id") or "")
+    if not sid:
+        return {"error": "missing session_id"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+
+    if "color_default" in data:
+        s.color_default = str(data.get("color_default") or "")
+    if "payment_days" in data:
+        v = data.get("payment_days")
+        s.payment_days = int(v) if v not in (None, "", 0) else None
+    if "destination" in data:
+        s.destination = str(data.get("destination") or "")
+
+    _recalc_all_items(s)
+    save_session(s)
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_set_item_placa(data: dict) -> dict:
+    """Pin (or unpin) a specific catalog placa SKU on a quotation item."""
+    from carpinteria.quotation_session import find_item, get_session, save_session
+    sid = str(data.get("session_id") or "")
+    code = str(data.get("item_code") or "")
+    sku = data.get("placa_sku")  # None to clear
+    if not sid or not code:
+        return {"error": "missing session_id or item_code"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    it = find_item(s, code)
+    if it is None:
+        return {"error": f"item {code} not found"}
+    it.placa_sku = (str(sku) if sku else None)
+
+    from carpinteria.agents.cotizador_chat import _recalculate_item
+    _recalculate_item(it, s)
+    save_session(s)
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_item_update(data: dict) -> dict:
+    """Patch one or more fields on a single quotation item, then recalc.
+
+    Whitelist of editable fields: color, material, thickness_mm, quantity, name,
+    edge_banding. Other fields (pieces, hardware, last_quote) have dedicated
+    handlers because they need stricter typing.
+    """
+    from carpinteria.agents.cotizador_chat import _recalculate_item
+    from carpinteria.quotation_session import find_item, get_session, save_session
+
+    sid = str(data.get("session_id") or "")
+    code = str(data.get("item_code") or "")
+    if not sid or not code:
+        return {"error": "missing session_id or item_code"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    it = find_item(s, code)
+    if it is None:
+        return {"error": f"item {code} not found"}
+
+    fields = data.get("fields") or {}
+    if "color" in fields:
+        it.color = str(fields["color"] or "")
+    if "material" in fields:
+        it.material = str(fields["material"] or "")
+    if "thickness_mm" in fields:
+        v = fields["thickness_mm"]
+        try:
+            it.thickness_mm = float(v) if v not in (None, "") else 18.0
+        except (TypeError, ValueError):
+            return {"error": "thickness_mm must be a number"}
+    if "quantity" in fields:
+        v = fields["quantity"]
+        try:
+            it.quantity = max(1, int(v))
+        except (TypeError, ValueError):
+            return {"error": "quantity must be an integer"}
+    if "name" in fields:
+        it.name = str(fields["name"] or "")
+    if "edge_banding" in fields:
+        it.edge_banding = str(fields["edge_banding"] or "")
+    if "notes" in fields:
+        it.notes = str(fields["notes"] or "")
+
+    _recalculate_item(it, s)
+    save_session(s)
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_item_delete(data: dict) -> dict:
+    from carpinteria.quotation_session import get_session, save_session
+
+    sid = str(data.get("session_id") or "")
+    code = str(data.get("item_code") or "")
+    if not sid or not code:
+        return {"error": "missing session_id or item_code"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    before = len(s.items)
+    s.items = [it for it in s.items if it.code.lower() != code.lower()]
+    if len(s.items) == before:
+        return {"error": f"item {code} not found"}
+    save_session(s)
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_piece_set_quantity(data: dict) -> dict:
+    """Update one piece's quantity inside an item (matched by label)."""
+    from carpinteria.agents.cotizador_chat import _recalculate_item
+    from carpinteria.quotation_session import find_item, get_session, save_session
+
+    sid = str(data.get("session_id") or "")
+    code = str(data.get("item_code") or "")
+    label = str(data.get("piece_label") or "")
+    qty_raw = data.get("quantity")
+    if not sid or not code or not label or qty_raw is None:
+        return {"error": "missing session_id, item_code, piece_label or quantity"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    it = find_item(s, code)
+    if it is None:
+        return {"error": f"item {code} not found"}
+    label_l = label.strip().lower()
+    target = next((p for p in it.pieces if p.label.lower() == label_l), None)
+    if target is None:
+        return {"error": f"piece '{label}' not found"}
+    try:
+        qty = max(0, int(qty_raw))
+    except (TypeError, ValueError):
+        return {"error": "quantity must be an integer"}
+    if qty == 0:
+        it.pieces = [p for p in it.pieces if p is not target]
+    else:
+        target.quantity = qty
+    _recalculate_item(it, s)
+    save_session(s)
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_hardware_set_quantity(data: dict) -> dict:
+    """Update one hardware row's quantity inside an item. qty=0 removes it."""
+    from carpinteria.agents.cotizador_chat import _recalculate_item
+    from carpinteria.hardware_catalog import get_by_code
+    from carpinteria.quotation_session import (
+        HardwareUsage,
+        find_item,
+        get_session,
+        save_session,
+    )
+
+    sid = str(data.get("session_id") or "")
+    code = str(data.get("item_code") or "")
+    hw_code = str(data.get("hardware_code") or "")
+    qty_raw = data.get("quantity")
+    if not sid or not code or not hw_code or qty_raw is None:
+        return {"error": "missing session_id, item_code, hardware_code or quantity"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    it = find_item(s, code)
+    if it is None:
+        return {"error": f"item {code} not found"}
+    spec = get_by_code(hw_code)
+    if spec is None:
+        return {"error": f"hardware {hw_code} is not in the curated catalog"}
+    try:
+        qty = max(0, int(qty_raw))
+    except (TypeError, ValueError):
+        return {"error": "quantity must be an integer"}
+
+    existing = next((h for h in it.hardware if h.code == spec.code), None)
+    if qty == 0:
+        it.hardware = [h for h in it.hardware if h.code != spec.code]
+    elif existing is None:
+        it.hardware.append(
+            HardwareUsage(
+                code=spec.code,
+                name=spec.name,
+                category=spec.category,
+                unit=spec.unit,
+                quantity=qty,
+            )
+        )
+    else:
+        existing.quantity = qty
+    _recalculate_item(it, s)
+    save_session(s)
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_hardware_catalog_list(_data: dict) -> dict:
+    """Return the curated hardware catalog (codes + display names)."""
+    from carpinteria.hardware_catalog import CURATED_HARDWARE
+    rows = [
+        {"code": h.code, "name": h.name, "category": h.category, "unit": h.unit}
+        for h in CURATED_HARDWARE
+    ]
+    rows.sort(key=lambda r: (r["category"], r["name"]))
+    return {"hardware": rows}
+
+
+def _session_to_quotes_payload(session) -> list[dict]:
+    """Translate a QuotationSession's items into the legacy `quotes` shape that
+    `handle_export_excel` / `handle_export_docx` were originally built for.
+
+    Keeps the export handlers untouched — they pre-date the session model and
+    expect items to already be denormalised.
+    """
+    quotes: list[dict] = []
+    for it in session.items:
+        last = it.last_quote or {}
+        total = float(last.get("total", 0) or 0)
+        pending = list(last.get("pending_hardware_codes") or [])
+        has_error = total == 0
+        # When there's a pending hardware price but the quote otherwise computed,
+        # we still want the item rendered (don't mark has_error). The exporters
+        # handle missing_inputs vs notes vs has_error independently.
+        missing = []
+        notes = str(last.get("notes") or "")
+        if has_error and notes:
+            missing = [notes]
+
+        quotes.append({
+            "item_code": it.code,
+            "item_name": it.name,
+            "item_quantity": it.quantity,
+            "has_error": has_error,
+            "missing_inputs": missing,
+            "notes": notes,
+            "pending_hardware_codes": pending,
+            "decomposition": {
+                "pieces": [p.model_dump() for p in it.pieces],
+            },
+            "lines": list(last.get("lines") or []),
+            "hardware_lines": list(last.get("hardware_lines") or []),
+            "material": it.material,
+            "color": it.color or session.color_default,
+            "thickness_mm": it.thickness_mm,
+            "edge_banding": it.edge_banding,
+            "subtotal": float(last.get("subtotal", 0) or 0),
+            "margin_percent": float(last.get("margin_percent", 0) or 0),
+            "margin_amount": float(last.get("margin_amount", 0) or 0),
+            "total": total,
+            "total_with_hardware": float(last.get("total_with_hardware", 0) or 0),
+            "_tc": float(last.get("tc", 40) or 40),
+        })
+    return quotes
+
+
+def handle_export_excel_session(data: dict) -> dict:
+    from carpinteria.quotation_session import get_session
+    sid = str(data.get("session_id") or "")
+    if not sid:
+        return {"error": "missing session_id"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    return handle_export_excel({"quotes": _session_to_quotes_payload(s)})
+
+
+def handle_export_docx_session(data: dict) -> dict:
+    from carpinteria.quotation_session import get_session
+    sid = str(data.get("session_id") or "")
+    if not sid:
+        return {"error": "missing session_id"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    return handle_export_docx({"quotes": _session_to_quotes_payload(s)})
+
+
+def handle_catalog_list_boards(_data: dict) -> dict:
+    """Return all PLACA rows from the Activa catalog with a stable id (sku)
+    and a human-readable label, ready to feed a frontend dropdown."""
+    from carpinteria.catalog import ProductCatalog
+    cat = ProductCatalog.from_activa()
+    rows: list[dict] = []
+    for p in cat.filter(tipo_producto="PLACA"):
+        thickness = f"{p.espesor_mm:.0f}mm" if p.espesor_mm else "?mm"
+        size = ""
+        if p.ancho_mm and p.largo_mm:
+            size = f" {p.largo_mm/1000:.2f}×{p.ancho_mm/1000:.2f}m"
+        label = f"{p.material or p.familia} {thickness}{size} — {p.nombre}"
+        rows.append({
+            "sku": p.sku,
+            "label": label,
+            "familia": p.familia,
+            "material": p.material,
+            "espesor_mm": p.espesor_mm,
+            "precio_usd": p.precio_usd_simp,
+        })
+    rows.sort(key=lambda r: (r["familia"] or "", r["espesor_mm"] or 0, r["label"]))
+    return {"boards": rows}
+
+
+def handle_chat(data: dict) -> dict:
+    import asyncio
+    from carpinteria.agents.cotizador_chat import run_turn
+
+    sid = str(data.get("session_id") or "")
+    message = str(data.get("message") or "")
+    if not sid or not message:
+        return {"error": "missing session_id or message"}
+
+    return asyncio.run(run_turn(sid, message))
+
+
+# ---------------------------------------------------------------------------
+# Memory (cross-session facts)
+# ---------------------------------------------------------------------------
+
+def handle_memory_list(_data: dict) -> dict:
+    from carpinteria import memory as agent_memory
+    agent_memory.ensure_indexes()
+    facts = [f.model_dump(mode="json") for f in agent_memory.list_facts()]
+    return {"facts": facts}
+
+
+def handle_memory_add(data: dict) -> dict:
+    from carpinteria import memory as agent_memory
+    text = str(data.get("text") or "").strip()
+    if not text:
+        return {"error": "missing text"}
+    tags_raw = data.get("tags") or []
+    tags = [str(t) for t in tags_raw] if isinstance(tags_raw, list) else []
+    fact = agent_memory.add_fact(text, tags)
+    return {"fact": fact.model_dump(mode="json")}
+
+
+def handle_memory_delete(data: dict) -> dict:
+    from carpinteria import memory as agent_memory
+    fid = str(data.get("id") or "")
+    if not fid:
+        return {"error": "missing id"}
+    deleted = agent_memory.delete_fact(fid)
+    return {"deleted": deleted}
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -672,12 +1089,48 @@ def main() -> None:
             result = handle_hardware_prices_get(data)
         elif action == "hardware_prices_set":
             result = handle_hardware_prices_set(data)
+        elif action == "session_create":
+            result = handle_session_create(data)
+        elif action == "session_get":
+            result = handle_session_get(data)
+        elif action == "session_list":
+            result = handle_session_list(data)
+        elif action == "session_ingest_pliego":
+            result = handle_session_ingest_pliego(data)
+        elif action == "chat":
+            result = handle_chat(data)
+        elif action == "memory_list":
+            result = handle_memory_list(data)
+        elif action == "memory_add":
+            result = handle_memory_add(data)
+        elif action == "memory_delete":
+            result = handle_memory_delete(data)
+        elif action == "session_update":
+            result = handle_session_update(data)
+        elif action == "set_item_placa":
+            result = handle_set_item_placa(data)
+        elif action == "catalog_list_boards":
+            result = handle_catalog_list_boards(data)
+        elif action == "item_update":
+            result = handle_item_update(data)
+        elif action == "item_delete":
+            result = handle_item_delete(data)
+        elif action == "piece_set_quantity":
+            result = handle_piece_set_quantity(data)
+        elif action == "hardware_set_quantity":
+            result = handle_hardware_set_quantity(data)
+        elif action == "hardware_catalog_list":
+            result = handle_hardware_catalog_list(data)
+        elif action == "export_excel_session":
+            result = handle_export_excel_session(data)
+        elif action == "export_docx_session":
+            result = handle_export_docx_session(data)
         else:
             result = {"error": f"Unknown action: {action}"}
     except Exception as e:
         result = {"error": str(e)}
 
-    json.dump(result, sys.stdout, ensure_ascii=False)
+    json.dump(result, sys.stdout, ensure_ascii=False, default=str)
 
 
 if __name__ == "__main__":

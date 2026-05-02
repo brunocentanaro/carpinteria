@@ -112,6 +112,14 @@ class ProductCatalog:
             out = [p for p in out if p.material == material]
         return out
 
+    # ----- direct SKU lookup (used when a board is "pinned" on a quotation item) -----
+
+    def find_by_sku(self, sku: str) -> Producto | None:
+        for p in self.productos:
+            if p.sku == sku:
+                return p
+        return None
+
     # ----- placa (board) lookup -----
 
     def find_placa(
