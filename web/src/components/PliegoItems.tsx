@@ -106,6 +106,7 @@ export default function PliegoItems({ items, selectedCodes, onSelectionChange, g
             {items.map((item, i) => {
               const metal = !isCotizable(item);
               const selected = selectedCodes.includes(item.code);
+              const hardware = item.hardware ?? [];
               return (
                 <tr
                   key={i}
@@ -129,9 +130,9 @@ export default function PliegoItems({ items, selectedCodes, onSelectionChange, g
                   <td className="py-2 pr-2">
                     <div className="font-medium">{item.name}</div>
                     <div className="text-xs text-gray-500 max-w-sm">{item.description}</div>
-                    {item.hardware.length > 0 && (
+                    {hardware.length > 0 && (
                       <div className="text-xs text-gray-400">
-                        Herrajes: {item.hardware.join(", ")}
+                        Herrajes: {hardware.join(", ")}
                       </div>
                     )}
                   </td>

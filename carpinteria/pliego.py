@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 
 from openai import OpenAI
@@ -19,13 +20,21 @@ def _get_client() -> OpenAI:
 
 
 def _extract_pdf_text(path: str) -> str:
-    result = subprocess.run(
-        ["pdftotext", path, "-"],
-        capture_output=True, timeout=30,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"pdftotext failed: {result.stderr.decode(errors='replace')}")
-    return result.stdout.decode("utf-8", errors="replace")
+    if shutil.which("pdftotext"):
+        result = subprocess.run(
+            ["pdftotext", path, "-"],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return result.stdout.decode("utf-8", errors="replace")
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(path)
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    if not text.strip():
+        raise RuntimeError("No se pudo extraer texto del PDF. Puede ser un PDF escaneado o basado en imagen.")
+    return text
 
 
 def _extract_xlsx_text(path: str) -> str:

@@ -55,7 +55,7 @@ export interface PliegoItem {
   dimensions: PliegoItemDimensions;
   material: string;
   thickness_mm: number;
-  hardware: string[];
+  hardware: string[] | null;
   edge_banding: string;
   group: string;
   delivery_location: string;

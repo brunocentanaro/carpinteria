@@ -10,4 +10,5 @@ secrets/**/*.json
 .claude/worktrees/
 web/.next/
 web/node_modules/
+web/*.log
 node_modules/
