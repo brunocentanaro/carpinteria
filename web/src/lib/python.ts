@@ -35,8 +35,11 @@ export async function callPython(
       }
     });
 
-    child.stdin.write(JSON.stringify(input));
-    child.stdin.end();
+    // Use end(data, encoding) instead of write() + end() to guarantee the
+    // payload is fully flushed before the pipe closes. The split form was
+    // truncating multi-byte / longer inputs (e.g. file paths with tmpdir's
+    // full path) somewhere around char ~150 on darwin.
+    child.stdin.end(JSON.stringify(input), "utf-8");
   });
 }
 
@@ -96,8 +99,7 @@ export function streamPython(
         controller.close();
       });
 
-      child.stdin.write(JSON.stringify(input));
-      child.stdin.end();
+      child.stdin.end(JSON.stringify(input), "utf-8");
     },
   });
 }
