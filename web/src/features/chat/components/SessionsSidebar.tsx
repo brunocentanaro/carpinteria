@@ -1,41 +1,33 @@
 "use client";
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
 import { Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { createSession, listSessions, qk } from "../api";
+import { listSessions, qk } from "../api";
 import { MemoryPanel } from "./MemoryPanel";
 
 interface SessionsSidebarProps {
   activeId: string | null;
-  onSelect: (id: string) => void;
+  /** Pass `null` to start a brand-new (still-virtual) conversation. */
+  onSelect: (id: string | null) => void;
 }
 
 export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
-  const queryClient = useQueryClient();
   const sessions = useQuery({ queryKey: qk.sessions, queryFn: listSessions });
-
-  const createMutation = useMutation({
-    mutationFn: createSession,
-    onSuccess: (s) => {
-      queryClient.invalidateQueries({ queryKey: qk.sessions });
-      onSelect(s.id);
-    },
-  });
 
   return (
     <aside className="w-64 border-r bg-muted/30 flex flex-col">
       <div className="p-3 border-b">
         <Button
           className="w-full"
-          onClick={() => createMutation.mutate({})}
-          disabled={createMutation.isPending}
+          onClick={() => onSelect(null)}
+          variant={activeId === null ? "default" : "outline"}
         >
           <Plus className="h-4 w-4 mr-1" />
-          Nueva sesión
+          Nueva conversación
         </Button>
       </div>
       <div className="flex-1 overflow-y-auto p-3">

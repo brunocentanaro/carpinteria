@@ -54,7 +54,8 @@ export function QuotationPanel({ session }: { session: Session | null }) {
   if (!session) {
     return (
       <div className="p-6 text-sm text-muted-foreground">
-        Cargando cotización…
+        La cotización aparece acá una vez que arranques la conversación.
+        Subí un pliego o pedile algo al chat.
       </div>
     );
   }

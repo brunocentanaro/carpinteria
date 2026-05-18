@@ -8,7 +8,7 @@ import { Paperclip, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { qk, sendChat, uploadPliego } from "../api";
+import { createSession, qk, sendChat, uploadPliego } from "../api";
 import type { ChatMessage, Session } from "../schemas";
 
 const MARKDOWN_BUBBLE_CLASSES =
@@ -18,9 +18,11 @@ const MARKDOWN_BUBBLE_CLASSES =
 
 interface ChatColumnProps {
   session: Session | null;
+  /** Called once we've created a session lazily (first message or upload). */
+  onSessionCreated: (id: string) => void;
 }
 
-export function ChatColumn({ session }: ChatColumnProps) {
+export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
   const queryClient = useQueryClient();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -32,11 +34,32 @@ export function ChatColumn({ session }: ChatColumnProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Hydrate the message list when the active session changes. During a turn
-  // we keep the optimistic local copy in sync via setMessages and don't refetch.
+  // Hydrate the message list when the active session changes (or clears).
+  // During a turn we keep the optimistic local copy in sync via setMessages
+  // and don't refetch.
   useEffect(() => {
     setMessages(session?.messages ?? []);
   }, [session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Create-on-first-action: if there's no active session yet, the first
+  // message or upload spawns one. We share the in-flight promise so a
+  // concurrent send + upload both wait on the same session creation.
+  const pendingSessionRef = useRef<Promise<Session> | null>(null);
+  async function ensureSession(): Promise<Session> {
+    if (session) return session;
+    if (!pendingSessionRef.current) {
+      pendingSessionRef.current = createSession({}).then((s) => {
+        onSessionCreated(s.id);
+        queryClient.invalidateQueries({ queryKey: qk.sessions });
+        return s;
+      });
+    }
+    try {
+      return await pendingSessionRef.current;
+    } finally {
+      pendingSessionRef.current = null;
+    }
+  }
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -59,53 +82,70 @@ export function ChatColumn({ session }: ChatColumnProps) {
       setUploadStartedAt(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
     },
-    onSuccess: (newSession) => {
-      if (newSession && session) {
-        queryClient.setQueryData(qk.session(session.id), newSession);
-        // The handler appended an assistant summary message — pick it up.
-        setMessages(newSession.messages ?? []);
-      }
-    },
   });
 
   const handleSend = useCallback(async () => {
-    if (!session || !input.trim() || sendMutation.isPending) return;
+    if (!input.trim() || sendMutation.isPending) return;
     const userContent = input.trim();
     setMessages((m) => [...m, { role: "user", content: userContent }]);
     setInput("");
-    const result = await sendMutation.mutateAsync({
-      sessionId: session.id,
-      message: userContent,
-    });
-    setMessages((m) => [
-      ...m,
-      {
-        role: "assistant",
-        content: result.reply || result.error || "(sin respuesta)",
-      },
-    ]);
-    // Refresh session so the panel picks up any agent-side mutations.
-    queryClient.invalidateQueries({ queryKey: qk.session(session.id) });
-  }, [input, session, sendMutation, queryClient]);
+    try {
+      const s = await ensureSession();
+      const result = await sendMutation.mutateAsync({
+        sessionId: s.id,
+        message: userContent,
+      });
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: result.reply || result.error || "(sin respuesta)",
+        },
+      ]);
+      queryClient.invalidateQueries({ queryKey: qk.session(s.id) });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMessages((m) => [
+        ...m,
+        { role: "assistant", content: `❌ Error: ${msg}` },
+      ]);
+    }
+  }, [input, sendMutation, queryClient]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFiles = useCallback(
-    (files: File[]) => {
-      if (!session || files.length === 0 || uploadMutation.isPending) return;
-      uploadMutation.mutate({ sessionId: session.id, files });
+    async (files: File[]) => {
+      if (files.length === 0 || uploadMutation.isPending) return;
+      try {
+        const s = await ensureSession();
+        const newSession = await uploadMutation.mutateAsync({
+          sessionId: s.id,
+          files,
+        });
+        if (newSession) {
+          queryClient.setQueryData(qk.session(s.id), newSession);
+          setMessages(newSession.messages ?? []);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: `❌ Error subiendo pliego: ${msg}` },
+        ]);
+      }
     },
-    [session, uploadMutation],
+    [uploadMutation, queryClient], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   // ---- Drag-and-drop (depth counter avoids the child-flicker issue) ----
   function handleDragEnter(e: React.DragEvent) {
-    if (!session || uploadMutation.isPending) return;
+    if (uploadMutation.isPending) return;
     if (!Array.from(e.dataTransfer.types || []).includes("Files")) return;
     e.preventDefault();
     dragDepth.current += 1;
     setIsDragging(true);
   }
   function handleDragOver(e: React.DragEvent) {
-    if (!session || uploadMutation.isPending) return;
+    if (uploadMutation.isPending) return;
     if (!Array.from(e.dataTransfer.types || []).includes("Files")) return;
     e.preventDefault();
   }
@@ -121,14 +161,6 @@ export function ChatColumn({ session }: ChatColumnProps) {
     handleFiles(Array.from(e.dataTransfer.files || []));
   }
 
-  if (!session) {
-    return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
-        Elegí una sesión o creá una nueva para empezar.
-      </div>
-    );
-  }
-
   return (
     <div
       className="flex-1 flex flex-col relative"
@@ -140,8 +172,17 @@ export function ChatColumn({ session }: ChatColumnProps) {
       <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-background">
         {messages.length === 0 && (
           <div className="text-sm text-muted-foreground">
-            Sesión <code className="text-xs">{session.id}</code>. Arrastrá un
-            pliego (PDF / XLSX / imagen) acá, o tipeá para empezar.
+            {session ? (
+              <>
+                Sesión <code className="text-xs">{session.id}</code>. Arrastrá
+                un pliego (PDF / XLSX / imagen) acá, o tipeá para empezar.
+              </>
+            ) : (
+              <>
+                Nueva conversación. Arrastrá un pliego acá o escribí algo — la
+                sesión se crea cuando mandes el primer mensaje.
+              </>
+            )}
           </div>
         )}
         {messages.map((m, i) => (
