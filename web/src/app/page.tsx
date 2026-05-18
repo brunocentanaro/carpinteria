@@ -484,7 +484,7 @@ export default function Home() {
                       </p>
                     )}
                     {iq.item.material && <p>Material: {iq.item.material} {iq.item.thickness_mm > 0 && `${iq.item.thickness_mm}mm`}</p>}
-                    {iq.item.hardware?.length > 0 && <p>Herrajes requeridos: {iq.item.hardware.join(", ")}</p>}
+                    {iq.item.hardware && iq.item.hardware.length > 0 && <p>Herrajes requeridos: {iq.item.hardware.join(", ")}</p>}
                     {iq.item.edge_banding && <p>Canto: {iq.item.edge_banding}</p>}
                   </div>
 
