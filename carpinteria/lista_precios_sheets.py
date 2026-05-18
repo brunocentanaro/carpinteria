@@ -5,9 +5,9 @@ import os
 from typing import Iterable
 
 import gspread
-from google.oauth2.service_account import Credentials
 from gspread.utils import rowcol_to_a1
 
+from carpinteria.google_creds import load_credentials
 from carpinteria.lista_precios_parser import Producto, SHEET_COLUMNS, items_to_rows
 
 DEFAULT_SHEET_ID = "1mcp2xyADcYN45lLq42j8_WEzjM3AKoKx8McSYyDT1h8"
@@ -19,8 +19,7 @@ SCOPES = [
 
 
 def _open(sheet_id: str | None = None) -> gspread.Spreadsheet:
-    sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "secrets/google/google-service.json")
-    creds = Credentials.from_service_account_file(sa_file, scopes=SCOPES)
+    creds = load_credentials(SCOPES)
     client = gspread.authorize(creds)
     return client.open_by_key(sheet_id or os.getenv("PRICES_SHEET_ID", DEFAULT_SHEET_ID))
 

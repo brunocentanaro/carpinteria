@@ -222,8 +222,16 @@ cd web && npm run dev   # http://localhost:3000
 ```
 
 `.env` en la raíz (NO en `web/`): variables consumidas por el subprocess.
-Mínimo: `MONGO_URL`, `MONGO_DB`, `OPENAI_API_KEY`,
-`GOOGLE_SHEETS_SPREADSHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_FILE`.
+Mínimo:
+- `MONGO_URL` y `MONGO_DB` (Mongo Atlas).
+- `OPENAI_API_KEY` (modelos de OpenAI hardcodeados en `settings.py`).
+- `GOOGLE_SHEETS_SPREADSHEET_ID` (catálogo Activa).
+- Credenciales Google: `GOOGLE_SERVICE_ACCOUNT_FILE` (path local) o
+  `GOOGLE_SERVICE_ACCOUNT_JSON` (contenido inline para producción).
+  La lógica vive en `carpinteria/google_creds.py:load_credentials`.
+
+El TC USD/UYU se obtiene en vivo del BCU (`exchange_rate.fetch_bcu_usd`),
+no hay variable para hardcodearlo.
 
 ### Producción (Railway)
 

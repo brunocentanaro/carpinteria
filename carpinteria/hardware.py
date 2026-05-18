@@ -86,12 +86,8 @@ def read_hardware_catalog(
     except Exception:
         pass
 
-    tc = float(os.getenv("TC_COMPRA", "40"))
-    try:
-        from carpinteria.exchange_rate import fetch_bcu_usd
-        tc, _ = fetch_bcu_usd()
-    except Exception:
-        pass
+    from carpinteria.exchange_rate import fetch_bcu_usd
+    tc, _ = fetch_bcu_usd()
 
     markup = 1 + BARRACA_PARANA_MARKUP / 100
     for bp in BARRACA_PARANA_ITEMS:

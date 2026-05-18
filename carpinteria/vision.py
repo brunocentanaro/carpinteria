@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 
 from openai import OpenAI
 
 from carpinteria.prompts import IMAGE_ANALYSIS
 from carpinteria.schemas import CutPiece, ImageAnalysisResult
-
-VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1")
+from carpinteria.settings import VISION_MODEL
 _client: OpenAI | None = None
 
 

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 
 from openai import OpenAI
 
 from carpinteria.prompts import FURNITURE_DECOMPOSE, PLIEGO_ANALYSIS
+from carpinteria.settings import AGENT_MODEL
 
 _client: OpenAI | None = None
 
@@ -68,10 +68,8 @@ def analyze_pliego(file_paths: list[str]) -> dict:
         combined = combined[:100_000]
 
     client = _get_client()
-    model = os.getenv("OPENAI_AGENT_MODEL", "gpt-4.1-mini")
-
     response = client.chat.completions.create(
-        model=model,
+        model=AGENT_MODEL,
         messages=[
             {"role": "system", "content": PLIEGO_ANALYSIS},
             {"role": "user", "content": combined},
@@ -87,7 +85,6 @@ def decompose_furniture(item: dict) -> dict:
     from carpinteria.hardware_catalog import catalog_prompt_block, get_by_code
 
     client = _get_client()
-    model = os.getenv("OPENAI_AGENT_MODEL", "gpt-4.1-mini")
 
     system_prompt = FURNITURE_DECOMPOSE.replace(
         "{HARDWARE_CATALOG}", catalog_prompt_block()
@@ -104,7 +101,7 @@ def decompose_furniture(item: dict) -> dict:
     )
 
     response = client.chat.completions.create(
-        model=model,
+        model=AGENT_MODEL,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": desc},

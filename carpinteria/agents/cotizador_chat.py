@@ -9,7 +9,6 @@ History is owned by OpenAI's Responses API: we just remember the
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from agents import Agent, RunContextWrapper, Runner, function_tool
@@ -21,6 +20,7 @@ from carpinteria.hardware_catalog import CURATED_HARDWARE, get_by_code
 from carpinteria.hardware_prices_sheet import read_all as read_hw_prices, upsert_price as upsert_hw_price
 from carpinteria import memory as agent_memory
 from carpinteria.pliego import analyze_pliego, decompose_furniture
+from carpinteria.settings import AGENT_MODEL
 from carpinteria.quotation_session import (
     CutPiece,
     HardwareUsage,
@@ -38,10 +38,9 @@ from carpinteria.quotation_session import (
 # ---------------------------------------------------------------------------
 
 def _tc() -> float:
-    try:
-        return fetch_bcu_usd()[0]
-    except Exception:
-        return 40.0
+    """Current USD/UYU rate from BCU. Let exceptions propagate — sin TC no
+    podemos cotizar, mejor explotar fuerte que producir cifras inventadas."""
+    return fetch_bcu_usd()[0]
 
 
 def _hw_prices_map() -> dict[str, float]:
@@ -533,7 +532,7 @@ def build_agent(session: QuotationSession | None = None) -> Agent:
     return Agent(
         name="Cotizador",
         instructions=_build_instructions(session),
-        model=os.getenv("OPENAI_AGENT_MODEL", "gpt-4.1-mini"),
+        model=AGENT_MODEL,
         tools=[
             get_state,
             ingest_pliego,

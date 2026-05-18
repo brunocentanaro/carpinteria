@@ -4,8 +4,14 @@ import os
 
 from agents import ModelSettings
 
-VISION_MODEL = os.getenv("OPENAI_VISION_MODEL", "gpt-4.1")
-AGENT_MODEL = os.getenv("OPENAI_AGENT_MODEL", "gpt-4.1-mini")
+# Modelos OpenAI hardcodeados a propósito: bump deliberado de modelo en código,
+# no via env var de Railway. Cambiarlos acá implica una decisión revisable.
+# gpt-5.4-mini es current-gen, multimodal (vision), y barato (~$0.75/$4.50 por
+# millón de tokens). Da buena calidad para descomponer pliegos y para el chat
+# de cotización sin disparar el costo. Bumpear acá cuando salga gpt-5.5-mini o
+# similar y el costo lo justifique.
+VISION_MODEL = "gpt-5.4-mini"
+AGENT_MODEL = "gpt-5.4-mini"
 MACHINERY_PERCENT = float(os.getenv("MACHINERY_PERCENT", "20"))
 WASTE_PERCENT = float(os.getenv("WASTE_PERCENT", "20"))
 LABOR_PERCENT = float(os.getenv("LABOR_PERCENT", "40"))
