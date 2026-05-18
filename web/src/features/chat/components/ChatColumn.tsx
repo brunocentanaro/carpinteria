@@ -8,8 +8,24 @@ import { Paperclip, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { createSession, qk, sendChat, uploadPliego } from "../api";
+import { createSession, qk, streamChat, uploadPliego } from "../api";
 import type { ChatMessage, Session } from "../schemas";
+
+const TOOL_LABELS: Record<string, string> = {
+  get_state: "leyendo el estado",
+  ingest_pliego: "ingiriendo el pliego",
+  set_color: "ajustando el color",
+  set_payment_days: "ajustando los días de pago",
+  set_destination: "ajustando el destino",
+  set_hardware_quantity: "ajustando cantidad de herraje",
+  set_hardware_price: "guardando precio de herraje",
+  list_hardware_catalog: "listando catálogo de herrajes",
+  set_piece_quantity: "ajustando cantidad de pieza",
+  recalculate: "recalculando",
+  remember_fact: "anotando hecho",
+  forget_fact: "olvidando hecho",
+  list_facts: "leyendo hechos",
+};
 
 const MARKDOWN_BUBBLE_CLASSES =
   "bg-muted text-foreground prose prose-sm max-w-none " +
@@ -26,7 +42,9 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
   const queryClient = useQueryClient();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
   const [sendingStartedAt, setSendingStartedAt] = useState<number | null>(null);
+  const [currentTool, setCurrentTool] = useState<string | null>(null);
   const [uploadingFiles, setUploadingFiles] = useState<string[] | null>(null);
   const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -65,12 +83,6 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages.length]);
 
-  const sendMutation = useMutation({
-    mutationFn: sendChat,
-    onMutate: () => setSendingStartedAt(Date.now()),
-    onSettled: () => setSendingStartedAt(null),
-  });
-
   const uploadMutation = useMutation({
     mutationFn: uploadPliego,
     onMutate: (input) => {
@@ -85,32 +97,77 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
   });
 
   const handleSend = useCallback(async () => {
-    if (!input.trim() || sendMutation.isPending) return;
+    if (!input.trim() || sending) return;
     const userContent = input.trim();
-    setMessages((m) => [...m, { role: "user", content: userContent }]);
+    setMessages((m) => [
+      ...m,
+      { role: "user", content: userContent },
+      // Placeholder assistant bubble that we mutate as tokens arrive.
+      { role: "assistant", content: "" },
+    ]);
     setInput("");
+    setSending(true);
+    setSendingStartedAt(Date.now());
+    setCurrentTool(null);
+
     try {
       const s = await ensureSession();
-      const result = await sendMutation.mutateAsync({
+      let buffer = "";
+      for await (const event of streamChat({
         sessionId: s.id,
         message: userContent,
-      });
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          content: result.reply || result.error || "(sin respuesta)",
-        },
-      ]);
+      })) {
+        if (event.type === "token") {
+          buffer += event.delta;
+          setMessages((m) => {
+            const copy = m.slice();
+            const last = copy[copy.length - 1];
+            if (last?.role === "assistant") {
+              copy[copy.length - 1] = { ...last, content: buffer };
+            }
+            return copy;
+          });
+        } else if (event.type === "tool_call") {
+          setCurrentTool(event.tool);
+        } else if (event.type === "tool_result") {
+          setCurrentTool(null);
+        } else if (event.type === "error") {
+          setMessages((m) => {
+            const copy = m.slice();
+            const last = copy[copy.length - 1];
+            if (last?.role === "assistant" && !last.content) {
+              copy[copy.length - 1] = {
+                ...last,
+                content: `❌ Error: ${event.message}`,
+              };
+              return copy;
+            }
+            return [
+              ...m,
+              { role: "assistant", content: `❌ Error: ${event.message}` },
+            ];
+          });
+        }
+        // `done` we ignore — buffer already has the final text; no extra action.
+      }
       queryClient.invalidateQueries({ queryKey: qk.session(s.id) });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setMessages((m) => [
-        ...m,
-        { role: "assistant", content: `❌ Error: ${msg}` },
-      ]);
+      setMessages((m) => {
+        const copy = m.slice();
+        const last = copy[copy.length - 1];
+        if (last?.role === "assistant" && !last.content) {
+          copy[copy.length - 1] = { ...last, content: `❌ Error: ${msg}` };
+          return copy;
+        }
+        return [...m, { role: "assistant", content: `❌ Error: ${msg}` }];
+      });
+    } finally {
+      setSending(false);
+      setSendingStartedAt(null);
+      setCurrentTool(null);
     }
-  }, [input, sendMutation, queryClient]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [input, sending, queryClient]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleFiles = useCallback(
     async (files: File[]) => {
@@ -191,9 +248,19 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
         {uploadingFiles && (
           <ProcessingBubble files={uploadingFiles} startedAt={uploadStartedAt} />
         )}
-        {sendMutation.isPending && (
-          <ThinkingBubble startedAt={sendingStartedAt} />
-        )}
+        {sending && (() => {
+          const last = messages[messages.length - 1];
+          // While streaming, show the thinking bubble only until the assistant
+          // bubble has actual content. After that, tokens render in place.
+          const hasContent = last?.role === "assistant" && last.content.length > 0;
+          if (hasContent) return null;
+          return (
+            <ThinkingBubble
+              startedAt={sendingStartedAt}
+              tool={currentTool}
+            />
+          );
+        })()}
         <div ref={messagesEndRef} />
       </div>
 
@@ -229,12 +296,12 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
             placeholder="Escribí algo… (Enter para enviar, Shift+Enter nueva línea)"
             className="flex-1 resize-none"
             rows={2}
-            disabled={sendMutation.isPending}
+            disabled={sending}
           />
           <Button
             type="button"
             onClick={handleSend}
-            disabled={sendMutation.isPending || !input.trim()}
+            disabled={sending || !input.trim()}
           >
             <Send className="h-4 w-4 mr-1" /> Enviar
           </Button>
@@ -277,12 +344,19 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function ThinkingBubble({ startedAt }: { startedAt: number | null }) {
+function ThinkingBubble({
+  startedAt,
+  tool,
+}: {
+  startedAt: number | null;
+  tool?: string | null;
+}) {
   const elapsed = useElapsed(startedAt);
+  const label = tool ? TOOL_LABELS[tool] || tool : "pensando";
   return (
     <div className="flex justify-start">
       <div className="bg-muted text-muted-foreground text-sm px-3 py-2 rounded-lg">
-        pensando…{" "}
+        {label}…{" "}
         {elapsed > 0 && <span className="tabular-nums">({elapsed}s)</span>}
       </div>
     </div>

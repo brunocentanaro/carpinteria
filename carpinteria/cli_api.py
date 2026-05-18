@@ -732,10 +732,24 @@ def handle_session_update(data: dict) -> dict:
         s.payment_days = int(v) if v not in (None, "", 0) else None
     if "destination" in data:
         s.destination = str(data.get("destination") or "")
+    if "title" in data:
+        s.title = str(data.get("title") or "").strip()
 
     _recalc_all_items(s)
     save_session(s)
     return {"session": s.model_dump(mode="json")}
+
+
+def handle_session_delete(data: dict) -> dict:
+    """Hard-delete a session document. Used by the sidebar's «eliminar» menu."""
+    from carpinteria.quotation_session import COLLECTION
+    from carpinteria.db import collection
+
+    sid = str(data.get("session_id") or "")
+    if not sid:
+        return {"error": "missing session_id"}
+    res = collection(COLLECTION).delete_one({"id": sid})
+    return {"deleted": res.deleted_count > 0}
 
 
 def handle_set_item_placa(data: dict) -> dict:
@@ -1030,6 +1044,36 @@ def handle_chat(data: dict) -> dict:
     return asyncio.run(run_turn(sid, message))
 
 
+def handle_chat_stream(data: dict) -> None:
+    """Stream-emit NDJSON events to stdout instead of returning a dict.
+
+    Each line is a JSON object `{type, ...}`. The Next route reads this
+    line-by-line from the subprocess stdout and forwards it as SSE.
+    """
+    import asyncio
+    from carpinteria.agents.cotizador_chat import run_turn_stream
+
+    sid = str(data.get("session_id") or "")
+    message = str(data.get("message") or "")
+    if not sid or not message:
+        sys.stdout.write(json.dumps({"type": "error", "message": "missing session_id or message"}) + "\n")
+        sys.stdout.flush()
+        return
+
+    async def consume() -> None:
+        try:
+            async for ev_type, payload in run_turn_stream(sid, message):
+                line = json.dumps({"type": ev_type, **payload}, ensure_ascii=False, default=str)
+                sys.stdout.write(line + "\n")
+                sys.stdout.flush()
+        except Exception as e:
+            line = json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
+            sys.stdout.write(line + "\n")
+            sys.stdout.flush()
+
+    asyncio.run(consume())
+
+
 # ---------------------------------------------------------------------------
 # Memory (cross-session facts)
 # ---------------------------------------------------------------------------
@@ -1065,6 +1109,12 @@ def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
     action = data.get("action", "")
+
+    # Streaming actions write their own NDJSON to stdout — don't wrap in
+    # a single JSON response or json.dump at the end.
+    if action == "chat_stream":
+        handle_chat_stream(data)
+        return
 
     try:
         if action == "prices":
@@ -1107,6 +1157,8 @@ def main() -> None:
             result = handle_memory_delete(data)
         elif action == "session_update":
             result = handle_session_update(data)
+        elif action == "session_delete":
+            result = handle_session_delete(data)
         elif action == "set_item_placa":
             result = handle_set_item_placa(data)
         elif action == "catalog_list_boards":

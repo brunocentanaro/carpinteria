@@ -259,6 +259,17 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
         s.payment_days = int(gs["delivery_days"])
     s.pliego_filenames = list({*s.pliego_filenames, *file_paths})
 
+    # Auto-title from the first pliego filename when the session has no
+    # title yet. Strip the path and the trailing rand suffix added by the
+    # upload route, leaving a readable stub like "pliego-cocina-pereira".
+    if not s.title and file_paths:
+        import os.path as _p
+        first = _p.basename(file_paths[0])
+        stem = first.rsplit(".", 1)[0]
+        # Files arrive as e.g. "pliego-1777522799927-1.xlsx" — drop the digits.
+        parts = [p for p in stem.split("-") if not p.isdigit()]
+        s.title = ("-".join(parts) or stem)[:60]
+
     # Initial recalculation — reuse catalog/TC/hw_prices across items so we
     # don't hit Sheets + BCU N times for an N-item pliego.
     catalog = ProductCatalog.from_activa()
@@ -551,6 +562,72 @@ def build_agent(session: QuotationSession | None = None) -> Agent:
     )
 
 
+async def run_turn_stream(session_id: str, message: str):
+    """Streaming variant of ``run_turn``. Async-yields ``(type, payload)`` tuples
+    so the caller can push them as SSE / NDJSON.
+
+    Event types:
+    - ``token`` ``{delta}`` — assistant text increment.
+    - ``tool_call`` ``{tool}`` — agent is about to invoke a tool.
+    - ``tool_result`` ``{output}`` — tool returned (preview).
+    - ``done`` ``{reply, last_response_id}`` — turn finished.
+    - ``error`` ``{message}`` — fatal, the agent didn't complete.
+    """
+    from openai.types.responses import ResponseTextDeltaEvent
+
+    from carpinteria.quotation_session import update_response_id
+
+    s = get_session(session_id)
+    if s is None:
+        yield "error", {"message": f"session not found: {session_id}"}
+        return
+
+    # Auto-title from the first user message; mirror run_turn().
+    if not s.title and not s.messages:
+        snippet = message.strip().splitlines()[0][:60]
+        if snippet:
+            s.title = snippet
+            save_session(s)
+
+    append_message(session_id, "user", message)
+
+    agent = build_agent(s)
+    kwargs: dict[str, Any] = {"context": session_id, "max_turns": 25}
+    if s.last_response_id:
+        kwargs["previous_response_id"] = s.last_response_id
+
+    streamed = Runner.run_streamed(agent, message, **kwargs)
+
+    async for event in streamed.stream_events():
+        ev_type = getattr(event, "type", "")
+        if ev_type == "raw_response_event" and isinstance(
+            event.data, ResponseTextDeltaEvent
+        ):
+            delta = event.data.delta
+            if delta:
+                yield "token", {"delta": delta}
+        elif ev_type == "run_item_stream_event":
+            item = event.item
+            item_type = getattr(item, "type", "")
+            if item_type == "tool_call_item":
+                raw = getattr(item, "raw_item", None)
+                yield "tool_call", {"tool": getattr(raw, "name", "")}
+            elif item_type == "tool_call_output_item":
+                output = getattr(item, "output", "")
+                preview = output[:300] if isinstance(output, str) else str(output)[:300]
+                yield "tool_result", {"output": preview}
+
+    new_resp_id = getattr(streamed, "last_response_id", None)
+    if new_resp_id:
+        update_response_id(session_id, new_resp_id)
+
+    final = streamed.final_output or ""
+    if final:
+        append_message(session_id, "assistant", final)
+
+    yield "done", {"reply": final, "last_response_id": new_resp_id}
+
+
 async def run_turn(session_id: str, message: str) -> dict[str, Any]:
     """Run one chat turn against the given session. Returns the assistant text +
     the new last_response_id so the caller can persist it on the session."""
@@ -559,6 +636,14 @@ async def run_turn(session_id: str, message: str) -> dict[str, Any]:
     s = get_session(session_id)
     if s is None:
         return {"error": f"session not found: {session_id}"}
+
+    # Auto-title from the first user message when none was set. Keeps the
+    # sidebar readable instead of showing the raw session id.
+    if not s.title and not s.messages:
+        snippet = message.strip().splitlines()[0][:60]
+        if snippet:
+            s.title = snippet
+            save_session(s)
 
     # Persist the user turn before running so a crash mid-agent still leaves
     # a record of what was asked.

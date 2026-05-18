@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
 import { AppSidebar } from "@/components/AppSidebar";
+import { Toaster } from "@/components/ui/sonner";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -36,6 +37,7 @@ export default function RootLayout({
         {/* Margin matches the fixed sidebar width (w-14 = 56px). */}
         <Providers>
           <main className="ml-14 min-h-screen">{children}</main>
+          <Toaster position="bottom-right" richColors closeButton />
         </Providers>
       </body>
     </html>

@@ -71,6 +71,7 @@ export async function patchSession(
     color_default: string;
     payment_days: number | null;
     destination: string;
+    title: string;
   }>,
 ) {
   return api(
@@ -78,6 +79,14 @@ export async function patchSession(
     { method: "PATCH", body: JSON.stringify(payload) },
     z.object({ session: SessionSchema }),
   ).then((d) => d.session);
+}
+
+export async function deleteSession(id: string) {
+  return api(
+    `/api/sessions/${id}`,
+    { method: "DELETE" },
+    z.object({ deleted: z.boolean() }),
+  );
 }
 
 export async function setItemPlaca(input: {
@@ -95,19 +104,58 @@ export async function setItemPlaca(input: {
   ).then((d) => d.session);
 }
 
-export async function sendChat(input: { sessionId: string; message: string }) {
-  return api(
-    "/api/chat",
-    {
-      method: "POST",
-      body: JSON.stringify({ session_id: input.sessionId, message: input.message }),
-    },
-    z.object({
-      reply: z.string().default(""),
-      last_response_id: z.string().nullable().optional(),
-      error: z.string().optional(),
-    }),
-  );
+// SSE event shape emitted by the streaming /api/chat route.
+export type ChatStreamEvent =
+  | { type: "token"; delta: string }
+  | { type: "tool_call"; tool: string }
+  | { type: "tool_result"; output: string }
+  | { type: "done"; reply: string; last_response_id: string | null }
+  | { type: "error"; message: string };
+
+/**
+ * Async generator over the streamed agent turn. Each yielded item is a parsed
+ * `ChatStreamEvent`. Throws if the HTTP response is not OK.
+ */
+export async function* streamChat(input: {
+  sessionId: string;
+  message: string;
+}): AsyncGenerator<ChatStreamEvent> {
+  const res = await fetch("/api/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id: input.sessionId, message: input.message }),
+  });
+  if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || `HTTP ${res.status}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // Split on SSE record boundary (\n\n).
+    let sep = buf.indexOf("\n\n");
+    while (sep !== -1) {
+      const record = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      // Each record is "data: <json>" (one line per record here).
+      if (record.startsWith("data: ")) {
+        const payload = record.slice(6).trim();
+        if (payload) {
+          try {
+            yield JSON.parse(payload) as ChatStreamEvent;
+          } catch {
+            console.warn("Bad SSE chunk:", payload);
+          }
+        }
+      }
+      sep = buf.indexOf("\n\n");
+    }
+  }
 }
 
 export async function uploadPliego(input: {

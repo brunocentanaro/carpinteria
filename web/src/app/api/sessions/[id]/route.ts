@@ -29,7 +29,22 @@ export async function PATCH(
     if ("color_default" in body) payload.color_default = body.color_default;
     if ("payment_days" in body) payload.payment_days = body.payment_days;
     if ("destination" in body) payload.destination = body.destination;
+    if ("title" in body) payload.title = body.title;
     const result = await callPython(payload);
+    return NextResponse.json(result);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
+export async function DELETE(
+  _req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params;
+    const result = await callPython({ action: "session_delete", session_id: id });
     return NextResponse.json(result);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);

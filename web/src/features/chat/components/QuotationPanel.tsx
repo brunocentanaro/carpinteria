@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 
 import { FileSpreadsheet, FileText } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -435,7 +436,7 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        alert(`Error: ${data.error || res.statusText}`);
+        toast.error(`Error exportando: ${data.error || res.statusText}`);
         return;
       }
       const blob = await res.blob();
@@ -447,6 +448,7 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
+      toast.success(`${kind === "excel" ? "Excel" : "Word"} descargado`);
     } finally {
       setBusy(null);
     }
