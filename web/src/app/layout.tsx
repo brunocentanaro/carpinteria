@@ -4,6 +4,8 @@ import "./globals.css";
 import { Providers } from "./providers";
 import { AppSidebar } from "@/components/AppSidebar";
 import { Toaster } from "@/components/ui/sonner";
+import { AuthGate } from "@/components/AuthGate";
+import { BrandEnvironmentProvider } from "@/components/BrandEnvironmentProvider";
 
 const inter = Inter({
   variable: "--font-sans",
@@ -33,12 +35,16 @@ export default function RootLayout({
       className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
       <body className="min-h-full">
-        <AppSidebar />
-        {/* Margin matches the fixed sidebar width (w-14 = 56px). */}
-        <Providers>
-          <main className="ml-14 min-h-screen">{children}</main>
-          <Toaster position="bottom-right" richColors closeButton />
-        </Providers>
+        <BrandEnvironmentProvider>
+          <AuthGate>
+            <AppSidebar />
+            {/* Margin matches the fixed sidebar width (w-14 = 56px). */}
+            <Providers>
+              <main className="ml-14 min-h-screen">{children}</main>
+              <Toaster position="bottom-right" richColors closeButton />
+            </Providers>
+          </AuthGate>
+        </BrandEnvironmentProvider>
       </body>
     </html>
   );

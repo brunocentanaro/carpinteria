@@ -68,7 +68,7 @@ export default function FileUpload({ onImageAnalyzed, onPiecesLoaded, onPliegoAn
         <button
           onClick={() => setMode("pliego")}
           className={`text-xs px-3 py-1.5 rounded-md font-medium ${
-            mode === "pliego" ? "bg-blue-100 text-blue-700 border border-blue-300" : "bg-gray-100 text-gray-600"
+            mode === "pliego" ? "bg-primary/10 text-primary border border-primary/30" : "bg-muted text-muted-foreground"
           }`}
         >
           Pliego / Especificacion
@@ -76,7 +76,7 @@ export default function FileUpload({ onImageAnalyzed, onPiecesLoaded, onPliegoAn
         <button
           onClick={() => setMode("image")}
           className={`text-xs px-3 py-1.5 rounded-md font-medium ${
-            mode === "image" ? "bg-blue-100 text-blue-700 border border-blue-300" : "bg-gray-100 text-gray-600"
+            mode === "image" ? "bg-primary/10 text-primary border border-primary/30" : "bg-muted text-muted-foreground"
           }`}
         >
           Plano de corte
@@ -87,7 +87,7 @@ export default function FileUpload({ onImageAnalyzed, onPiecesLoaded, onPliegoAn
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
         onClick={() => fileRef.current?.click()}
-        className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-400 hover:bg-blue-50 transition-colors"
+        className="border-2 border-dashed border-border rounded-lg p-8 text-center cursor-pointer hover:border-primary/60 hover:bg-primary/10 transition-colors"
       >
         <input
           ref={fileRef}
@@ -99,7 +99,7 @@ export default function FileUpload({ onImageAnalyzed, onPiecesLoaded, onPliegoAn
         />
         {loading ? (
           <div className="space-y-2">
-            <div className="animate-spin h-6 w-6 border-2 border-blue-500 border-t-transparent rounded-full mx-auto" />
+            <div className="animate-spin h-6 w-6 border-2 border-primary border-t-transparent rounded-full mx-auto" />
             <p className="text-gray-500">Analizando{mode === "pliego" ? " pliego" : " imagen"}...</p>
           </div>
         ) : (

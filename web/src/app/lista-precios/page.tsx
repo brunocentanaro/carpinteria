@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 
 type Producto = {
   sku: string;
@@ -89,6 +90,7 @@ function fmtPct(n: number | null) {
 }
 
 export default function ListaPreciosPage() {
+  const { brand } = useBrandEnvironment();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [loading, setLoading] = useState(false);
@@ -199,12 +201,15 @@ export default function ListaPreciosPage() {
 
   return (
     <main className="max-w-7xl mx-auto p-6 flex-1">
+      <div className="text-xs uppercase font-semibold text-primary">
+        {brand.name}
+      </div>
       <h1 className="text-2xl font-semibold mb-2">Lista de precios — Barraca Paraná</h1>
       <p className="text-sm text-gray-600 mb-6">
         Subí el PDF mensual de Barraca Paraná. Te mostramos qué cambió antes de reemplazar la lista activa.
       </p>
 
-      <div className="border rounded-lg p-4 bg-gray-50 mb-6">
+      <div className="border rounded-lg p-4 bg-muted/50 mb-6">
         <div className="flex items-center gap-3 flex-wrap">
           <input
             type="file"
@@ -220,7 +225,7 @@ export default function ListaPreciosPage() {
           <button
             onClick={handleUpload}
             disabled={!file || loading}
-            className="px-4 py-2 rounded bg-blue-600 text-white text-sm disabled:opacity-50"
+            className="px-4 py-2 rounded bg-primary text-primary-foreground text-sm disabled:opacity-50"
           >
             {loading ? "Procesando..." : "Analizar PDF"}
           </button>
@@ -258,7 +263,7 @@ export default function ListaPreciosPage() {
             />
           </div>
 
-          <div className="border rounded-lg p-4 bg-blue-50 mb-6 flex items-center justify-between gap-4 flex-wrap">
+          <div className="border rounded-lg p-4 bg-primary/10 mb-6 flex items-center justify-between gap-4 flex-wrap">
             <div className="text-sm">
               Si todo se ve bien, confirmá para sobreescribir la pestaña <code>Activa</code> y crear el snapshot histórico{" "}
               <code>Lista {preview.lista} - {preview.periodo}</code>.
@@ -266,18 +271,18 @@ export default function ListaPreciosPage() {
             <button
               onClick={handleConfirm}
               disabled={confirming}
-              className="px-4 py-2 rounded bg-emerald-600 text-white text-sm disabled:opacity-50"
+              className="px-4 py-2 rounded bg-primary text-primary-foreground text-sm disabled:opacity-50"
             >
               {confirming ? "Subiendo..." : "Confirmar y subir"}
             </button>
           </div>
 
           {confirmResult && !confirmResult.error && (
-            <div className="border rounded-lg p-4 bg-green-50 mb-6 text-sm">
+            <div className="border rounded-lg p-4 bg-primary/10 mb-6 text-sm">
               ✅ Subido: {confirmResult.rows} filas en <code>Activa</code> y snapshot{" "}
               <code>{confirmResult.snapshot_tab}</code>.{" "}
               {confirmResult.url && (
-                <a className="text-blue-700 underline" target="_blank" rel="noreferrer" href={confirmResult.url}>
+                <a className="text-primary underline" target="_blank" rel="noreferrer" href={confirmResult.url}>
                   Abrir Sheet
                 </a>
               )}
@@ -326,7 +331,7 @@ function SummaryCard({
   label, value, sub, tone,
 }: { label: string; value: string; sub?: string; tone?: "green" | "red" | "amber" }) {
   const toneCls =
-    tone === "green" ? "bg-green-50 border-green-200"
+    tone === "green" ? "bg-primary/10 border-primary/20"
       : tone === "red" ? "bg-red-50 border-red-200"
         : tone === "amber" ? "bg-amber-50 border-amber-200"
           : "bg-white border-gray-200";

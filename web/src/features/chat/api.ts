@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   BoardOptionSchema,
   MemoryFactSchema,
+  SessionArchiveMonthSchema,
   SessionRowSchema,
   SessionSchema,
   type Session,
@@ -30,7 +31,8 @@ async function api<T>(
 // ---------------------------------------------------------------------------
 
 export const qk = {
-  sessions: ["sessions"] as const,
+  sessions: (brandId?: string) => ["sessions", brandId ?? "current"] as const,
+  sessionArchive: (year: number, brandId?: string) => ["sessions", "archive", year, brandId ?? "current"] as const,
   session: (id: string) => ["session", id] as const,
   memory: ["memory"] as const,
   boards: ["catalog", "boards"] as const,
@@ -41,12 +43,23 @@ export const qk = {
 // Sessions
 // ---------------------------------------------------------------------------
 
-export async function listSessions() {
+export async function listSessions(brandId?: string) {
+  const qs = brandId ? `?brandId=${encodeURIComponent(brandId)}` : "";
   return api(
-    "/api/sessions",
+    `/api/sessions${qs}`,
     undefined,
     z.object({ sessions: z.array(SessionRowSchema) }),
   ).then((d) => d.sessions);
+}
+
+export async function listSessionArchive(year = 2026, brandId?: string) {
+  const params = new URLSearchParams({ archive: "1", year: String(year) });
+  if (brandId) params.set("brandId", brandId);
+  return api(
+    `/api/sessions?${params.toString()}`,
+    undefined,
+    z.object({ months: z.array(SessionArchiveMonthSchema) }),
+  ).then((d) => d.months);
 }
 
 export async function getSession(id: string) {
@@ -57,7 +70,7 @@ export async function getSession(id: string) {
   ).then((d) => d.session);
 }
 
-export async function createSession(input: { title?: string } = {}) {
+export async function createSession(input: { title?: string; brandId?: string } = {}) {
   return api(
     "/api/sessions",
     { method: "POST", body: JSON.stringify(input) },
@@ -72,6 +85,14 @@ export async function patchSession(
     payment_days: number | null;
     destination: string;
     title: string;
+    approval_status: "pending" | "approved";
+    client_sent: boolean;
+    client_accepted: "pending" | "yes" | "no";
+    deposit_amount: number | null;
+    order_number: string;
+    ready_to_deliver: boolean;
+    delivered: boolean;
+    final_payment_amount: number | null;
   }>,
 ) {
   return api(

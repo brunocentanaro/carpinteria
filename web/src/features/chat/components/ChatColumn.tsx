@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { createSession, qk, streamChat, uploadPliego } from "../api";
 import type { ChatMessage, Session } from "../schemas";
+import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 
 const TOOL_LABELS: Record<string, string> = {
   get_state: "leyendo el estado",
@@ -40,6 +41,7 @@ interface ChatColumnProps {
 
 export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
   const queryClient = useQueryClient();
+  const { brandId } = useBrandEnvironment();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
@@ -66,9 +68,9 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
   async function ensureSession(): Promise<Session> {
     if (session) return session;
     if (!pendingSessionRef.current) {
-      pendingSessionRef.current = createSession({}).then((s) => {
+      pendingSessionRef.current = createSession({ brandId }).then((s) => {
         onSessionCreated(s.id);
-        queryClient.invalidateQueries({ queryKey: qk.sessions });
+        queryClient.invalidateQueries({ queryKey: qk.sessions(brandId) });
         return s;
       });
     }
@@ -309,8 +311,8 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
       </div>
 
       {isDragging && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center bg-blue-50/80 border-4 border-dashed border-blue-400 rounded pointer-events-none">
-          <div className="text-blue-800 text-lg font-semibold">
+        <div className="absolute inset-0 z-10 flex items-center justify-center bg-primary/10 border-4 border-dashed border-primary/50 rounded pointer-events-none">
+          <div className="text-primary text-lg font-semibold">
             Soltá el pliego acá
           </div>
         </div>
@@ -373,20 +375,20 @@ function ProcessingBubble({
   const elapsed = useElapsed(startedAt);
   return (
     <div className="flex justify-start">
-      <div className="bg-blue-50 border border-blue-200 text-blue-900 text-sm px-3 py-2 rounded-lg max-w-[80%]">
+      <div className="bg-primary/10 border border-primary/20 text-foreground text-sm px-3 py-2 rounded-lg max-w-[80%]">
         <div className="font-semibold mb-1">📎 Procesando pliego</div>
-        <ul className="text-xs text-blue-800 list-disc pl-5 mb-1">
+        <ul className="text-xs text-foreground/80 list-disc pl-5 mb-1">
           {files.map((f, i) => (
             <li key={i} className="break-all">
               {f}
             </li>
           ))}
         </ul>
-        <div className="text-xs text-blue-700">
+        <div className="text-xs text-foreground/80">
           analizando con IA y descomponiendo muebles…{" "}
           <span className="tabular-nums">({elapsed}s)</span>
         </div>
-        <div className="text-[10px] text-blue-600 mt-1">
+        <div className="text-[10px] text-primary mt-1">
           Puede tardar 30-90s la primera vez.
         </div>
       </div>

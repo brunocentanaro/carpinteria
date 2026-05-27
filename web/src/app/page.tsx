@@ -6,6 +6,7 @@ import QuoteResult from "@/components/QuoteResult";
 import FileUpload from "@/components/FileUpload";
 import PliegoItems from "@/components/PliegoItems";
 import HardwarePricesPanel from "@/components/HardwarePricesPanel";
+import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 import { CutPiece, Quotation, AnalysisPlan, PliegoResult, PliegoItem } from "@/lib/types";
 
 interface HardwareLine {
@@ -43,6 +44,7 @@ interface ItemQuote {
 type Tab = "file" | "manual";
 
 export default function Home() {
+  const { brand } = useBrandEnvironment();
   const [tab, setTab] = useState<Tab>("file");
   const [pieces, setPieces] = useState<CutPiece[]>([]);
   const [material, setMaterial] = useState("melamínico");
@@ -343,8 +345,11 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b px-6 py-4">
+    <div className="min-h-screen bg-muted/40">
+      <header className="bg-card border-b px-6 py-4">
+        <div className="text-xs uppercase font-semibold text-primary">
+          {brand.name}
+        </div>
         <h1 className="text-xl font-bold">Cotizador de Carpinteria</h1>
       </header>
 
@@ -369,14 +374,14 @@ export default function Home() {
         </div>
 
         {tab === "file" && (
-          <div className="bg-white rounded-lg border p-4 space-y-4">
+          <div className="bg-card rounded-lg border p-4 space-y-4">
             <FileUpload
               onImageAnalyzed={handleImageAnalyzed}
               onPiecesLoaded={handlePiecesLoaded}
               onPliegoAnalyzed={handlePliegoAnalyzed}
             />
             {plans.length > 0 && (
-              <div className="text-sm text-green-700 bg-green-50 border border-green-200 rounded p-3">
+              <div className="text-sm text-primary bg-primary/10 border border-primary/20 rounded p-3">
                 {plans.length} plan(es) detectado(s). Piezas cargadas abajo.
               </div>
             )}
@@ -385,7 +390,7 @@ export default function Home() {
 
         {pliegoResult && (
           <>
-            <div className="bg-white rounded-lg border p-4">
+            <div className="bg-card rounded-lg border p-4">
               <h3 className="font-semibold mb-3">Items del pliego ({pliegoResult.items.length})</h3>
               <PliegoItems
                 items={pliegoResult.items}
@@ -396,7 +401,7 @@ export default function Home() {
             </div>
 
             {selectedCodes.length > 0 && (
-              <div className="bg-white rounded-lg border p-4 space-y-4">
+              <div className="bg-card rounded-lg border p-4 space-y-4">
                 <h3 className="font-semibold text-sm">Parametros de cotizacion</h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div>
@@ -431,7 +436,7 @@ export default function Home() {
                 <button
                   onClick={handleQuoteSelected}
                   disabled={loading}
-                  className="w-full bg-green-600 text-white py-3 rounded-lg font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="w-full bg-primary text-primary-foreground py-3 rounded-lg font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {loading ? quotingProgress || "Cotizando..." : `Cotizar ${selectedCodes.length} items seleccionados`}
                 </button>
@@ -456,7 +461,7 @@ export default function Home() {
             <h2 className="text-lg font-bold">Cotizaciones por item</h2>
 
             {itemQuotes.map((iq, i) => (
-              <details key={i} className={`rounded-lg border ${iq.hasError ? "bg-red-50 border-red-200" : "bg-white"}`}>
+              <details key={i} className={`rounded-lg border ${iq.hasError ? "bg-red-50 border-red-200" : "bg-card"}`}>
                 <summary className="p-4 cursor-pointer hover:bg-gray-50 flex items-center justify-between">
                   <div>
                     <span className="font-mono text-sm bg-gray-100 px-2 py-0.5 rounded mr-2">{iq.item.code}</span>
@@ -484,7 +489,7 @@ export default function Home() {
                       </p>
                     )}
                     {iq.item.material && <p>Material: {iq.item.material} {iq.item.thickness_mm > 0 && `${iq.item.thickness_mm}mm`}</p>}
-                    {iq.item.hardware && iq.item.hardware.length > 0 && <p>Herrajes requeridos: {iq.item.hardware.join(", ")}</p>}
+                    {(iq.item.hardware ?? []).length > 0 && <p>Herrajes requeridos: {(iq.item.hardware ?? []).join(", ")}</p>}
                     {iq.item.edge_banding && <p>Canto: {iq.item.edge_banding}</p>}
                   </div>
 
@@ -516,7 +521,7 @@ export default function Home() {
                             {iq.decomposition.pieces.map((p: { label: string; width_mm: number; height_mm: number; quantity: number; edge_sides: string[] }, j: number) => (
                               <div key={j} className="bg-gray-50 rounded px-2 py-1">
                                 {p.label}: {p.width_mm}x{p.height_mm}mm x{p.quantity}
-                                {p.edge_sides?.length > 0 && <span className="text-blue-500 ml-1">[canto: {p.edge_sides.join(",")}]</span>}
+                                {p.edge_sides?.length > 0 && <span className="text-primary ml-1">[canto: {p.edge_sides.join(",")}]</span>}
                               </div>
                             ))}
                           </div>
@@ -544,7 +549,7 @@ export default function Home() {
               </details>
             ))}
 
-            <div className="bg-green-50 border-2 border-green-300 rounded-lg p-4 space-y-3">
+            <div className="bg-primary/10 border-2 border-primary/30 rounded-lg p-4 space-y-3">
               <div className="flex justify-between items-center">
                 <span className="font-bold text-lg">TOTAL PLIEGO ({itemQuotes.length} items)</span>
                 <span className="font-bold text-2xl">
@@ -554,13 +559,13 @@ export default function Home() {
               <div className="flex gap-3">
                 <button
                   onClick={handleExportExcel}
-                  className="flex-1 bg-green-700 text-white py-2 rounded-lg font-semibold hover:bg-green-800 transition-colors"
+                  className="flex-1 bg-primary text-primary-foreground py-2 rounded-lg font-semibold hover:opacity-90 transition-colors"
                 >
                   Descargar Excel
                 </button>
                 <button
                   onClick={handleExportDocx}
-                  className="flex-1 bg-blue-700 text-white py-2 rounded-lg font-semibold hover:bg-blue-800 transition-colors"
+                  className="flex-1 bg-secondary text-secondary-foreground border py-2 rounded-lg font-semibold hover:bg-muted transition-colors"
                 >
                   Descargar Word (licitacion)
                 </button>
@@ -571,11 +576,11 @@ export default function Home() {
 
         {tab === "manual" && (
           <>
-            <div className="bg-white rounded-lg border p-4">
+            <div className="bg-card rounded-lg border p-4">
               <PieceEditor pieces={pieces} onChange={setPieces} />
             </div>
 
-            <div className="bg-white rounded-lg border p-4 space-y-4">
+            <div className="bg-card rounded-lg border p-4 space-y-4">
               <h3 className="font-semibold text-sm">Parametros</h3>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <div>
@@ -612,13 +617,13 @@ export default function Home() {
             <button
               onClick={handleQuote}
               disabled={loading || pieces.length === 0}
-              className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="w-full bg-primary text-primary-foreground py-3 rounded-lg font-semibold hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {loading ? "Calculando..." : "Cotizar"}
             </button>
 
             {quotation && (
-              <div className="bg-white rounded-lg border p-4">
+              <div className="bg-card rounded-lg border p-4">
                 <QuoteResult quotation={quotation} />
               </div>
             )}

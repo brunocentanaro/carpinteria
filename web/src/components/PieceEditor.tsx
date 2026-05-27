@@ -46,14 +46,14 @@ export default function PieceEditor({ pieces, onChange }: Props) {
         <h3 className="font-semibold text-sm">Piezas</h3>
         <button
           onClick={addPiece}
-          className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+          className="text-xs bg-primary text-primary-foreground px-3 py-1 rounded hover:opacity-90"
         >
           + Agregar pieza
         </button>
       </div>
 
       {pieces.map((p, i) => (
-        <div key={i} className="border rounded p-3 space-y-2 bg-gray-50">
+        <div key={i} className="border rounded p-3 space-y-2 bg-muted/50">
           <div className="flex gap-2 items-end">
             <div className="flex-1">
               <label className="text-xs text-gray-500">Ancho (mm)</label>
@@ -110,8 +110,8 @@ export default function PieceEditor({ pieces, onChange }: Props) {
                 onClick={() => toggleEdge(i, side)}
                 className={`text-xs px-2 py-0.5 rounded border ${
                   p.edge_sides.includes(side)
-                    ? "bg-blue-100 border-blue-400 text-blue-700"
-                    : "bg-white border-gray-300 text-gray-500"
+                    ? "bg-primary/10 border-primary/40 text-primary"
+                    : "bg-card border-border text-muted-foreground"
                 }`}
               >
                 {side}

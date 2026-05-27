@@ -17,6 +17,14 @@ export const QuotationItemSchema = z.object({
   name: z.string().default(""),
   quantity: z.number(),
   description: z.string().default(""),
+  dimensions: z
+    .object({
+      width_mm: z.number().optional(),
+      height_mm: z.number().optional(),
+      depth_mm: z.number().optional(),
+    })
+    .catchall(z.number())
+    .default({}),
   material: z.string().default(""),
   thickness_mm: z.number(),
   color: z.string().default(""),
@@ -65,6 +73,24 @@ export const SessionSchema = z.object({
   created_at: z.string().optional(),
   updated_at: z.string().optional(),
   user_id: z.string().default("anonymous"),
+  brand_id: z.string().default("casa"),
+  requested_by: z.string().default("anonymous"),
+  request_area: z.string().default("personal"),
+  factory_order: z.boolean().default(false),
+  approval_status: z.enum(["pending", "approved"]).default("pending"),
+  client_sent: z.boolean().default(false),
+  client_accepted: z.enum(["pending", "yes", "no"]).default("pending"),
+  deposit_amount: z.number().nullable().default(null),
+  order_number: z.string().default(""),
+  order_created_at: z.string().nullable().default(null),
+  ready_to_deliver: z.boolean().default(false),
+  delivered: z.boolean().default(false),
+  final_payment_amount: z.number().nullable().default(null),
+  sequence: z.number().default(0),
+  year: z.number().nullable().default(null),
+  month: z.number().nullable().default(null),
+  folder: z.string().default(""),
+  total: z.number().default(0),
   last_response_id: z.string().nullable().default(null),
   items: z.array(QuotationItemSchema).default([]),
   color_default: z.string().default(""),
@@ -89,9 +115,37 @@ export type Session = z.infer<typeof SessionSchema>;
 export const SessionRowSchema = z.object({
   id: z.string(),
   title: z.string().default(""),
+  created_at: z.string().optional(),
   updated_at: z.string(),
+  sequence: z.number().default(0),
+  brand_id: z.string().default("casa"),
+  requested_by: z.string().default("anonymous"),
+  request_area: z.string().default("personal"),
+  factory_order: z.boolean().default(false),
+  approval_status: z.enum(["pending", "approved"]).default("pending"),
+  client_sent: z.boolean().default(false),
+  client_accepted: z.enum(["pending", "yes", "no"]).default("pending"),
+  deposit_amount: z.number().nullable().default(null),
+  order_number: z.string().default(""),
+  order_created_at: z.string().nullable().default(null),
+  ready_to_deliver: z.boolean().default(false),
+  delivered: z.boolean().default(false),
+  final_payment_amount: z.number().nullable().default(null),
+  total: z.number().default(0),
+  year: z.number(),
+  month: z.number(),
+  folder: z.string().default(""),
 });
 export type SessionRow = z.infer<typeof SessionRowSchema>;
+
+export const SessionArchiveMonthSchema = z.object({
+  year: z.number(),
+  month: z.number(),
+  folder: z.string(),
+  count: z.number(),
+  sessions: z.array(SessionRowSchema),
+});
+export type SessionArchiveMonth = z.infer<typeof SessionArchiveMonthSchema>;
 
 export const MemoryFactSchema = z.object({
   id: z.string(),

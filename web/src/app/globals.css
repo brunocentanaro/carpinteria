@@ -103,6 +103,49 @@
   --sidebar-ring: var(--brand-green);
 }
 
+html[data-brand="pirone"] {
+  /* Brand: Fabrica de Molduras y Carpinteria Juan Pirone */
+  --brand-green: oklch(0.52 0.17 250);          /* primary blue */
+  --brand-green-deep: oklch(0.36 0.14 250);
+  --brand-green-soft: oklch(0.93 0.05 245);
+  --brand-teal-deep: oklch(0.22 0.05 250);
+  --surface-feature: oklch(0.97 0.035 245);
+  --warning-bg: oklch(0.97 0.05 90);
+  --warning-text: oklch(0.55 0.10 75);
+
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.18 0.03 250);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.18 0.03 250);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.18 0.03 250);
+  --primary: var(--brand-green);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.97 0.006 250);
+  --secondary-foreground: oklch(0.21 0.04 250);
+  --muted: oklch(0.97 0.006 250);
+  --muted-foreground: oklch(0.50 0.02 250);
+  --accent: var(--brand-green-soft);
+  --accent-foreground: var(--brand-green-deep);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.91 0.01 250);
+  --input: oklch(0.91 0.01 250);
+  --ring: var(--brand-green);
+  --chart-1: var(--brand-green);
+  --chart-2: oklch(0.58 0.12 190);
+  --chart-3: oklch(0.58 0.12 40);
+  --chart-4: oklch(0.68 0.12 90);
+  --chart-5: oklch(0.55 0.13 290);
+  --sidebar: oklch(0.985 0.004 250);
+  --sidebar-foreground: oklch(0.18 0.03 250);
+  --sidebar-primary: var(--brand-green);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: var(--brand-green-soft);
+  --sidebar-accent-foreground: var(--brand-green-deep);
+  --sidebar-border: oklch(0.91 0.01 250);
+  --sidebar-ring: var(--brand-green);
+}
+
 .dark {
   --brand-green: oklch(0.65 0.18 148);
   --brand-green-deep: oklch(0.50 0.15 148);

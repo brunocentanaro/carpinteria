@@ -9,7 +9,11 @@ export async function callPython(
   return new Promise((resolve, reject) => {
     const child = spawn("uv", ["run", "python", "-m", "carpinteria.cli_api"], {
       cwd: PROJECT_ROOT,
-      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" },
+      env: {
+        ...process.env,
+        PYTHONDONTWRITEBYTECODE: "1",
+        PYTHONIOENCODING: "utf-8",
+      },
       stdio: ["pipe", "pipe", "pipe"],
     });
 

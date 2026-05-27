@@ -32,7 +32,7 @@ export default function PliegoItems({ items, selectedCodes, onSelectionChange, g
 
   return (
     <div className="space-y-4">
-      <div className="bg-blue-50 border border-blue-200 rounded p-4 text-sm">
+      <div className="bg-primary/10 border border-primary/20 rounded p-4 text-sm">
         <h4 className="font-semibold mb-2">Datos generales del pliego</h4>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1.5">
           {generalSpecs.delivery_location && (
@@ -83,7 +83,7 @@ export default function PliegoItems({ items, selectedCodes, onSelectionChange, g
         </span>
         <button
           onClick={selectAllCompatible}
-          className="text-xs bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+          className="text-xs bg-primary text-primary-foreground px-3 py-1 rounded hover:opacity-90"
         >
           Seleccionar todos los cotizables
         </button>
@@ -111,7 +111,7 @@ export default function PliegoItems({ items, selectedCodes, onSelectionChange, g
                 <tr
                   key={i}
                   className={`border-b border-gray-100 ${
-                    metal ? "opacity-50" : selected ? "bg-blue-50" : "hover:bg-gray-50"
+                    metal ? "opacity-50" : selected ? "bg-primary/10" : "hover:bg-muted/50"
                   }`}
                 >
                   <td className="py-2 pr-2">
@@ -149,7 +149,7 @@ export default function PliegoItems({ items, selectedCodes, onSelectionChange, g
                     {metal ? (
                       <span className="bg-gray-200 text-gray-600 px-2 py-0.5 rounded">Requiere hierro</span>
                     ) : (
-                      <span className="bg-green-100 text-green-700 px-2 py-0.5 rounded">Cotizable</span>
+                      <span className="bg-primary/10 text-primary px-2 py-0.5 rounded">Cotizable</span>
                     )}
                   </td>
                 </tr>

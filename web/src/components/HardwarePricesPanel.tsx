@@ -35,7 +35,7 @@ export default function HardwarePricesPanel({
   const missing = rows.filter((r) => !(Number(prices[r.code]) > 0)).length;
 
   return (
-    <section className="bg-white border border-amber-300 rounded-lg p-4 space-y-3">
+    <section className="bg-card border border-amber-300 rounded-lg p-4 space-y-3">
       <header className="flex items-baseline justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-base font-semibold">Precios de herrajes</h2>
@@ -117,7 +117,7 @@ export default function HardwarePricesPanel({
         <button
           onClick={onRecalculate}
           disabled={!!recalculating}
-          className="px-4 py-1.5 rounded bg-blue-600 text-white text-sm disabled:opacity-50"
+          className="px-4 py-1.5 rounded bg-primary text-primary-foreground text-sm disabled:opacity-50"
         >
           {recalculating ? "Recalculando..." : "Recalcular cotizaciones con estos precios"}
         </button>

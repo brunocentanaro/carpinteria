@@ -5,8 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 
-import { FileSpreadsheet, FileText } from "lucide-react";
-import { toast } from "sonner";
+import { Check, FileSpreadsheet, FileText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,6 +46,22 @@ function fmtUYU(n: number): string {
   });
 }
 
+function compactAge(value: string | null | undefined) {
+  if (!value) return "";
+  const diff = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(diff)) return "";
+  const minutes = Math.max(0, Math.floor(diff / 60000));
+  if (minutes < 1) return "ahora";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} d`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} mes`;
+  return `${Math.floor(days / 365)} a`;
+}
+
 // ---------------------------------------------------------------------------
 // Root panel
 // ---------------------------------------------------------------------------
@@ -68,16 +83,192 @@ export function QuotationPanel({ session }: { session: Session | null }) {
     <div className="p-5 space-y-5">
       <header className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Cotización</h2>
-        <span className="font-mono text-[10px] text-muted-foreground break-all">
+        <span className="max-w-[220px] truncate font-mono text-[10px] text-muted-foreground">
           {session.id}
         </span>
       </header>
 
+      <OrderProgress session={session} grand={grand} />
+      {session.order_number && <FactoryOrderHeader session={session} grand={grand} />}
       <GlobalsPanel session={session} />
       <PendingPanel session={session} />
-      <ItemsList items={session.items} sessionId={session.id} />
+      <ItemsList items={session.items} sessionId={session.id} defaultOpen={!!session.order_number} />
       <Footer grand={grand} session={session} />
     </div>
+  );
+}
+
+function FactoryOrderHeader({ session, grand }: { session: Session; grand: number }) {
+  const totalPieces = session.items.reduce(
+    (sum, item) => sum + item.pieces.reduce((pieceSum, piece) => pieceSum + piece.quantity, 0),
+    0,
+  );
+  const totalHardware = session.items.reduce(
+    (sum, item) => sum + item.hardware.reduce((hwSum, hw) => hwSum + hw.quantity, 0),
+    0,
+  );
+  const orderAge = compactAge(session.order_created_at);
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-xs uppercase text-muted-foreground">
+          Orden de fabrica
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid grid-cols-4 gap-3 text-sm">
+        <div>
+          <div className="text-[10px] uppercase text-muted-foreground">Nro. orden</div>
+          <div className="font-semibold">{session.order_number}</div>
+          {orderAge && (
+            <div className="text-[10px] text-muted-foreground">{orderAge}</div>
+          )}
+        </div>
+        <div>
+          <div className="text-[10px] uppercase text-muted-foreground">Items</div>
+          <div className="font-semibold">{session.items.length}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase text-muted-foreground">Piezas / herrajes</div>
+          <div className="font-semibold">{totalPieces} / {totalHardware}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase text-muted-foreground">Total</div>
+          <div className="font-semibold tabular-nums">UYU {fmtUYU(grand)}</div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pedido progress
+// ---------------------------------------------------------------------------
+
+function moneyLabel(value: number | null | undefined) {
+  if (!value || value <= 0) return "";
+  return `UYU ${fmtUYU(value)}`;
+}
+
+function depositProgressLabel(deposit: number | null | undefined, total: number) {
+  if (!deposit || deposit <= 0) return "";
+  const pct = total > 0 ? ` (${Math.round((deposit / total) * 100)}%)` : "";
+  const totalLabel = total > 0 ? ` / UYU ${fmtUYU(total)}` : "";
+  return `UYU ${fmtUYU(deposit)}${totalLabel}${pct}`;
+}
+
+function OrderProgress({ session, grand }: { session: Session; grand: number }) {
+  const steps = [
+    { key: "requested", label: "Solicitada", done: true },
+    {
+      key: "approved",
+      label: "Aprobada",
+      done: session.approval_status === "approved",
+    },
+    {
+      key: "sent",
+      label: "Enviada",
+      done: session.client_sent,
+    },
+    {
+      key: "accepted",
+      label: "Aceptada",
+      done: session.client_accepted === "yes",
+      rejected: session.client_accepted === "no",
+    },
+    {
+      key: "deposit",
+      label: "Seña",
+      done: session.client_accepted === "yes" && !!session.deposit_amount,
+      detail: depositProgressLabel(session.deposit_amount, grand),
+    },
+    {
+      key: "order",
+      label: "Orden",
+      done: session.client_accepted === "yes" && !!session.deposit_amount && !!session.order_number,
+      detail: session.order_number,
+    },
+    {
+      key: "ready",
+      label: "Lista",
+      done: session.ready_to_deliver,
+    },
+    {
+      key: "delivered",
+      label: "Entregada",
+      done: session.delivered,
+    },
+    {
+      key: "paid",
+      label: "Cobrada",
+      done: session.delivered && !!session.final_payment_amount,
+      detail: moneyLabel(session.final_payment_amount || grand),
+    },
+  ];
+  const completedCount = steps.filter((step) => step.done).length;
+  const progress =
+    steps.length > 1 ? ((completedCount - 1) / (steps.length - 1)) * 100 : 0;
+  const currentStep =
+    [...steps].reverse().find((step) => step.done || step.rejected) ?? steps[0];
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="flex-row items-center justify-between space-y-0 px-4 py-3">
+        <CardTitle className="text-[11px] uppercase text-muted-foreground">
+          Avance del pedido
+        </CardTitle>
+        <Badge
+          variant="secondary"
+          className={`rounded px-2 py-0.5 text-[10px] ${
+            currentStep.rejected ? "bg-red-100 text-red-700" : "bg-emerald-50 text-emerald-700"
+          }`}
+        >
+          {currentStep.rejected ? "No aceptada" : currentStep.label}
+        </Badge>
+      </CardHeader>
+      <CardContent className="px-4 pb-4 pt-1">
+        <div className="relative px-1">
+          <div className="absolute left-4 right-4 top-3 h-0.5 rounded bg-muted" />
+          <div
+            className="absolute left-4 top-3 h-0.5 rounded bg-emerald-500 transition-all"
+            style={{
+              width: `calc((100% - 2rem) * ${Math.max(0, Math.min(progress, 100)) / 100})`,
+            }}
+          />
+          <div className="relative grid grid-cols-9 gap-2">
+            {steps.map((step, index) => {
+              const state = step.rejected ? "rejected" : step.done ? "done" : "pending";
+              return (
+                <div key={step.key} className="flex min-w-0 flex-col items-center gap-1.5">
+                  <div
+                    className={`flex h-6 w-6 items-center justify-center rounded-full border text-[10px] font-semibold transition-colors ${
+                      state === "done"
+                        ? "border-emerald-500 bg-emerald-500 text-white"
+                        : state === "rejected"
+                          ? "border-red-500 bg-red-500 text-white"
+                          : "border-muted-foreground/30 bg-background text-muted-foreground"
+                    }`}
+                    title={step.label}
+                  >
+                    {state === "done" ? <Check className="h-3.5 w-3.5" /> : index + 1}
+                  </div>
+                  <div className="w-full truncate text-center text-[9px] font-medium leading-tight">
+                    {step.label}
+                  </div>
+                  <div className="h-3 w-full truncate text-center text-[8px] text-muted-foreground">
+                    {step.detail}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {session.client_accepted === "no" && (
+          <div className="mt-3 rounded border border-red-200 bg-red-50 px-2 py-1 text-xs text-red-700">
+            El cliente no acepto esta cotizacion.
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -302,7 +493,7 @@ function HardwarePriceRow({
         min={0}
         step="0.01"
         placeholder="0.00"
-        className="h-8 w-24 tabular-nums bg-white"
+        className="h-8 w-24 tabular-nums bg-card"
         disabled={mutation.isPending}
         {...form.register("price")}
       />
@@ -346,7 +537,7 @@ function ItemsBoardPicker({
         {items.map((it) => (
           <div
             key={it.code}
-            className="bg-white border border-amber-200 rounded p-2 space-y-1.5"
+            className="bg-card border border-amber-200 rounded p-2 space-y-1.5"
           >
             <div className="text-sm font-semibold flex items-center gap-2">
               <span className="font-mono">{it.code}</span>
@@ -366,7 +557,7 @@ function ItemsBoardPicker({
               }
               disabled={mutation.isPending || boards.isLoading}
             >
-              <SelectTrigger className="bg-white">
+              <SelectTrigger className="bg-card">
                 <SelectValue
                   placeholder={
                     boards.isLoading ? "Cargando placas…" : "— Elegí una placa —"
@@ -395,9 +586,11 @@ function ItemsBoardPicker({
 function ItemsList({
   items,
   sessionId,
+  defaultOpen = false,
 }: {
   items: QuotationItem[];
   sessionId: string;
+  defaultOpen?: boolean;
 }) {
   return (
     <section>
@@ -406,7 +599,7 @@ function ItemsList({
       </div>
       <div className="space-y-2">
         {items.map((it) => (
-          <ItemCard key={it.code} item={it} sessionId={sessionId} />
+          <ItemCard key={it.code} item={it} sessionId={sessionId} defaultOpen={defaultOpen} />
         ))}
       </div>
     </section>
@@ -436,7 +629,7 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        toast.error(`Error exportando: ${data.error || res.statusText}`);
+        alert(`Error exportando: ${data.error || res.statusText}`);
         return;
       }
       const blob = await res.blob();
@@ -448,7 +641,6 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
-      toast.success(`${kind === "excel" ? "Excel" : "Word"} descargado`);
     } finally {
       setBusy(null);
     }

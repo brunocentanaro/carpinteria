@@ -654,6 +654,8 @@ def handle_session_create(data: dict) -> dict:
     s = create_session(
         user_id=str(data.get("user_id") or "anonymous"),
         title=str(data.get("title") or ""),
+        brand_id=str(data.get("brand_id") or "casa"),
+        request_area=str(data.get("area") or "personal"),
     )
     return {"session": s.model_dump(mode="json")}
 
@@ -667,12 +669,31 @@ def handle_session_get(data: dict) -> dict:
 
 
 def handle_session_list(data: dict) -> dict:
-    from carpinteria.quotation_session import list_sessions
+    from carpinteria.quotation_session import current_year_month, list_sessions
+    year = data.get("year")
+    month = data.get("month")
+    if data.get("current_month", False) and not year and not month:
+        year, month = current_year_month()
     rows = list_sessions(
         user_id=data.get("user_id") if data.get("user_id") else None,
+        brand_id=data.get("brand_id") if data.get("brand_id") else None,
+        area=data.get("area") if data.get("area") else None,
         limit=int(data.get("limit") or 30),
+        year=int(year) if year else None,
+        month=int(month) if month else None,
     )
     return {"sessions": rows}
+
+
+def handle_session_archive(data: dict) -> dict:
+    from carpinteria.quotation_session import list_session_archive
+    months = list_session_archive(
+        user_id=data.get("user_id") if data.get("user_id") else None,
+        brand_id=data.get("brand_id") if data.get("brand_id") else None,
+        area=data.get("area") if data.get("area") else None,
+        year=int(data.get("year") or 2026),
+    )
+    return {"months": months}
 
 
 def handle_session_ingest_pliego(data: dict) -> dict:
@@ -750,6 +771,38 @@ def handle_session_delete(data: dict) -> dict:
         return {"error": "missing session_id"}
     res = collection(COLLECTION).delete_one({"id": sid})
     return {"deleted": res.deleted_count > 0}
+
+
+def handle_session_commercial_status(data: dict) -> dict:
+    from carpinteria.quotation_session import update_commercial_status
+    sid = str(data.get("session_id") or "")
+    if not sid:
+        return {"error": "missing session_id"}
+    fields = {
+        key: data[key]
+        for key in (
+            "approval_status",
+            "client_sent",
+            "client_accepted",
+            "deposit_amount",
+            "order_number",
+            "ready_to_deliver",
+            "delivered",
+            "final_payment_amount",
+        )
+        if key in data
+    }
+    try:
+        s = update_commercial_status(sid, fields)
+    except ValueError as e:
+        return {"error": str(e)}
+    if s is None:
+        return {"error": "session not found"}
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_session_approval(data: dict) -> dict:
+    return handle_session_commercial_status(data)
 
 
 def handle_set_item_placa(data: dict) -> dict:
@@ -1105,6 +1158,81 @@ def handle_memory_delete(data: dict) -> dict:
     return {"deleted": deleted}
 
 
+def handle_auth_login(data: dict) -> dict:
+    from carpinteria.auth_users import authenticate
+    user = authenticate(
+        username=str(data.get("user") or ""),
+        password=str(data.get("password") or ""),
+        brand_id=str(data.get("brand_id") or ""),
+        area=str(data.get("area") or ""),
+    )
+    if user is None:
+        return {"error": "Usuario o contraseña incorrectos"}
+    return {"user": user}
+
+
+def handle_auth_users_list(data: dict) -> dict:
+    from carpinteria.auth_users import list_users
+    return {"users": list_users(brand_id=data.get("brand_id") or None)}
+
+
+def handle_auth_users_create(data: dict) -> dict:
+    from carpinteria.auth_users import create_user
+    try:
+        user = create_user(
+            username=str(data.get("username") or ""),
+            password=str(data.get("password") or ""),
+            brand_id=str(data.get("brand_id") or ""),
+            area=str(data.get("area") or ""),
+            must_change_password=bool(data.get("must_change_password", True)),
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    return {"user": user}
+
+
+def handle_auth_password_reset_request(data: dict) -> dict:
+    from carpinteria.auth_users import request_password_reset
+    return request_password_reset(
+        username=str(data.get("username") or ""),
+        brand_id=str(data.get("brand_id") or ""),
+        area=str(data.get("area") or ""),
+    )
+
+
+def handle_auth_password_reset_confirm(data: dict) -> dict:
+    from carpinteria.auth_users import reset_password_with_code
+    user = reset_password_with_code(
+        username=str(data.get("username") or ""),
+        brand_id=str(data.get("brand_id") or ""),
+        area=str(data.get("area") or ""),
+        code=str(data.get("code") or ""),
+        password=str(data.get("password") or ""),
+    )
+    if user is None:
+        return {"error": "codigo invalido o vencido"}
+    return {"user": user}
+
+
+def handle_auth_users_update(data: dict) -> dict:
+    from carpinteria.auth_users import set_user_active, update_password
+    user_id = str(data.get("user_id") or "")
+    if not user_id:
+        return {"error": "missing user_id"}
+    try:
+        if "password" in data and data.get("password"):
+            user = update_password(user_id, str(data.get("password") or ""))
+        elif "active" in data:
+            user = set_user_active(user_id, bool(data.get("active")))
+        else:
+            return {"error": "nothing to update"}
+    except ValueError as e:
+        return {"error": str(e)}
+    if user is None:
+        return {"error": "user not found"}
+    return {"user": user}
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -1145,6 +1273,8 @@ def main() -> None:
             result = handle_session_get(data)
         elif action == "session_list":
             result = handle_session_list(data)
+        elif action == "session_archive":
+            result = handle_session_archive(data)
         elif action == "session_ingest_pliego":
             result = handle_session_ingest_pliego(data)
         elif action == "chat":
@@ -1155,10 +1285,26 @@ def main() -> None:
             result = handle_memory_add(data)
         elif action == "memory_delete":
             result = handle_memory_delete(data)
+        elif action == "auth_login":
+            result = handle_auth_login(data)
+        elif action == "auth_users_list":
+            result = handle_auth_users_list(data)
+        elif action == "auth_users_create":
+            result = handle_auth_users_create(data)
+        elif action == "auth_password_reset_request":
+            result = handle_auth_password_reset_request(data)
+        elif action == "auth_password_reset_confirm":
+            result = handle_auth_password_reset_confirm(data)
+        elif action == "auth_users_update":
+            result = handle_auth_users_update(data)
         elif action == "session_update":
             result = handle_session_update(data)
         elif action == "session_delete":
             result = handle_session_delete(data)
+        elif action == "session_approval":
+            result = handle_session_approval(data)
+        elif action == "session_commercial_status":
+            result = handle_session_commercial_status(data)
         elif action == "set_item_placa":
             result = handle_set_item_placa(data)
         elif action == "catalog_list_boards":

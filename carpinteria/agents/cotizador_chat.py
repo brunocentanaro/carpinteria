@@ -285,12 +285,146 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
     return f"Ingerido pliego con {len(s.items)} muebles. {_format_state(s)}"
 
 
+def _next_manual_code(session: QuotationSession) -> str:
+    existing = {it.code.upper() for it in session.items}
+    i = 1
+    while f"M{i}" in existing:
+        i += 1
+    return f"M{i}"
+
+
+def _item_from_description(
+    *,
+    session: QuotationSession,
+    code: str | None,
+    name: str,
+    description: str,
+    quantity: int,
+    width_mm: float | None,
+    height_mm: float | None,
+    depth_mm: float | None,
+    material: str | None,
+    thickness_mm: float | None,
+    color: str | None,
+    edge_banding: str | None,
+) -> QuotationItem:
+    dims = {}
+    if width_mm:
+        dims["width_mm"] = float(width_mm)
+    if height_mm:
+        dims["height_mm"] = float(height_mm)
+    if depth_mm:
+        dims["depth_mm"] = float(depth_mm)
+
+    item = QuotationItem(
+        code=(code or _next_manual_code(session)).strip().upper(),
+        name=name.strip() or "mueble a medida",
+        quantity=max(1, int(quantity or 1)),
+        description=description.strip(),
+        dimensions=dims,
+        material=(material or "melamínico").strip(),
+        thickness_mm=float(thickness_mm or 18),
+        color=(color or session.color_default or "").strip(),
+        edge_banding=(edge_banding or "").strip(),
+    )
+
+    decomp_input = {
+        "code": item.code,
+        "name": item.name,
+        "quantity": item.quantity,
+        "description": item.description,
+        "dimensions": item.dimensions,
+        "material": item.material,
+        "thickness_mm": item.thickness_mm,
+        "hardware": [],
+        "edge_banding": item.edge_banding,
+    }
+    decomp = decompose_furniture(decomp_input)
+    item.pieces = [
+        CutPiece(
+            width_mm=p.get("width_mm", 0),
+            height_mm=p.get("height_mm", 0),
+            quantity=p.get("quantity", 1),
+            label=p.get("label", ""),
+            edge_sides=list(p.get("edge_sides") or []),
+        )
+        for p in decomp.get("pieces", [])
+    ]
+    item.hardware = [
+        HardwareUsage(
+            code=h.get("code", ""),
+            name=h.get("name", ""),
+            category=h.get("category", ""),
+            unit=h.get("unit", "unidad"),
+            quantity=int(h.get("quantity", 0) or 0),
+        )
+        for h in decomp.get("hardware", [])
+        if h.get("code")
+    ]
+    return item
+
+
 @function_tool
 def ingest_pliego(ctx: RunContextWrapper[str], file_paths: list[str]) -> str:
     """Lee uno o más archivos de pliego (PDF / XLSX), extrae los muebles y descompone cada uno.
     Pisa los items existentes en la sesión.
     """
     return _ingest_pliego_into_session(str(ctx.context), file_paths)
+
+
+@function_tool
+def add_custom_item(
+    ctx: RunContextWrapper[str],
+    description: str,
+    name: str = "mueble a medida",
+    quantity: int = 1,
+    width_mm: float | None = None,
+    height_mm: float | None = None,
+    depth_mm: float | None = None,
+    material: str | None = None,
+    thickness_mm: float | None = None,
+    color: str | None = None,
+    edge_banding: str | None = None,
+    code: str | None = None,
+) -> str:
+    """Agrega a la sesión un mueble descrito por texto libre y lo cotiza.
+
+    Usala cuando el usuario describa un mueble sin subir pliego. Conviene pasar
+    medidas en mm si aparecen en el texto; si vienen en metros o cm, convertilas
+    a mm antes de llamar la tool.
+    """
+    s = _ensure_session(ctx)
+    if not description.strip():
+        return "Necesito una descripción del mueble para poder cotizarlo."
+
+    try:
+        item = _item_from_description(
+            session=s,
+            code=code,
+            name=name,
+            description=description,
+            quantity=quantity,
+            width_mm=width_mm,
+            height_mm=height_mm,
+            depth_mm=depth_mm,
+            material=material,
+            thickness_mm=thickness_mm,
+            color=color,
+            edge_banding=edge_banding,
+        )
+    except Exception as e:
+        return f"No pude descomponer ese mueble todavía: {e}. Pasame ancho, alto, profundidad, material, espesor y puertas/cajones."
+
+    if not item.pieces:
+        return "No pude extraer piezas de placa. Pasame ancho, alto, profundidad, material, espesor y cómo está compuesto."
+
+    s.items.append(item)
+    try:
+        _recalculate_item(item, s)
+    except Exception as e:
+        item.last_quote = {"error": str(e), "notes": str(e), "total_with_hardware": 0}
+    save_session(s)
+    return "Agregué el mueble a la cotización.\n\n" + _format_item_summary(item)
 
 
 @function_tool
@@ -505,6 +639,8 @@ Sos el asistente de cotización de carpintería. Trabajás sobre una sesión de 
 Cómo trabajás:
 - Si el usuario pregunta cómo está la cotización, llamá `get_state`.
 - Cuando el usuario te diga "subí este pliego" / "ingestá este archivo" y te pase paths, usá `ingest_pliego`.
+- Si el usuario describe un mueble a medida en texto ("cotizame un bajo mesada...", "armame precio para...") sin subir pliego, usá `add_custom_item`.
+  Convertí medidas a mm antes de llamar la tool. Si faltan medidas/material/espesor, pedí solo esos datos.
 - Si te pide cambiar cantidades de herrajes ("3 bisagras en vez de 2"), usá `set_hardware_quantity`.
 - Si te pasa precios de herrajes, usá `set_hardware_price` (es global, se persiste para todas las sesiones).
 - Si te dice color/días de pago/destino, usá las tools correspondientes.
@@ -547,6 +683,7 @@ def build_agent(session: QuotationSession | None = None) -> Agent:
         tools=[
             get_state,
             ingest_pliego,
+            add_custom_item,
             set_color,
             set_payment_days,
             set_destination,

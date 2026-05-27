@@ -410,6 +410,12 @@ def _extract_xml(pdf_path: Path) -> str:
         return Path(f"{out_prefix}.xml").read_text(encoding="utf-8")
 
 
+def _extract_text(pdf_path: Path) -> str:
+    from pypdf import PdfReader
+    reader = PdfReader(str(pdf_path))
+    return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+
 def _parse_xml(xml_text: str) -> list[_Span]:
     root = ET.fromstring(xml_text)
     fontspecs: dict[str, tuple[float, str]] = {}
@@ -545,6 +551,127 @@ def _classify_header_level(row: list[_Span], header_text: str) -> int | None:
 
 PROVEEDOR_BARRACA_PARANA = "BARRACA_PARANA"
 
+_TEXT_ROW_RE = re.compile(
+    r"^(?P<codigo>\S+)\s+(?P<desc>.+?)\s+"
+    r"(?:(?P<unidad>uni|UNI|UNID|ML|ml|M|m|M2|m2|P2|p2|P²|p²|HOJA|hoja|CIENTO|ciento|ROLLO|rollo)\s+)?"
+    r"(?P<moneda>U\$S|\$)\s+(?P<precio>[\d.,]+)$"
+)
+
+_TEXT_TOP_LEVEL = {
+    "MADERAS",
+    "MOLDURAS",
+    "TABLEROS",
+    "CANTOS",
+    "FIBRAS",
+    "COMPENSADOS",
+    "LAMINADO PLASTICO",
+    "PUERTAS",
+    "LAMBRICES",
+    "REVESTIMIENTOS",
+    "LAMINAS",
+    "PISOS",
+    "DECK",
+    "FLOTANTE MELAMINICO",
+    "FLOTANTES VINILICOS",
+    "PINTURAS",
+    "FILM",
+    "ADHESIVOS",
+    "LIJAS",
+    "MANTA",
+    "LIMPIADOR DE PISOS",
+    "PLASTIFICADO DE PISOS",
+}
+
+
+def _parse_pdf_text(
+    pdf_path: Path,
+    lista: str = "",
+    periodo: str = "",
+    proveedor: str = PROVEEDOR_BARRACA_PARANA,
+    tc: float = 40.0,
+) -> list[Producto]:
+    text = _extract_text(pdf_path)
+    if not lista or not periodo:
+        m = re.search(
+            r"LISTA\s+(?:\d+\s+)?N[º°]?\s*(\d+)\s*-\s*([A-Za-zñÑ]+\s+\d{4})",
+            text,
+        )
+        if m:
+            lista = lista or m.group(1)
+            periodo = periodo or m.group(2)
+
+    products: list[Producto] = []
+    stack: list[str] = ["", "", ""]
+
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line.replace("\xa0", " ")).strip()
+        if not line:
+            continue
+        m = _TEXT_ROW_RE.match(line)
+        if not m:
+            header = line.strip()
+            header_upper = _strip_accents(header).upper()
+            if (
+                header_upper in _TEXT_TOP_LEVEL
+                or (header_upper == header and 3 <= len(header) <= 60 and not re.search(r"\d{3,}", header))
+            ):
+                if header_upper in _TEXT_TOP_LEVEL or not stack[0]:
+                    stack = [header, "", ""]
+                elif not stack[1]:
+                    stack = [stack[0], header, ""]
+                else:
+                    stack = [stack[0], stack[1], header]
+            continue
+
+        codigo = m.group("codigo")
+        desc = m.group("desc").strip()
+        unidad_raw = m.group("unidad") or "uni"
+        moneda = CURRENCY_TOKENS.get(m.group("moneda"), m.group("moneda"))
+        origen_simp = _to_float(m.group("precio"))
+        origen_cimp = origen_simp
+        tc_used = 1.0 if moneda == "USD" else (tc or 1.0)
+        usd_simp = round(origen_simp / tc_used, 4) if moneda == "UYU" else origen_simp
+        usd_cimp = round(origen_cimp / tc_used, 4) if moneda == "UYU" else origen_cimp
+
+        categoria, subcategoria, subsub = stack[0], stack[1], stack[2]
+        tipo, familia = _classify_tipo(categoria, subcategoria, subsub)
+        material = _detect_material(f"{categoria} {subcategoria} {subsub} {desc}")
+        tags = _detect_tags(categoria, subcategoria, subsub, desc)
+        esp, ancho, largo = _parse_dimensions(desc)
+        descripcion_normalizada = _normalize_desc(desc)
+        search_key = _search_key(codigo, desc, material, familia)
+        sku = _sku_for(tipo, familia, material, esp, ancho, largo, descripcion_normalizada, codigo)
+
+        products.append(Producto(
+            sku=sku,
+            codigo_proveedor=codigo,
+            proveedor=proveedor,
+            tipo_producto=tipo,
+            familia=familia,
+            material=material,
+            nombre=_short_name(desc),
+            descripcion=desc,
+            descripcion_normalizada=descripcion_normalizada,
+            search_key=search_key,
+            espesor_mm=esp,
+            ancho_mm=ancho,
+            largo_mm=largo,
+            unidad=UNIT_TOKENS.get(unidad_raw, unidad_raw.upper()),
+            precio_usd_simp=usd_simp,
+            precio_usd_cimp=usd_cimp,
+            moneda_origen=moneda,
+            precio_origen_simp=origen_simp,
+            precio_origen_cimp=origen_cimp,
+            tc_aplicado=tc_used,
+            tags=tags,
+            categoria_origen=categoria,
+            subcategoria_origen=subcategoria,
+            subsubcategoria_origen=subsub,
+            lista=lista,
+            periodo=periodo,
+        ))
+    return products
+
 
 def parse_pdf(
     pdf_path: str | Path,
@@ -561,7 +688,10 @@ def parse_pdf(
             and `moneda_origen`.
     """
     pdf_path = Path(pdf_path)
-    xml_text = _extract_xml(pdf_path)
+    try:
+        xml_text = _extract_xml(pdf_path)
+    except FileNotFoundError:
+        return _parse_pdf_text(pdf_path, lista=lista, periodo=periodo, proveedor=proveedor, tc=tc)
 
     if not lista or not periodo:
         m = re.search(r"LISTA CLIENTES\s*N[º°]?\s*(\d+)\s*-\s*([A-Za-zñÑ]+\s+\d{4})", xml_text)
