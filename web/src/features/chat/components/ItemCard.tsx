@@ -1,7 +1,7 @@
 "use client";
 
-import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import type { DragEvent, MouseEvent, PointerEvent, ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Maximize2, Plus, Ruler, Trash2, X } from "lucide-react";
 
@@ -224,6 +224,14 @@ function inferVisualModel(item: QuotationItem) {
   const hasHanger =
     mentioned(text, ["perchero", "percheros", "barral", "barrales", "colgado", "colgar"]) ||
     labels.some((p) => /perchero|barral|colgado|colgar/.test(p.normalizedLabel));
+  const isDrawerCabinet = mentioned(text, ["cajonera", "cajoneras"]) || /cajonera/.test(text);
+  const hasWheels =
+    mentioned(text, ["rueda", "ruedas", "rodachin", "rodachina", "rodachines", "movil"]) ||
+    labels.some((p) => /rueda|rodach|movil/.test(p.normalizedLabel));
+  const hasLock =
+    mentioned(text, ["cerradura", "cerraduras", "llave", "traba"]) ||
+    /traba total|cierre central|cerradura/.test(text) ||
+    labels.some((p) => /cerradura|llave|traba/.test(p.normalizedLabel));
   const doorCount =
     countFromText(text, ["puertas?"]) ||
     labels.filter((p) => p.normalizedLabel.includes("puerta")).reduce((sum, p) => sum + p.quantity, 0) ||
@@ -243,7 +251,11 @@ function inferVisualModel(item: QuotationItem) {
     labels.filter((p) => p.normalizedLabel.includes("estante")).reduce((sum, p) => sum + p.quantity, 0) ||
     (hasShelfPlural ? 2 : hasShelfMention ? 1 : 0);
   const drawerPosition: "top" | "bottom" = /cajones?.{0,24}abajo|abajo.{0,24}cajones?/.test(text) ? "bottom" : "top";
-  return { doorCount, drawerCount, shelfCount, drawerPosition, hasHanger };
+  const drawerLayout: "columns" | "stacked" =
+    isDrawerCabinet || (drawerCount > 1 && doorCount === 0 && shelfCount === 0 && !hasHanger)
+      ? "stacked"
+      : "columns";
+  return { doorCount, drawerCount, shelfCount, drawerPosition, drawerLayout, hasHanger, hasWheels, hasLock };
 }
 
 function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: string }) {
@@ -299,6 +311,8 @@ function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: st
           {displayDrawerCount > 0 && <Badge variant="secondary">{displayDrawerCount} cajones</Badge>}
           {displayShelfCount > 0 && <Badge variant="secondary">{displayShelfCount} estantes</Badge>}
           {visualModel.hasHanger && <Badge variant="secondary">perchero</Badge>}
+          {visualModel.hasWheels && <Badge variant="secondary">ruedas</Badge>}
+          {visualModel.hasLock && <Badge variant="secondary">cerradura</Badge>}
         </div>
       </div>
 
@@ -309,17 +323,17 @@ function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: st
             <div className="text-[11px] font-semibold text-center mb-1">
               {displayDoorCount > 0 ? "Frente cerrado" : "Frente"}
             </div>
-            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="closed" />
+            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} mode="closed" />
           </div>
           {displayDoorCount > 0 && (
             <div className="border rounded bg-slate-50 p-2">
               <div className="text-[11px] font-semibold text-center mb-1">Frente abierto</div>
-              <FrontView itemCode={`${item.code}-open`} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="open" />
+              <FrontView itemCode={`${item.code}-open`} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} mode="open" />
             </div>
           )}
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Costado</div>
-            <SideView dims={dims} shelves={displayShelfCount} hasHanger={visualModel.hasHanger} />
+            <SideView dims={dims} shelves={displayShelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} />
           </div>
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Planta</div>
@@ -360,6 +374,130 @@ function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: st
   );
 }
 
+type PlanElementKind = "door" | "drawer" | "shelf" | "division" | "hanger";
+
+type PlanElement = {
+  id: string;
+  kind: PlanElementKind;
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  sourceLabel?: string;
+};
+
+const EDITOR_BOX = { x: 60, y: 40, w: 880, h: 600 };
+
+const PLAN_COMPONENTS: Array<{ kind: PlanElementKind; label: string }> = [
+  { kind: "door", label: "Puerta" },
+  { kind: "drawer", label: "Cajon" },
+  { kind: "shelf", label: "Estante" },
+  { kind: "division", label: "Division" },
+  { kind: "hanger", label: "Perchero" },
+];
+
+function clamp(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
+function makePlanId(kind: PlanElementKind) {
+  return `${kind}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function defaultPlanElement(kind: PlanElementKind, x: number, y: number): PlanElement {
+  if (kind === "door") return { id: makePlanId(kind), kind, label: "puerta frente", x: x - 120, y: y - 180, w: 240, h: 360 };
+  if (kind === "drawer") return { id: makePlanId(kind), kind, label: "frente cajon", x: x - 130, y: y - 45, w: 260, h: 90 };
+  if (kind === "shelf") return { id: makePlanId(kind), kind, label: "estante", x: x - 180, y: y - 8, w: 360, h: 16 };
+  if (kind === "division") return { id: makePlanId(kind), kind, label: "division vertical", x: x - 8, y: EDITOR_BOX.y + 12, w: 16, h: EDITOR_BOX.h - 24 };
+  return { id: makePlanId(kind), kind, label: "perchero", x: x - 160, y: y - 10, w: 320, h: 20 };
+}
+
+function elementFromPiece(piece: QuotationItem["pieces"][number], index: number, dims: ReturnType<typeof inferOverallDimensions>): PlanElement | null {
+  const label = normalizeText(piece.label);
+  const width = dims.width || 1;
+  const height = dims.height || 1;
+  const pieceW = clamp((piece.width_mm / width) * EDITOR_BOX.w, 80, EDITOR_BOX.w);
+  const pieceH = clamp((piece.height_mm / height) * EDITOR_BOX.h, 35, EDITOR_BOX.h);
+  const offset = (index % 4) * 28;
+
+  if (label.includes("puerta")) return { id: `piece-door-${index}`, kind: "door", label: piece.label, sourceLabel: piece.label, x: EDITOR_BOX.x + 24 + offset, y: EDITOR_BOX.y + 24, w: Math.min(pieceW, EDITOR_BOX.w - 48), h: Math.min(pieceH, EDITOR_BOX.h - 48) };
+  if (label.includes("caj") && label.includes("frente")) return { id: `piece-drawer-${index}`, kind: "drawer", label: piece.label, sourceLabel: piece.label, x: EDITOR_BOX.x + 80 + offset, y: EDITOR_BOX.y + EDITOR_BOX.h - Math.min(pieceH, 120) - 32, w: Math.min(pieceW, EDITOR_BOX.w - 160), h: Math.min(pieceH, 120) };
+  if (label.includes("estante")) return { id: `piece-shelf-${index}`, kind: "shelf", label: piece.label, sourceLabel: piece.label, x: EDITOR_BOX.x + 80, y: EDITOR_BOX.y + 150 + offset, w: Math.min(pieceW, EDITOR_BOX.w - 160), h: 16 };
+  if (label.includes("division")) return { id: `piece-division-${index}`, kind: "division", label: piece.label, sourceLabel: piece.label, x: EDITOR_BOX.x + EDITOR_BOX.w / 2 - 8 + offset, y: EDITOR_BOX.y + 16, w: 16, h: EDITOR_BOX.h - 32 };
+  return null;
+}
+
+function seedPlanElements(item: QuotationItem, dims: ReturnType<typeof inferOverallDimensions>, visualModel: ReturnType<typeof inferVisualModel>) {
+  const elements: PlanElement[] = [];
+  const drawerCount = Math.max(0, visualModel.drawerCount);
+
+  if (visualModel.drawerLayout === "stacked" && drawerCount > 0) {
+    const gap = 18;
+    const drawerH = (EDITOR_BOX.h - gap * (drawerCount + 1)) / drawerCount;
+    for (let i = 0; i < drawerCount; i += 1) {
+      elements.push({
+        id: `seed-drawer-${i}`,
+        kind: "drawer",
+        label: `frente cajon ${i + 1}`,
+        x: EDITOR_BOX.x + 32,
+        y: EDITOR_BOX.y + gap + i * (drawerH + gap),
+        w: EDITOR_BOX.w - 64,
+        h: drawerH,
+      });
+    }
+    return elements;
+  }
+
+  const fromPieces = item.pieces
+    .map((piece, index) => elementFromPiece(piece, index, dims))
+    .filter((element): element is PlanElement => Boolean(element));
+  if (fromPieces.length > 0) return fromPieces;
+
+  const doorCount = Math.max(0, visualModel.doorCount);
+  if (doorCount > 0) {
+    const doorW = EDITOR_BOX.w / doorCount;
+    for (let i = 0; i < doorCount; i += 1) elements.push({ id: `seed-door-${i}`, kind: "door", label: `puerta frente ${i + 1}`, x: EDITOR_BOX.x + i * doorW, y: EDITOR_BOX.y, w: doorW, h: EDITOR_BOX.h });
+  }
+  if (drawerCount > 0) {
+    const drawerH = Math.min(115, Math.max(70, EDITOR_BOX.h / (drawerCount + 4)));
+    for (let i = 0; i < drawerCount; i += 1) elements.push({ id: `seed-drawer-${i}`, kind: "drawer", label: `frente cajon ${i + 1}`, x: EDITOR_BOX.x + 120, y: EDITOR_BOX.y + EDITOR_BOX.h - (drawerCount - i) * drawerH - 18, w: EDITOR_BOX.w - 240, h: drawerH - 8 });
+  }
+  if (visualModel.hasHanger) elements.push({ id: "seed-hanger", kind: "hanger", label: "perchero", x: EDITOR_BOX.x + 100, y: EDITOR_BOX.y + 170, w: EDITOR_BOX.w * 0.45, h: 20 });
+  const shelfCount = Math.max(0, visualModel.shelfCount);
+  if (shelfCount > 0) {
+    const startY = visualModel.hasHanger ? 110 : 140;
+    for (let i = 0; i < Math.min(shelfCount, 6); i += 1) elements.push({ id: `seed-shelf-${i}`, kind: "shelf", label: `estante ${i + 1}`, x: visualModel.hasHanger ? EDITOR_BOX.x + EDITOR_BOX.w * 0.58 : EDITOR_BOX.x + 90, y: EDITOR_BOX.y + startY + i * 82, w: visualModel.hasHanger ? EDITOR_BOX.w * 0.34 : EDITOR_BOX.w - 180, h: 16 });
+  }
+  if ((visualModel.hasHanger && shelfCount > 0) || doorCount > 1) elements.push({ id: "seed-division", kind: "division", label: "division vertical", x: EDITOR_BOX.x + EDITOR_BOX.w / 2 - 8, y: EDITOR_BOX.y + 12, w: 16, h: EDITOR_BOX.h - 24 });
+  return elements;
+}
+
+function svgElementToPiece(element: PlanElement, dims: ReturnType<typeof inferOverallDimensions>, index: number) {
+  const width = dims.width || 0;
+  const height = dims.height || 0;
+  const depth = dims.depth || 0;
+  const elementWidthMm = Math.max(1, Math.round((element.w / EDITOR_BOX.w) * width));
+  const elementHeightMm = Math.max(1, Math.round((element.h / EDITOR_BOX.h) * height));
+  if (element.kind === "door") return { label: element.sourceLabel || element.label || `puerta frente ${index + 1}`, width_mm: elementWidthMm, height_mm: elementHeightMm, quantity: 1, edge_sides: ["top", "bottom", "left", "right"] };
+  if (element.kind === "drawer") return { label: element.sourceLabel || element.label || `frente cajon ${index + 1}`, width_mm: elementWidthMm, height_mm: elementHeightMm, quantity: 1, edge_sides: ["top", "bottom", "left", "right"] };
+  if (element.kind === "shelf") return { label: element.sourceLabel || element.label || `estante ${index + 1}`, width_mm: elementWidthMm, height_mm: Math.max(1, Math.round(depth)), quantity: 1, edge_sides: ["top"] };
+  if (element.kind === "division") return { label: element.sourceLabel || element.label || `division vertical ${index + 1}`, width_mm: Math.max(1, Math.round((element.h / EDITOR_BOX.h) * height)), height_mm: Math.max(1, Math.round(depth)), quantity: 1, edge_sides: ["left"] };
+  return null;
+}
+
+function relevantPlanComponents(visualModel: ReturnType<typeof inferVisualModel>) {
+  const components = PLAN_COMPONENTS.filter((component) => {
+    if (component.kind === "hanger") return visualModel.hasHanger;
+    if (component.kind === "door") return visualModel.doorCount > 0 || visualModel.drawerCount === 0;
+    if (component.kind === "drawer") return visualModel.drawerCount > 0 || visualModel.drawerLayout === "stacked";
+    if (component.kind === "shelf") return visualModel.shelfCount > 0 || visualModel.doorCount > 0;
+    if (component.kind === "division") return visualModel.doorCount > 1 || visualModel.shelfCount > 0 || visualModel.drawerLayout === "stacked";
+    return true;
+  });
+  return components.length > 0 ? components : PLAN_COMPONENTS.filter((component) => component.kind !== "hanger");
+}
+
 function PlanEditorDialog({
   item,
   sessionId,
@@ -372,37 +510,100 @@ function PlanEditorDialog({
   visualModel: ReturnType<typeof inferVisualModel>;
 }) {
   const queryClient = useQueryClient();
-  const upsertMutation = useMutation({
-    mutationFn: upsertPiece,
-    onSuccess: (s) => queryClient.setQueryData(qk.session(sessionId), s),
-  });
-  const updateMutation = useMutation({
-    mutationFn: updateItem,
-    onSuccess: (s) => queryClient.setQueryData(qk.session(sessionId), s),
-  });
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const dragRef = useRef<{ id: string; mode: "move" | "resize"; offsetX: number; offsetY: number; startW: number; startH: number; startX: number; startY: number } | null>(null);
+  const initialElements = useMemo(() => seedPlanElements(item, dims, visualModel), [item, dims, visualModel]);
+  const [elements, setElements] = useState<PlanElement[]>(initialElements);
+  const [selectedId, setSelectedId] = useState<string | null>(initialElements[0]?.id ?? null);
+  const [componentSearch, setComponentSearch] = useState("");
+  const [activePlanView, setActivePlanView] = useState<"front" | "side" | "top">("front");
+  const [editorWidth, setEditorWidth] = useState(92);
+  const [editorHeight, setEditorHeight] = useState(92);
+  const [canvasZoom, setCanvasZoom] = useState(100);
+  const selected = elements.find((element) => element.id === selectedId) ?? null;
 
-  const width = dims.width || 0;
-  const height = dims.height || 0;
-  const depth = dims.depth || 0;
-  const thickness = item.thickness_mm || 18;
-  const halfBay = Math.max(width / 2 - thickness * 2, 0);
+  const upsertMutation = useMutation({ mutationFn: upsertPiece, onSuccess: (s) => queryClient.setQueryData(qk.session(sessionId), s) });
+  const deleteMutation = useMutation({ mutationFn: setPieceQuantity, onSuccess: (s) => queryClient.setQueryData(qk.session(sessionId), s) });
+  const updateMutation = useMutation({ mutationFn: updateItem, onSuccess: (s) => queryClient.setQueryData(qk.session(sessionId), s) });
 
-  const addPiece = (piece: Parameters<typeof upsertPiece>[0]["piece"]) =>
-    upsertMutation.mutate({ sessionId, itemCode: item.code, piece });
+  useEffect(() => {
+    setElements(initialElements);
+    setSelectedId(initialElements[0]?.id ?? null);
+  }, [initialElements]);
 
-  const toggleHanger = () => {
-    const note = item.notes || "";
-    const has = /perchero|barral/i.test(note);
-    updateMutation.mutate({
-      sessionId,
-      itemCode: item.code,
-      fields: {
-        notes: has
-          ? note.replace(/\s*\[plano: perchero\]\s*/gi, " ").trim()
-          : `${note} [plano: perchero]`.trim(),
-      },
+  function pointFromEvent(event: DragEvent<SVGSVGElement> | PointerEvent<SVGSVGElement>) {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    const matrix = svg.getScreenCTM();
+    if (!matrix) return null;
+    return point.matrixTransform(matrix.inverse());
+  }
+
+  function keepInside(element: PlanElement): PlanElement {
+    const w = clamp(element.w, 12, EDITOR_BOX.w);
+    const h = clamp(element.h, 12, EDITOR_BOX.h);
+    return { ...element, w, h, x: clamp(element.x, EDITOR_BOX.x, EDITOR_BOX.x + EDITOR_BOX.w - w), y: clamp(element.y, EDITOR_BOX.y, EDITOR_BOX.y + EDITOR_BOX.h - h) };
+  }
+
+  function addElement(kind: PlanElementKind, x = EDITOR_BOX.x + EDITOR_BOX.w / 2, y = EDITOR_BOX.y + EDITOR_BOX.h / 2) {
+    const element = keepInside(defaultPlanElement(kind, x, y));
+    setElements((current) => [...current, element]);
+    setSelectedId(element.id);
+  }
+
+  function startDrag(event: PointerEvent<SVGElement>, element: PlanElement, mode: "move" | "resize") {
+    event.preventDefault();
+    event.stopPropagation();
+    const point = pointFromEvent(event as unknown as PointerEvent<SVGSVGElement>);
+    if (!point) return;
+    dragRef.current = { id: element.id, mode, offsetX: point.x - element.x, offsetY: point.y - element.y, startW: element.w, startH: element.h, startX: point.x, startY: point.y };
+    setSelectedId(element.id);
+  }
+
+  function handlePointerMove(event: PointerEvent<SVGSVGElement>) {
+    const dragging = dragRef.current;
+    if (!dragging) return;
+    const point = pointFromEvent(event);
+    if (!point) return;
+    setElements((current) => current.map((element) => {
+      if (element.id !== dragging.id) return element;
+      if (dragging.mode === "move") return keepInside({ ...element, x: point.x - dragging.offsetX, y: point.y - dragging.offsetY });
+      return keepInside({ ...element, w: dragging.startW + point.x - dragging.startX, h: dragging.startH + point.y - dragging.startY });
+    }));
+  }
+
+  function deleteSelected() {
+    if (!selected) return;
+    if (selected.sourceLabel) deleteMutation.mutate({ sessionId, itemCode: item.code, pieceLabel: selected.sourceLabel, quantity: 0 });
+    setElements((current) => current.filter((element) => element.id !== selected.id));
+    setSelectedId(null);
+  }
+
+  async function applyPlan() {
+    const pieces: Parameters<typeof upsertPiece>[0]["piece"][] = [];
+    elements.forEach((element, index) => {
+      const piece = svgElementToPiece(element, dims, index);
+      if (piece) pieces.push(piece);
     });
-  };
+    for (const piece of pieces) await upsertMutation.mutateAsync({ sessionId, itemCode: item.code, piece });
+    const hasHanger = elements.some((element) => element.kind === "hanger");
+    const note = item.notes || "";
+    const nextNote = hasHanger
+      ? note.includes("[plano: perchero]") ? note : `${note} [plano: perchero]`.trim()
+      : note.replace(/\s*\[plano: perchero\]\s*/gi, " ").trim();
+    if (nextNote !== note) await updateMutation.mutateAsync({ sessionId, itemCode: item.code, fields: { notes: nextNote } });
+  }
+
+  const busy = upsertMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
+  const paletteComponents = relevantPlanComponents(visualModel);
+  const extraComponents = PLAN_COMPONENTS.filter(
+    (component) =>
+      !paletteComponents.some((palette) => palette.kind === component.kind) &&
+      normalizeText(component.label).includes(normalizeText(componentSearch)),
+  );
 
   return (
     <Dialog>
@@ -414,58 +615,133 @@ function PlanEditorDialog({
           </Button>
         }
       />
-      <DialogContent className="max-w-[96vw] w-[1100px]">
+      <DialogContent
+        className="flex max-w-[99vw] max-h-[98vh] flex-col overflow-hidden p-4"
+        style={{ width: `${editorWidth}vw`, height: `${editorHeight}vh` }}
+      >
         <DialogHeader>
-          <DialogTitle>Plano editable - {item.code}</DialogTitle>
-          <DialogDescription>
-            Retocá el boceto y las piezas principales del mueble.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
-          <div className="overflow-x-auto rounded-md border bg-slate-50 p-3">
-            <div className={visualModel.doorCount > 0 ? "grid min-w-[760px] grid-cols-4 gap-3" : "grid min-w-[560px] grid-cols-3 gap-3"}>
-              <PlanPanel title={visualModel.doorCount > 0 ? "Frente cerrado" : "Frente"}>
-                <FrontView itemCode={`${item.code}-editor`} dims={dims} shelves={visualModel.shelfCount} doorCount={visualModel.doorCount} drawerCount={visualModel.drawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="closed" />
-              </PlanPanel>
-              {visualModel.doorCount > 0 && (
-                <PlanPanel title="Frente abierto">
-                  <FrontView itemCode={`${item.code}-editor-open`} dims={dims} shelves={visualModel.shelfCount} doorCount={visualModel.doorCount} drawerCount={visualModel.drawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="open" />
-                </PlanPanel>
-              )}
-              <PlanPanel title="Costado">
-                <SideView dims={dims} shelves={visualModel.shelfCount} hasHanger={visualModel.hasHanger} />
-              </PlanPanel>
-              <PlanPanel title="Planta">
-                <TopView dims={dims} />
-              </PlanPanel>
+          <div className="flex items-start justify-between gap-4">
+            <DialogTitle>Plano editable - {item.code}</DialogTitle>
+            <div className="grid w-[420px] grid-cols-3 gap-3">
+              <PlanRange label="Ancho" value={editorWidth} min={70} max={99} onChange={setEditorWidth} />
+              <PlanRange label="Alto" value={editorHeight} min={65} max={98} onChange={setEditorHeight} />
+              <PlanRange label="Zoom" value={canvasZoom} min={70} max={180} onChange={setCanvasZoom} suffix="%" />
             </div>
           </div>
-
-          <div className="space-y-3">
-            <div className="rounded-md border p-3 space-y-2">
-              <div className="text-xs uppercase font-semibold text-muted-foreground">Agregar piezas</div>
-              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "puerta frente", width_mm: Math.max(width / 2 - thickness, 0), height_mm: height, quantity: 2, edge_sides: ["top", "bottom", "left", "right"] })}>
-                <Plus className="h-4 w-4" /> 2 puertas frente
-              </Button>
-              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "estante", width_mm: halfBay || Math.max(width - 2 * thickness, 0), height_mm: depth, quantity: Math.max(1, visualModel.shelfCount || 1), edge_sides: ["top"] })}>
-                <Plus className="h-4 w-4" /> Estante
-              </Button>
-              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "frente cajón", width_mm: halfBay || Math.max(width / 2 - thickness, 0), height_mm: 200, quantity: Math.max(1, visualModel.drawerCount || 1), edge_sides: ["top", "bottom", "left", "right"] })}>
-                <Plus className="h-4 w-4" /> Cajón
-              </Button>
-              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "división vertical", width_mm: height, height_mm: depth, quantity: 1, edge_sides: ["left"] })}>
-                <Plus className="h-4 w-4" /> División
-              </Button>
-              <Button type="button" variant="outline" className="w-full justify-start" onClick={toggleHanger}>
-                <Plus className="h-4 w-4" /> Perchero
-              </Button>
+          <DialogDescription className="sr-only">Editor visual de piezas del mueble.</DialogDescription>
+        </DialogHeader>
+        <div className="grid min-h-0 flex-1 grid-cols-[120px_minmax(0,1fr)] gap-3">
+          <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
+            <div className="text-xs uppercase font-semibold text-muted-foreground">Componentes</div>
+            {paletteComponents.map((component) => (
+              <button key={component.kind} type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-plan-kind", component.kind)} onClick={() => addElement(component.kind)} className="w-full rounded-md border bg-card p-1.5 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <PlanComponentIcon kind={component.kind} />
+                <span className="mt-1 block text-center text-xs font-medium">{component.label}</span>
+              </button>
+            ))}
+            <div className="pt-2">
+              <Input
+                value={componentSearch}
+                onChange={(event) => setComponentSearch(event.target.value)}
+                placeholder="Buscar otro"
+                className="h-8 text-xs"
+              />
             </div>
-            <div className="rounded-md border p-3 text-xs text-muted-foreground">
-              Las líneas del plano todavía no se arrastran con mouse. Esta versión
-              permite agrandar y corregir componentes principales; el siguiente
-              paso es editar divisiones directamente sobre el dibujo.
+            {componentSearch.trim() && (
+              <div className="space-y-2">
+                {extraComponents.map((component) => (
+                  <button key={component.kind} type="button" draggable onDragStart={(event) => event.dataTransfer.setData("application/x-plan-kind", component.kind)} onClick={() => addElement(component.kind)} className="w-full rounded-md border border-dashed bg-card p-1.5 text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                    <PlanComponentIcon kind={component.kind} />
+                    <span className="mt-1 block text-center text-xs font-medium">{component.label}</span>
+                  </button>
+                ))}
+                {extraComponents.length === 0 && (
+                  <div className="rounded-md border border-dashed p-2 text-center text-xs text-muted-foreground">
+                    Sin resultados
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 rounded-md border bg-slate-50 p-3">
+            <div className="mb-2 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold">
+                  {activePlanView === "front" ? "Frente editable" : activePlanView === "side" ? "Costado" : "Planta"}
+                </div>
+                <div className="text-xs text-muted-foreground">{mm(dims.width)} ancho - {mm(dims.height)} alto{dims.depth ? ` - ${mm(dims.depth)} profundidad` : ""}</div>
+              </div>
+              <div className="flex rounded-md border bg-background p-1">
+                {[
+                  ["front", "Frente"],
+                  ["side", "Costado"],
+                  ["top", "Arriba"],
+                ].map(([value, label]) => (
+                  <Button
+                    key={value}
+                    type="button"
+                    variant={activePlanView === value ? "default" : "ghost"}
+                    size="sm"
+                    className="h-8 px-3"
+                    onClick={() => setActivePlanView(value as "front" | "side" | "top")}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+              {activePlanView === "front" && selected && (
+                <div className="grid max-w-[520px] flex-1 grid-cols-[minmax(130px,1fr)_repeat(4,76px)] gap-2">
+                  <Input value={selected.label} onChange={(event) => setElements((current) => current.map((element) => element.id === selected.id ? { ...element, label: event.target.value } : element))} className="h-8" />
+                  <PlanNumberInput label="X" value={selected.x - EDITOR_BOX.x} onChange={(value) => setElements((current) => current.map((element) => element.id === selected.id ? keepInside({ ...element, x: EDITOR_BOX.x + value }) : element))} compact />
+                  <PlanNumberInput label="Y" value={selected.y - EDITOR_BOX.y} onChange={(value) => setElements((current) => current.map((element) => element.id === selected.id ? keepInside({ ...element, y: EDITOR_BOX.y + value }) : element))} compact />
+                  <PlanNumberInput label="Ancho" value={selected.w} onChange={(value) => setElements((current) => current.map((element) => element.id === selected.id ? keepInside({ ...element, w: value }) : element))} compact />
+                  <PlanNumberInput label="Alto" value={selected.h} onChange={(value) => setElements((current) => current.map((element) => element.id === selected.id ? keepInside({ ...element, h: value }) : element))} compact />
+                </div>
+              )}
+              <div className="flex shrink-0 gap-2">
+                <Button type="button" variant="outline" size="sm" onClick={deleteSelected} disabled={activePlanView !== "front" || !selected || busy}><Trash2 className="h-4 w-4" />Borrar</Button>
+                <Button type="button" size="sm" onClick={applyPlan} disabled={busy}>Aplicar al despiece</Button>
+              </div>
             </div>
+            {activePlanView === "front" ? (
+              <div className="overflow-auto rounded bg-white" style={{ height: `calc(${editorHeight}vh - 150px)` }}>
+                <svg ref={svgRef} viewBox="0 0 1000 700" className="aspect-[10/7] rounded bg-white" style={{ width: `${canvasZoom}%`, minWidth: "100%" }} role="img" aria-label="Editor visual del frente del mueble" onPointerMove={handlePointerMove} onPointerUp={() => { dragRef.current = null; }} onPointerLeave={() => { dragRef.current = null; }} onClick={() => setSelectedId(null)} onDragOver={(event) => event.preventDefault()} onDrop={(event) => {
+                event.preventDefault();
+                const kind = event.dataTransfer.getData("application/x-plan-kind") as PlanElementKind;
+                if (!PLAN_COMPONENTS.some((component) => component.kind === kind)) return;
+                const point = pointFromEvent(event);
+                if (point) addElement(kind, point.x, point.y);
+              }}>
+                <defs><pattern id={`editor-grain-${item.code}`} width="28" height="18" patternUnits="userSpaceOnUse"><path d="M0 11 C8 2, 18 20, 28 8" fill="none" stroke="#d4a373" strokeWidth="1.4" opacity="0.34" /></pattern></defs>
+                <rect x={EDITOR_BOX.x} y={EDITOR_BOX.y} width={EDITOR_BOX.w} height={EDITOR_BOX.h} rx="6" fill="#fff7ed" stroke="#92400e" strokeWidth="5" />
+                <rect x={EDITOR_BOX.x + 8} y={EDITOR_BOX.y + 8} width={EDITOR_BOX.w - 16} height={EDITOR_BOX.h - 16} fill={`url(#editor-grain-${item.code})`} opacity="0.55" />
+                {elements.map((element) => <PlanEditorElement key={element.id} element={element} selected={element.id === selectedId} hasLock={visualModel.hasLock} onPointerDown={(event) => startDrag(event, element, "move")} onResizePointerDown={(event) => startDrag(event, element, "resize")} onSelect={() => setSelectedId(element.id)} />)}
+                {visualModel.hasWheels && (
+                  <g>
+                    {[EDITOR_BOX.x + 120, EDITOR_BOX.x + EDITOR_BOX.w - 120].map((cx) => (
+                      <g key={cx}>
+                        <line x1={cx} y1={EDITOR_BOX.y + EDITOR_BOX.h} x2={cx} y2={EDITOR_BOX.y + EDITOR_BOX.h + 36} stroke="#475569" strokeWidth="8" />
+                        <circle cx={cx} cy={EDITOR_BOX.y + EDITOR_BOX.h + 54} r="20" fill="#334155" />
+                        <circle cx={cx} cy={EDITOR_BOX.y + EDITOR_BOX.h + 54} r="8" fill="#94a3b8" />
+                      </g>
+                    ))}
+                  </g>
+                )}
+                <DimensionLine x1={EDITOR_BOX.x} y1={EDITOR_BOX.y + EDITOR_BOX.h + 38} x2={EDITOR_BOX.x + EDITOR_BOX.w} y2={EDITOR_BOX.y + EDITOR_BOX.h + 38} label={mm(dims.width)} />
+                <DimensionLine x1={EDITOR_BOX.x - 36} y1={EDITOR_BOX.y} x2={EDITOR_BOX.x - 36} y2={EDITOR_BOX.y + EDITOR_BOX.h} label={mm(dims.height)} vertical />
+                </svg>
+              </div>
+            ) : (
+              <div className="grid place-items-center overflow-auto rounded bg-white p-6" style={{ height: `calc(${editorHeight}vh - 150px)` }}>
+                <div style={{ width: `${canvasZoom}%`, minWidth: "100%", maxWidth: `${Math.max(820, canvasZoom * 8)}px` }}>
+                  {activePlanView === "side" ? (
+                    <SideView dims={dims} shelves={visualModel.shelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} />
+                  ) : (
+                    <TopView dims={dims} />
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </DialogContent>
@@ -473,12 +749,117 @@ function PlanEditorDialog({
   );
 }
 
-function PlanPanel({ title, children }: { title: string; children: ReactNode }) {
+function PlanNumberInput({
+  label,
+  value,
+  onChange,
+  compact = false,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  compact?: boolean;
+}) {
   return (
-    <div className="rounded-md border bg-card p-2">
-      <div className="text-[11px] font-semibold text-center mb-1">{title}</div>
-      {children}
-    </div>
+    <Label className={compact ? "grid grid-cols-[1fr_52px] items-center gap-1 text-[10px]" : "space-y-1 text-xs"}>
+      <span className={compact ? "truncate text-muted-foreground" : ""}>{label}</span>
+      <Input type="number" value={Math.round(value)} onChange={(event) => { const next = Number(event.target.value); if (Number.isFinite(next)) onChange(next); }} className="h-8 tabular-nums" />
+    </Label>
+  );
+}
+
+function PlanRange({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+  suffix = "",
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (value: number) => void;
+  suffix?: string;
+}) {
+  return (
+    <Label className="space-y-1 text-[10px] text-muted-foreground">
+      <span className="flex items-center justify-between gap-2">
+        <span>{label}</span>
+        <span className="font-mono">{value}{suffix}</span>
+      </span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="h-2 w-full accent-emerald-700"
+      />
+    </Label>
+  );
+}
+
+function PlanComponentIcon({ kind }: { kind: PlanElementKind }) {
+  return (
+    <svg viewBox="0 0 120 76" className="h-12 w-full rounded bg-slate-50" aria-hidden="true">
+      <rect x="8" y="8" width="104" height="60" rx="4" fill="#fff7ed" stroke="#92400e" strokeWidth="3" />
+      {kind === "door" && (<><line x1="60" y1="8" x2="60" y2="68" stroke="#92400e" strokeWidth="2" /><circle cx="54" cy="39" r="2.5" fill="#92400e" /><circle cx="66" cy="39" r="2.5" fill="#92400e" /></>)}
+      {kind === "drawer" && (<><rect x="24" y="26" width="72" height="28" fill="#fed7aa" stroke="#92400e" strokeWidth="2" /><circle cx="60" cy="40" r="3" fill="#92400e" /></>)}
+      {kind === "shelf" && <rect x="18" y="36" width="84" height="6" rx="2" fill="#92400e" />}
+      {kind === "division" && <rect x="56" y="14" width="8" height="48" rx="2" fill="#92400e" />}
+      {kind === "hanger" && (<><line x1="24" y1="28" x2="96" y2="28" stroke="#334155" strokeWidth="5" strokeLinecap="round" /><path d="M38 29 q8 13 16 0 M66 29 q8 13 16 0" fill="none" stroke="#64748b" strokeWidth="2" /></>)}
+    </svg>
+  );
+}
+
+function PlanEditorElement({
+  element,
+  selected,
+  hasLock,
+  onPointerDown,
+  onResizePointerDown,
+  onSelect,
+}: {
+  element: PlanElement;
+  selected: boolean;
+  hasLock: boolean;
+  onPointerDown: (event: PointerEvent<SVGElement>) => void;
+  onResizePointerDown: (event: PointerEvent<SVGElement>) => void;
+  onSelect: () => void;
+}) {
+  const stroke = selected ? "#059669" : "#92400e";
+  const common = {
+    onPointerDown,
+    onClick: (event: MouseEvent<SVGElement>) => {
+      event.stopPropagation();
+      onSelect();
+    },
+    cursor: "move",
+  };
+  return (
+    <g>
+      {element.kind === "door" && (<g {...common}><rect x={element.x} y={element.y} width={element.w} height={element.h} fill="#fff7ed" stroke={stroke} strokeWidth="4" opacity="0.88" /><circle cx={element.x + element.w - 26} cy={element.y + element.h / 2} r="6" fill="#92400e" /></g>)}
+      {element.kind === "drawer" && (
+        <g {...common}>
+          <rect x={element.x} y={element.y} width={element.w} height={element.h} fill="#fed7aa" stroke={stroke} strokeWidth="4" rx="3" />
+          <line x1={element.x + 48} y1={element.y + element.h * 0.3} x2={element.x + element.w - 48} y2={element.y + element.h * 0.3} stroke="#f3c28c" strokeWidth="3" opacity="0.75" />
+          <circle cx={element.x + element.w / 2} cy={element.y + element.h / 2} r="6" fill="#92400e" />
+          {hasLock && (
+            <g>
+              <circle cx={element.x + element.w - 56} cy={element.y + element.h / 2} r="14" fill="#f8fafc" stroke="#334155" strokeWidth="4" />
+              <rect x={element.x + element.w - 60} y={element.y + element.h / 2 + 10} width="8" height="18" rx="3" fill="#334155" />
+            </g>
+          )}
+        </g>
+      )}
+      {element.kind === "shelf" && <rect {...common} x={element.x} y={element.y} width={element.w} height={element.h} fill="#92400e" opacity="0.82" rx="3" />}
+      {element.kind === "division" && <rect {...common} x={element.x} y={element.y} width={element.w} height={element.h} fill="#92400e" opacity="0.82" rx="3" />}
+      {element.kind === "hanger" && (<g {...common}><line x1={element.x} y1={element.y + element.h / 2} x2={element.x + element.w} y2={element.y + element.h / 2} stroke="#334155" strokeWidth="9" strokeLinecap="round" /><path d={`M${element.x + element.w * 0.25} ${element.y + element.h / 2} q22 25 44 0 M${element.x + element.w * 0.58} ${element.y + element.h / 2} q22 25 44 0`} fill="none" stroke="#64748b" strokeWidth="3" /></g>)}
+      {selected && (<><rect x={element.x - 5} y={element.y - 5} width={element.w + 10} height={element.h + 10} fill="none" stroke="#059669" strokeWidth="3" strokeDasharray="10 8" pointerEvents="none" /><rect x={element.x + element.w - 10} y={element.y + element.h - 10} width="22" height="22" rx="4" fill="#059669" stroke="white" strokeWidth="3" cursor="nwse-resize" onPointerDown={onResizePointerDown} onClick={(event) => event.stopPropagation()} /></>)}
+      <text x={element.x + 12} y={element.y + 26} fontSize="18" fontWeight="700" fill="#0f172a" pointerEvents="none" opacity="0.72">{element.kind === "hanger" ? "" : element.label}</text>
+    </g>
   );
 }
 
@@ -528,7 +909,10 @@ function FrontView({
   doorCount,
   drawerCount,
   drawerPosition,
+  drawerLayout,
   hasHanger,
+  hasWheels,
+  hasLock,
   mode = "closed",
 }: {
   itemCode: string;
@@ -537,7 +921,10 @@ function FrontView({
   doorCount: number;
   drawerCount: number;
   drawerPosition: "top" | "bottom";
+  drawerLayout: "columns" | "stacked";
   hasHanger: boolean;
+  hasWheels: boolean;
+  hasLock: boolean;
   mode?: "closed" | "open";
 }) {
   const bodyX = 38;
@@ -560,6 +947,7 @@ function FrontView({
   const showDoorLeaves = mode === "closed" && doorCount > 0;
   const closetW = hasInterior && shelves > 0 ? bodyW * 0.62 : bodyW;
   const shelfX = bodyX + closetW;
+  const stackedDrawers = drawerLayout === "stacked";
 
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista frontal esquemática">
@@ -598,20 +986,45 @@ function FrontView({
       )}
       {drawerCount > 0 && (
         <>
-          {Array.from({ length: drawerCols }).map((_, i) => {
-            const x = bodyX + (bodyW / drawerCols) * i;
-            const w = bodyW / drawerCols;
-            return (
-              <g key={`drawer-${i}`}>
-                <rect x={x + 3} y={drawerY + 5} width={w - 6} height={drawerAreaH - 10} fill="#fed7aa" stroke="#92400e" strokeWidth="1" />
-                <circle cx={x + w / 2} cy={drawerY + drawerAreaH / 2} r="1.7" fill="#92400e" />
-              </g>
-            );
-          })}
-          {hasSeparatedDrawers && drawersOnBottom && (
+          {stackedDrawers
+            ? Array.from({ length: drawerCount }).map((_, i) => {
+                const gap = 5;
+                const rowH = (bodyH - gap * (drawerCount + 1)) / drawerCount;
+                const y = bodyY + gap + i * (rowH + gap);
+                return (
+                  <g key={`drawer-row-${i}`}>
+                    <rect x={bodyX + 5} y={y} width={bodyW - 10} height={rowH} fill="#fed7aa" stroke="#92400e" strokeWidth="1.2" />
+                    <line x1={bodyX + 18} y1={y + rowH * 0.28} x2={bodyX + bodyW - 18} y2={y + rowH * 0.28} stroke="#f3c28c" strokeWidth="0.8" opacity="0.75" />
+                    <circle cx={bodyX + bodyW / 2} cy={y + rowH / 2} r="1.8" fill="#92400e" />
+                    {hasLock && (
+                      <g>
+                        <circle cx={bodyX + bodyW - 18} cy={y + rowH / 2} r="3.2" fill="#f8fafc" stroke="#334155" strokeWidth="1" />
+                        <rect x={bodyX + bodyW - 19} y={y + rowH / 2 + 2.4} width="2" height="4" rx="0.7" fill="#334155" />
+                      </g>
+                    )}
+                  </g>
+                );
+              })
+            : Array.from({ length: drawerCols }).map((_, i) => {
+                const x = bodyX + (bodyW / drawerCols) * i;
+                const w = bodyW / drawerCols;
+                return (
+                  <g key={`drawer-${i}`}>
+                    <rect x={x + 3} y={drawerY + 5} width={w - 6} height={drawerAreaH - 10} fill="#fed7aa" stroke="#92400e" strokeWidth="1" />
+                    <circle cx={x + w / 2} cy={drawerY + drawerAreaH / 2} r="1.7" fill="#92400e" />
+                    {hasLock && (
+                      <g>
+                        <circle cx={x + w - 12} cy={drawerY + drawerAreaH / 2} r="2.8" fill="#f8fafc" stroke="#334155" strokeWidth="0.9" />
+                        <rect x={x + w - 13} y={drawerY + drawerAreaH / 2 + 2} width="2" height="3.5" rx="0.6" fill="#334155" />
+                      </g>
+                    )}
+                  </g>
+                );
+              })}
+          {!stackedDrawers && hasSeparatedDrawers && drawersOnBottom && (
             <line x1={bodyX} y1={drawerY} x2={bodyX + bodyW} y2={drawerY} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />
           )}
-          {hasSeparatedDrawers && !drawersOnBottom && (
+          {!stackedDrawers && hasSeparatedDrawers && !drawersOnBottom && (
             <line x1={bodyX} y1={drawerY + drawerAreaH} x2={bodyX + bodyW} y2={drawerY + drawerAreaH} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />
           )}
         </>
@@ -632,6 +1045,17 @@ function FrontView({
       {doorCount === 0 && drawerCount === 0 && (
         <line x1={bodyX + bodyW / 2} y1={bodyY} x2={bodyX + bodyW / 2} y2={bodyY + bodyH} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />
       )}
+      {hasWheels && (
+        <g>
+          {[bodyX + 16, bodyX + bodyW - 16].map((cx) => (
+            <g key={cx}>
+              <line x1={cx} y1={bodyY + bodyH} x2={cx} y2={bodyY + bodyH + 8} stroke="#475569" strokeWidth="1.5" />
+              <circle cx={cx} cy={bodyY + bodyH + 13} r="5" fill="#334155" />
+              <circle cx={cx} cy={bodyY + bodyH + 13} r="2" fill="#94a3b8" />
+            </g>
+          ))}
+        </g>
+      )}
       <DimensionLine x1={bodyX} y1={160} x2={bodyX + bodyW} y2={160} label={mm(dims.width)} />
       <DimensionLine x1={22} y1={bodyY} x2={22} y2={bodyY + bodyH} label={mm(dims.height)} vertical />
     </svg>
@@ -642,10 +1066,12 @@ function SideView({
   dims,
   shelves,
   hasHanger,
+  hasWheels,
 }: {
   dims: ReturnType<typeof inferOverallDimensions>;
   shelves: number;
   hasHanger: boolean;
+  hasWheels: boolean;
 }) {
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista lateral esquemática">
@@ -657,6 +1083,22 @@ function SideView({
         return <line key={i} x1="66" y1={y} x2="155" y2={y} stroke="#92400e" strokeWidth="1" opacity="0.6" />;
       })}
       {hasHanger && <line x1="72" y1="48" x2="150" y2="48" stroke="#334155" strokeWidth="2" strokeLinecap="round" />}
+      {hasWheels && (
+        <g>
+          {[
+            [74, 148],
+            [146, 148],
+            [94, 160],
+            [166, 160],
+          ].map(([cx, cy], index) => (
+            <g key={`${cx}-${cy}`} opacity={index > 1 ? 0.72 : 1}>
+              <line x1={cx} y1={index > 1 ? 154 : 138} x2={cx} y2={cy - 5} stroke="#475569" strokeWidth="1.5" />
+              <circle cx={cx} cy={cy} r="5" fill="#334155" />
+              <circle cx={cx} cy={cy} r="2" fill="#94a3b8" />
+            </g>
+          ))}
+        </g>
+      )}
       <DimensionLine x1={62} y1={160} x2={180} y2={160} label={mm(dims.depth)} />
       <DimensionLine x1={46} y1={20} x2={46} y2={138} label={mm(dims.height)} vertical />
     </svg>

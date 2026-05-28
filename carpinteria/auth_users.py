@@ -19,7 +19,7 @@ DEFAULT_USERS = [
     {
         "username": "richard",
         "password": "MundoCarpinteroSA.",
-        "brand_id": "casa",
+        "brand_id": "pirone",
         "area": "personal",
         "must_change_password": True,
     },
@@ -40,6 +40,7 @@ def ensure_indexes() -> None:
 
 def ensure_default_users() -> None:
     ensure_indexes()
+    _migrate_default_users()
     for user in DEFAULT_USERS:
         username = str(user["username"]).strip().lower()
         exists = _coll().find_one({
@@ -69,6 +70,22 @@ def ensure_default_users() -> None:
             _coll().insert_one(doc)
         except Exception:
             pass
+
+
+def _migrate_default_users() -> None:
+    # Richard belongs to the Pirone factory environment. Early installs created
+    # him under Casa by mistake; move him once if needed.
+    richard_casa = _coll().find_one({"brand_id": "casa", "username": "richard"})
+    richard_pirone = _coll().find_one({"brand_id": "pirone", "username": "richard"})
+    if richard_casa and not richard_pirone:
+        _coll().update_one(
+            {"_id": richard_casa["_id"]},
+            {"$set": {
+                "brand_id": "pirone",
+                "area": "personal",
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
 
 
 def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
