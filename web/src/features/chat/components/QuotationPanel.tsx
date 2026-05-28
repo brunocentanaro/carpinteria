@@ -400,10 +400,15 @@ function PendingPanel({ session }: { session: Session }) {
     const notes = it.last_quote?.notes ?? "";
     return total === 0 && notes.includes("No se encontró placa");
   });
+  const catalogErrors = session.items.filter((it) => {
+    const total = it.last_quote?.total_with_hardware ?? 0;
+    const notes = it.last_quote?.notes ?? "";
+    return total === 0 && notes.includes("No pude acceder al listado de precios Activa");
+  });
   const noColor =
     !session.color_default && session.items.some((it) => !it.color);
 
-  if (missingHw.length === 0 && itemsNoBoard.length === 0 && !noColor) {
+  if (missingHw.length === 0 && itemsNoBoard.length === 0 && catalogErrors.length === 0 && !noColor) {
     return null;
   }
 
@@ -423,6 +428,13 @@ function PendingPanel({ session }: { session: Session }) {
         )}
         {missingHw.length > 0 && (
           <MissingHardwarePrices codes={missingHw} sessionId={session.id} />
+        )}
+        {catalogErrors.length > 0 && (
+          <div className="text-sm text-amber-900">
+            No pude acceder al listado Activa para {catalogErrors.length} item
+            {catalogErrors.length === 1 ? "" : "s"}. Si el Google Sheet falla,
+            el sistema usa la última copia local disponible.
+          </div>
         )}
         {itemsNoBoard.length > 0 && (
           <ItemsBoardPicker items={itemsNoBoard} sessionId={session.id} />

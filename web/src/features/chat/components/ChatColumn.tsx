@@ -15,6 +15,7 @@ import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 const TOOL_LABELS: Record<string, string> = {
   get_state: "leyendo el estado",
   ingest_pliego: "ingiriendo el pliego",
+  quote_moldura_price: "buscando precio de moldura",
   set_color: "ajustando el color",
   set_payment_days: "ajustando los días de pago",
   set_destination: "ajustando el destino",

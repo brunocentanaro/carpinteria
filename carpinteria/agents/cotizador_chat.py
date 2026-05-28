@@ -9,6 +9,8 @@ History is owned by OpenAI's Responses API: we just remember the
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from typing import Any
 
 from agents import Agent, RunContextWrapper, Runner, function_tool
@@ -19,6 +21,7 @@ from carpinteria.exchange_rate import fetch_bcu_usd
 from carpinteria.hardware_catalog import CURATED_HARDWARE, get_by_code
 from carpinteria.hardware_prices_sheet import read_all as read_hw_prices, upsert_price as upsert_hw_price
 from carpinteria import memory as agent_memory
+from carpinteria.molduras_prices import quote_price
 from carpinteria.pliego import analyze_pliego, decompose_furniture
 from carpinteria.settings import AGENT_MODEL
 from carpinteria.quotation_session import (
@@ -63,10 +66,25 @@ def _recalculate_item(
     if not item.pieces:
         item.last_quote = None
         return {"error": "El item no tiene piezas todavía"}
-    if catalog is None:
-        catalog = ProductCatalog.from_activa()
-    if tc is None:
-        tc = _tc()
+    try:
+        if catalog is None:
+            catalog = ProductCatalog.from_activa()
+        if tc is None:
+            tc = _tc()
+    except Exception as exc:
+        msg = (
+            "No pude acceder al listado de precios Activa. "
+            f"Detalle: {exc}"
+        )
+        item.last_quote = {
+            "error": msg,
+            "notes": msg,
+            "lines": [],
+            "total": 0,
+            "total_with_hardware": 0,
+            "pending_hardware_codes": [],
+        }
+        return item.last_quote
 
     pieces = [
         type("P", (), {  # CutPiece-shaped duck for calculator (avoid pydantic re-validation)
@@ -150,6 +168,120 @@ def _format_item_summary(item: QuotationItem) -> str:
                 f"- ⚠️ Faltan precios de herrajes: {', '.join(q['pending_hardware_codes'])}"
             )
     return "\n".join(parts)
+
+
+def _norm_text(text: object) -> str:
+    raw = str(text or "").strip().lower()
+    raw = unicodedata.normalize("NFKD", raw)
+    return "".join(ch for ch in raw if not unicodedata.combining(ch))
+
+
+def _format_uyu(value: float) -> str:
+    text = f"{float(value):,.2f}"
+    return "UYU " + text.replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def _parse_quantity(text: str) -> float:
+    normalized = _norm_text(text)
+    words = {
+        "un": 1,
+        "una": 1,
+        "uno": 1,
+        "dos": 2,
+        "tres": 3,
+        "cuatro": 4,
+        "cinco": 5,
+        "seis": 6,
+        "siete": 7,
+        "ocho": 8,
+        "nueve": 9,
+        "diez": 10,
+        "once": 11,
+        "doce": 12,
+        "trece": 13,
+        "catorce": 14,
+        "quince": 15,
+        "veinte": 20,
+    }
+    qty_match = re.search(
+        r"\b(\d+(?:[.,]\d+)?)\s*(?:varillas?|listones?|barrotes?|zocalos?|molduras?|metros?|mts?|m)\b",
+        normalized,
+    )
+    if qty_match:
+        return float(qty_match.group(1).replace(",", "."))
+    for word, qty in words.items():
+        if re.search(
+            rf"\b{word}\s+(?:varillas?|listones?|barrotes?|zocalos?|molduras?|metros?|mts?|m)\b",
+            normalized,
+        ):
+            return float(qty)
+    return 1.0
+
+
+def _parse_moldura_query(message: str) -> dict[str, Any] | None:
+    normalized = _norm_text(message)
+    if not any(token in normalized for token in (
+        "varilla", "liston", "barrote", "zocalo", "moldura", "contravidrio", "media cana",
+    )):
+        return None
+    if not any(token in normalized for token in ("precio", "cotiz", "cuanto", "sale", "pedi", "quiero")):
+        return None
+    dim_match = re.search(
+        r"\b(\d+(?:[.,]\d+)?)\s*(?:mm)?\s*x\s*(\d+(?:[.,]\d+)?)\s*(?:mm)?\b",
+        normalized,
+    )
+    if not dim_match:
+        return None
+    width = float(dim_match.group(1).replace(",", "."))
+    height = float(dim_match.group(2).replace(",", "."))
+    material = None
+    if any(token in normalized for token in ("pino", "nac", "nacional", " pn")):
+        material = "pino"
+    elif any(token in normalized for token in ("euca", "eucalipto", "eucaliptus", "imp", "importado")):
+        material = "euca"
+    family = None
+    for candidate in ("liston", "barrote", "zocalo", "contravidrio", "media cana", "moldura"):
+        if candidate in normalized:
+            family = candidate
+            break
+    text_for_unit = normalized.replace(",", ".")
+    unit = "metro" if re.search(r"\b(?:metros?|mts?|m)\b", normalized) and "3.3" not in text_for_unit else "varilla"
+    return {
+        "width_mm": width,
+        "height_mm": height,
+        "material": material,
+        "family": family,
+        "quantity": _parse_quantity(message),
+        "unit": unit,
+    }
+
+
+def _format_moldura_quote_reply(q: Any) -> str:
+    item = q.item
+    iva_label = "IVA inc." if q.iva_included else "sin IVA"
+    qty = int(q.quantity) if float(q.quantity).is_integer() else q.quantity
+    unit_name = "varilla 3,3 m" if q.unit == "varilla" else "metro"
+    lines = [
+        f"{qty} x {item.family} {item.description} {item.width_mm:g}x{item.height_mm:g}mm ({item.code})",
+        f"Unitario {unit_name}: {_format_uyu(q.unit_price)} {iva_label}",
+        f"Total: {_format_uyu(q.total)} {iva_label}",
+    ]
+    if q.scale_hint:
+        lines.append("Como son mas de 20 varillas, te conviene revisar opcion de cotizar a escala.")
+    return "\n".join(lines)
+
+
+def _try_direct_moldura_reply(message: str) -> str | None:
+    parsed = _parse_moldura_query(message)
+    if parsed is None:
+        return None
+    q = quote_price(**parsed, include_iva=True)
+    if q is None:
+        return (
+            "No encontre esa moldura en el listado. Pasame material, medida en mm "
+            "y si es liston/barrote/zocalo/moldura para ubicarla mejor."
+        )
+    return _format_moldura_quote_reply(q)
 
 
 def _format_state(session: QuotationSession) -> str:
@@ -370,6 +502,39 @@ def ingest_pliego(ctx: RunContextWrapper[str], file_paths: list[str]) -> str:
     Pisa los items existentes en la sesión.
     """
     return _ingest_pliego_into_session(str(ctx.context), file_paths)
+
+
+@function_tool
+def quote_moldura_price(
+    ctx: RunContextWrapper[str],
+    width_mm: float,
+    height_mm: float,
+    quantity: float = 1,
+    material: str | None = None,
+    family: str | None = None,
+    unit: str = "varilla",
+) -> str:
+    """Busca precio de venta directa de molduras/listones/barrotes por medida.
+
+    Usala para consultas simples como "2 varillas de pino 10x10 de 3.3 m".
+    No agrega items a la cotizacion: solo devuelve el precio de catalogo.
+    """
+    _ensure_session(ctx)
+    q = quote_price(
+        width_mm=width_mm,
+        height_mm=height_mm,
+        quantity=quantity,
+        material=material,
+        family=family,
+        unit=unit,
+        include_iva=True,
+    )
+    if q is None:
+        return (
+            "No encontre esa moldura en el listado. Pasame material, medida en mm "
+            "y si es liston/barrote/zocalo/moldura para ubicarla mejor."
+        )
+    return _format_moldura_quote_reply(q)
 
 
 @function_tool
@@ -639,8 +804,10 @@ Sos el asistente de cotización de carpintería. Trabajás sobre una sesión de 
 Cómo trabajás:
 - Si el usuario pregunta cómo está la cotización, llamá `get_state`.
 - Cuando el usuario te diga "subí este pliego" / "ingestá este archivo" y te pase paths, usá `ingest_pliego`.
+- Si el usuario pide precio de venta de varillas/listones/barrotes/zócalos/molduras por medida (ej: "2 varillas de pino 10x10 de 3.3 m"), usá `quote_moldura_price`. No uses `add_custom_item` para eso y no armes pliego/diseño.
 - Si el usuario describe un mueble a medida en texto ("cotizame un bajo mesada...", "armame precio para...") sin subir pliego, usá `add_custom_item`.
   Convertí medidas a mm antes de llamar la tool. Si faltan medidas/material/espesor, pedí solo esos datos.
+- Si el usuario corrige un plano/despiece diciendo que faltan puertas, cajones, estantes, perchero u otro componente, rehacé el item con `add_custom_item` usando la descripción completa corregida; no respondas solo con una disculpa.
 - Si te pide cambiar cantidades de herrajes ("3 bisagras en vez de 2"), usá `set_hardware_quantity`.
 - Si te pasa precios de herrajes, usá `set_hardware_price` (es global, se persiste para todas las sesiones).
 - Si te dice color/días de pago/destino, usá las tools correspondientes.
@@ -683,6 +850,7 @@ def build_agent(session: QuotationSession | None = None) -> Agent:
         tools=[
             get_state,
             ingest_pliego,
+            quote_moldura_price,
             add_custom_item,
             set_color,
             set_payment_days,
@@ -727,6 +895,13 @@ async def run_turn_stream(session_id: str, message: str):
             save_session(s)
 
     append_message(session_id, "user", message)
+
+    direct_reply = _try_direct_moldura_reply(message)
+    if direct_reply is not None:
+        append_message(session_id, "assistant", direct_reply)
+        yield "token", {"delta": direct_reply}
+        yield "done", {"reply": direct_reply, "last_response_id": s.last_response_id}
+        return
 
     agent = build_agent(s)
     kwargs: dict[str, Any] = {"context": session_id, "max_turns": 25}
@@ -785,6 +960,14 @@ async def run_turn(session_id: str, message: str) -> dict[str, Any]:
     # Persist the user turn before running so a crash mid-agent still leaves
     # a record of what was asked.
     append_message(session_id, "user", message)
+
+    direct_reply = _try_direct_moldura_reply(message)
+    if direct_reply is not None:
+        append_message(session_id, "assistant", direct_reply)
+        return {
+            "reply": direct_reply,
+            "last_response_id": s.last_response_id,
+        }
 
     # Pass the current session into the prompt builder so the agent always
     # starts the turn knowing what's loaded (items, herrajes, totals, etc.),

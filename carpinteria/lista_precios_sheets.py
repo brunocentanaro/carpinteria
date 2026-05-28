@@ -1,7 +1,9 @@
 """Read/write helpers for the canonical price-list spreadsheet."""
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Iterable
 
 import gspread
@@ -16,6 +18,37 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+
+def _cache_path() -> Path:
+    configured = os.getenv("PRICES_CACHE_FILE")
+    if configured:
+        return Path(configured)
+    return Path(__file__).resolve().parents[1] / ".cache" / "activa_prices.json"
+
+
+def _read_cache() -> list[dict] | None:
+    path = _cache_path()
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    rows = data.get("rows") if isinstance(data, dict) else None
+    return rows if isinstance(rows, list) else None
+
+
+def _write_cache(rows: list[dict]) -> None:
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"tab": ACTIVA_TAB, "rows": rows}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _open(sheet_id: str | None = None) -> gspread.Spreadsheet:
@@ -47,21 +80,30 @@ def _write_table(ws: gspread.Worksheet, headers: list[str], rows: list[list]) ->
 
 
 def read_activa(sheet_id: str | None = None) -> list[dict]:
-    sh = _open(sheet_id)
     try:
+        sh = _open(sheet_id)
         ws = sh.worksheet(ACTIVA_TAB)
+        values = ws.get_all_values()
+        if not values:
+            cached = _read_cache()
+            return cached or []
+        headers = values[0]
+        out: list[dict] = []
+        for row in values[1:]:
+            if not any(cell.strip() for cell in row):
+                continue
+            out.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)})
+        if out:
+            _write_cache(out)
+        return out
     except gspread.WorksheetNotFound:
-        return []
-    values = ws.get_all_values()
-    if not values:
-        return []
-    headers = values[0]
-    out: list[dict] = []
-    for row in values[1:]:
-        if not any(cell.strip() for cell in row):
-            continue
-        out.append({h: (row[i] if i < len(row) else "") for i, h in enumerate(headers)})
-    return out
+        cached = _read_cache()
+        return cached or []
+    except Exception:
+        cached = _read_cache()
+        if cached is not None:
+            return cached
+        raise
 
 
 def write_items(items: Iterable[Producto], sheet_id: str | None = None) -> dict:
@@ -83,6 +125,7 @@ def write_items(items: Iterable[Producto], sheet_id: str | None = None) -> dict:
 
     activa = _ensure_worksheet(sh, ACTIVA_TAB, rows=n_rows, cols=n_cols)
     _write_table(activa, headers, rows)
+    _write_cache([dict(zip(headers, row)) for row in rows])
 
     return {
         "ok": True,

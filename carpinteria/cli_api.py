@@ -929,6 +929,44 @@ def handle_piece_set_quantity(data: dict) -> dict:
     return {"session": s.model_dump(mode="json")}
 
 
+def handle_piece_upsert(data: dict) -> dict:
+    """Create or replace a cut piece by label, then recalc."""
+    from carpinteria.agents.cotizador_chat import _recalculate_item
+    from carpinteria.quotation_session import CutPiece, find_item, get_session, save_session
+
+    sid = str(data.get("session_id") or "")
+    code = str(data.get("item_code") or "")
+    label = str(data.get("piece", {}).get("label") or "")
+    if not sid or not code or not label:
+        return {"error": "missing session_id, item_code or piece.label"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    it = find_item(s, code)
+    if it is None:
+        return {"error": f"item {code} not found"}
+    raw = data.get("piece") or {}
+    try:
+        piece = CutPiece(
+            width_mm=float(raw.get("width_mm") or 0),
+            height_mm=float(raw.get("height_mm") or 0),
+            quantity=max(1, int(raw.get("quantity") or 1)),
+            label=label,
+            edge_sides=list(raw.get("edge_sides") or []),
+        )
+    except (TypeError, ValueError):
+        return {"error": "invalid piece dimensions or quantity"}
+    label_l = label.strip().lower()
+    idx = next((i for i, p in enumerate(it.pieces) if p.label.strip().lower() == label_l), None)
+    if idx is None:
+        it.pieces.append(piece)
+    else:
+        it.pieces[idx] = piece
+    _recalculate_item(it, s)
+    save_session(s)
+    return {"session": s.model_dump(mode="json")}
+
+
 def handle_hardware_set_quantity(data: dict) -> dict:
     """Update one hardware row's quantity inside an item. qty=0 removes it."""
     from carpinteria.agents.cotizador_chat import _recalculate_item
@@ -1315,6 +1353,8 @@ def main() -> None:
             result = handle_item_delete(data)
         elif action == "piece_set_quantity":
             result = handle_piece_set_quantity(data)
+        elif action == "piece_upsert":
+            result = handle_piece_upsert(data)
         elif action == "hardware_set_quantity":
             result = handle_hardware_set_quantity(data)
         elif action == "hardware_catalog_list":

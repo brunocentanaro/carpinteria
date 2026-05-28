@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
+import unicodedata
 
 from openai import OpenAI
 
@@ -81,6 +83,212 @@ def analyze_pliego(file_paths: list[str]) -> dict:
     return json.loads(response.choices[0].message.content or "{}")
 
 
+NUMBER_WORDS = {
+    "un": 1,
+    "una": 1,
+    "uno": 1,
+    "dos": 2,
+    "tres": 3,
+    "cuatro": 4,
+    "cinco": 5,
+    "seis": 6,
+    "siete": 7,
+    "ocho": 8,
+    "nueve": 9,
+    "diez": 10,
+}
+
+
+def _norm(text: object) -> str:
+    raw = str(text or "").lower()
+    raw = unicodedata.normalize("NFKD", raw)
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _as_float(value: object, default: float = 0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _count_from_text(text: str, noun: str) -> int:
+    numeric = re.search(rf"\b(\d+)\s+{noun}es?\b", text)
+    if numeric:
+        return int(numeric.group(1))
+    for word, value in NUMBER_WORDS.items():
+        if re.search(rf"\b{word}\s+{noun}es?\b", text):
+            return value
+    return 0
+
+
+def _drawer_height_from_text(text: str) -> float | None:
+    match = re.search(r"cajon(?:es)?.{0,35}?(\d+(?:[.,]\d+)?)\s*cm\s+de\s+alto", text)
+    if not match:
+        match = re.search(r"(\d+(?:[.,]\d+)?)\s*cm\s+de\s+alto.{0,35}?cajon", text)
+    if not match:
+        return None
+    return float(match.group(1).replace(",", ".")) * 10
+
+
+def _door_count_from_text(text: str) -> int:
+    count = _count_from_text(text, "puerta")
+    if count:
+        return count
+    if "puertas" in text:
+        return 2
+    if "puerta" in text or "frente cerrado" in text or "frente con puerta" in text:
+        return 1
+    return 0
+
+
+def _normalize_piece_dimensions(out: dict, item: dict) -> None:
+    """Correct common AI orientation mistakes before pricing.
+
+    The calculator only sees rectangles. If the model says "lateral 2000x2000"
+    for a 2000x2000x500 wardrobe, the area is wildly wrong; normalize the
+    standard carcass pieces using the known overall dimensions.
+    """
+    dims = item.get("dimensions") or {}
+    width = _as_float(dims.get("width_mm"))
+    height = _as_float(dims.get("height_mm"))
+    depth = _as_float(dims.get("depth_mm"))
+    thickness = _as_float(item.get("thickness_mm"), 18) or 18
+    if width <= 0 or height <= 0 or depth <= 0:
+        return
+
+    pieces = out.get("pieces") or []
+    for piece in pieces:
+        label = _norm(piece.get("label", ""))
+        if "caj" in label:
+            continue
+        if any(token in label for token in ("lateral", "costado", "division", "divisor", "separador")):
+            piece["width_mm"] = height
+            piece["height_mm"] = depth
+            if not piece.get("edge_sides"):
+                piece["edge_sides"] = ["left"]
+        elif any(token in label for token in ("tapa", "base", "techo", "piso")):
+            piece["width_mm"] = width
+            piece["height_mm"] = depth
+            if not piece.get("edge_sides"):
+                piece["edge_sides"] = ["top", "left", "right"]
+        elif "estante" in label or "repisa" in label:
+            # Preserve the module width inferred by the model, but depth is the
+            # cabinet depth. A phrase like "estante de 40 cm" describes the bay
+            # height, not a 400mm shelf depth.
+            w = _as_float(piece.get("width_mm"))
+            if w <= 0 or w > width:
+                piece["width_mm"] = max(width - 2 * thickness, 0)
+            piece["height_mm"] = depth
+            if not piece.get("edge_sides"):
+                piece["edge_sides"] = ["top"]
+        elif ("trasera" in label or "fondo" in label) and "caj" not in label:
+            piece["width_mm"] = width
+            piece["height_mm"] = height
+            piece["edge_sides"] = []
+
+    label_text = " ".join(_norm(p.get("label", "")) for p in pieces)
+    desc_text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
+    if (
+        "trasera" not in label_text
+        and "fondo trasero" not in label_text
+        and "sin fondo" not in desc_text
+        and "sin trasera" not in desc_text
+    ):
+        pieces.append({
+            "width_mm": width,
+            "height_mm": height,
+            "quantity": 1,
+            "label": "trasera",
+            "edge_sides": [],
+        })
+
+    _complete_front_doors(out, item, width=width, height=height, thickness=thickness)
+    _complete_drawer_pieces(out, item, width=width, depth=depth, thickness=thickness)
+
+
+def _complete_front_doors(out: dict, item: dict, *, width: float, height: float, thickness: float) -> None:
+    pieces = out.get("pieces") or []
+    text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
+    if "sin puerta" in text or "abierto" in text:
+        return
+    door_count = _door_count_from_text(text)
+    existing = [p for p in pieces if "puerta" in _norm(p.get("label", ""))]
+    if existing:
+        for door in existing:
+            qty = max(1, int(_as_float(door.get("quantity"), 1)))
+            if _as_float(door.get("width_mm")) <= 0 or _as_float(door.get("width_mm")) > width:
+                door["width_mm"] = max((width / qty) - thickness, 0)
+            if _as_float(door.get("height_mm")) <= 0:
+                door["height_mm"] = height
+            if not door.get("edge_sides"):
+                door["edge_sides"] = ["top", "bottom", "left", "right"]
+        return
+    if door_count <= 0:
+        return
+    pieces.append({
+        "width_mm": max((width / door_count) - thickness, 0),
+        "height_mm": height,
+        "quantity": door_count,
+        "label": "puerta frente",
+        "edge_sides": ["top", "bottom", "left", "right"],
+    })
+    out["pieces"] = pieces
+
+
+def _complete_drawer_pieces(out: dict, item: dict, *, width: float, depth: float, thickness: float) -> None:
+    pieces = out.get("pieces") or []
+    text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
+    fronts = [p for p in pieces if "caj" in _norm(p.get("label", "")) and "frente" in _norm(p.get("label", ""))]
+    drawer_count = sum(max(1, int(_as_float(p.get("quantity"), 1))) for p in fronts)
+    drawer_count = drawer_count or _count_from_text(text, "cajon")
+    if drawer_count <= 0:
+        return
+
+    front_width = _as_float(fronts[0].get("width_mm")) if fronts else 0
+    front_height = _as_float(fronts[0].get("height_mm")) if fronts else 0
+    if front_width <= 0 or front_width > width:
+        front_width = max((width / drawer_count) - 2 * thickness, 0)
+    if front_height <= 0:
+        front_height = _drawer_height_from_text(text) or 200
+    drawer_depth = max(depth - 50, 0)
+
+    for front in fronts:
+        front["width_mm"] = min(_as_float(front.get("width_mm"), front_width), width)
+        if _as_float(front.get("height_mm")) <= 0:
+            front["height_mm"] = front_height
+        if not front.get("edge_sides"):
+            front["edge_sides"] = ["top", "bottom", "left", "right"]
+
+    label_text = " ".join(_norm(p.get("label", "")) for p in pieces)
+    if "lateral caj" not in label_text:
+        pieces.append({
+            "width_mm": drawer_depth,
+            "height_mm": front_height,
+            "quantity": drawer_count * 2,
+            "label": "lateral cajón",
+            "edge_sides": ["top"],
+        })
+    if "fondo caj" not in label_text and "base caj" not in label_text:
+        pieces.append({
+            "width_mm": max(front_width - 2 * thickness, 0),
+            "height_mm": drawer_depth,
+            "quantity": drawer_count,
+            "label": "fondo cajón",
+            "edge_sides": [],
+        })
+    if "trasera caj" not in label_text:
+        pieces.append({
+            "width_mm": max(front_width - 2 * thickness, 0),
+            "height_mm": front_height,
+            "quantity": drawer_count,
+            "label": "trasera cajón",
+            "edge_sides": [],
+        })
+    out["pieces"] = pieces
+
+
 def decompose_furniture(item: dict) -> dict:
     from carpinteria.hardware_catalog import catalog_prompt_block, get_by_code
 
@@ -111,6 +319,7 @@ def decompose_furniture(item: dict) -> dict:
     )
 
     out = json.loads(response.choices[0].message.content or "{}")
+    _normalize_piece_dimensions(out, item)
 
     # Normalize hardware: drop unknown codes, enrich each with display name + category.
     cleaned: list[dict] = []

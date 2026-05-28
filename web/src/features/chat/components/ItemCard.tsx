@@ -1,8 +1,9 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Plus, Ruler, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Maximize2, Plus, Ruler, Trash2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,7 @@ import {
   qk,
   setItemHardwareQuantity,
   setPieceQuantity,
+  upsertPiece,
   updateItem,
 } from "../api";
 import type { QuotationItem } from "../schemas";
@@ -121,7 +123,7 @@ export function ItemCard({ item, sessionId, defaultOpen = false }: ItemCardProps
           <Separator />
           <CardContent className="p-4 space-y-5">
             <ItemFields item={item} sessionId={sessionId} />
-            <DesignPreview item={item} />
+            <DesignPreview item={item} sessionId={sessionId} />
             <PiecesTable item={item} sessionId={sessionId} />
             <HardwareTable item={item} sessionId={sessionId} />
             <BreakdownTable item={item} />
@@ -206,12 +208,26 @@ function countFromText(text: string, nouns: string[]) {
   return 0;
 }
 
+function mentioned(text: string, words: string[]) {
+  return words.some((word) => new RegExp(`\\b${word}\\b`).test(text));
+}
+
 function inferVisualModel(item: QuotationItem) {
   const text = normalizeText(`${item.name} ${item.description} ${item.notes}`);
   const labels = item.pieces.map((p) => ({ ...p, normalizedLabel: normalizeText(p.label) }));
+  const hasDoorMention = mentioned(text, ["puerta", "puertas"]) || labels.some((p) => p.normalizedLabel.includes("puerta"));
+  const hasDoorPlural = mentioned(text, ["puertas"]);
+  const hasDrawerMention = mentioned(text, ["cajon", "cajones", "cajonera"]) || labels.some((p) => p.normalizedLabel.includes("caj"));
+  const hasDrawerPlural = mentioned(text, ["cajones"]);
+  const hasShelfMention = mentioned(text, ["estante", "estantes", "repisa", "repisas"]) || labels.some((p) => p.normalizedLabel.includes("estante"));
+  const hasShelfPlural = mentioned(text, ["estantes", "repisas"]);
+  const hasHanger =
+    mentioned(text, ["perchero", "percheros", "barral", "barrales", "colgado", "colgar"]) ||
+    labels.some((p) => /perchero|barral|colgado|colgar/.test(p.normalizedLabel));
   const doorCount =
     countFromText(text, ["puertas?"]) ||
-    labels.filter((p) => p.normalizedLabel.includes("puerta")).reduce((sum, p) => sum + p.quantity, 0);
+    labels.filter((p) => p.normalizedLabel.includes("puerta")).reduce((sum, p) => sum + p.quantity, 0) ||
+    (hasDoorPlural ? 2 : hasDoorMention ? 1 : 0);
   const drawerFrontCount = labels
     .filter((p) => p.normalizedLabel.includes("caj") && p.normalizedLabel.includes("frente"))
     .reduce((sum, p) => sum + p.quantity, 0);
@@ -221,15 +237,16 @@ function inferVisualModel(item: QuotationItem) {
       return label.includes("caj") && !label.includes("lateral") && !label.includes("fondo") && !label.includes("base") && !label.includes("costado");
     })
     .reduce((sum, p) => sum + p.quantity, 0);
-  const drawerCount = countFromText(text, ["cajones?", "cajon"]) || drawerFrontCount || drawerBoxCount;
+  const drawerCount = countFromText(text, ["cajones?", "cajon"]) || (hasDrawerPlural ? Math.max(2, drawerFrontCount, drawerBoxCount) : 0) || drawerFrontCount || drawerBoxCount || (hasDrawerMention ? 1 : 0);
   const shelfCount =
     countFromText(text, ["estantes?"]) ||
-    labels.filter((p) => p.normalizedLabel.includes("estante")).reduce((sum, p) => sum + p.quantity, 0);
+    labels.filter((p) => p.normalizedLabel.includes("estante")).reduce((sum, p) => sum + p.quantity, 0) ||
+    (hasShelfPlural ? 2 : hasShelfMention ? 1 : 0);
   const drawerPosition: "top" | "bottom" = /cajones?.{0,24}abajo|abajo.{0,24}cajones?/.test(text) ? "bottom" : "top";
-  return { doorCount, drawerCount, shelfCount, drawerPosition };
+  return { doorCount, drawerCount, shelfCount, drawerPosition, hasHanger };
 }
 
-function DesignPreview({ item }: { item: QuotationItem }) {
+function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: string }) {
   const dims = inferOverallDimensions(item);
   const totalPieces = item.pieces.reduce((sum, p) => sum + p.quantity, 0);
   const groups = item.pieces.reduce<Record<string, typeof item.pieces>>(
@@ -281,19 +298,28 @@ function DesignPreview({ item }: { item: QuotationItem }) {
           {displayDoorCount > 0 && <Badge variant="secondary">{displayDoorCount} puertas</Badge>}
           {displayDrawerCount > 0 && <Badge variant="secondary">{displayDrawerCount} cajones</Badge>}
           {displayShelfCount > 0 && <Badge variant="secondary">{displayShelfCount} estantes</Badge>}
+          {visualModel.hasHanger && <Badge variant="secondary">perchero</Badge>}
         </div>
       </div>
 
       <div className="overflow-x-auto p-3">
-        <div className="grid min-w-[860px] grid-cols-[520px_320px] gap-4">
-          <div className="grid grid-cols-3 gap-2">
+        <div className={displayDoorCount > 0 ? "grid min-w-[1120px] grid-cols-[760px_320px] gap-4" : "grid min-w-[860px] grid-cols-[520px_320px] gap-4"}>
+          <div className={displayDoorCount > 0 ? "grid grid-cols-4 gap-2" : "grid grid-cols-3 gap-2"}>
           <div className="border rounded bg-slate-50 p-2">
-            <div className="text-[11px] font-semibold text-center mb-1">Frente</div>
-            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} />
+            <div className="text-[11px] font-semibold text-center mb-1">
+              {displayDoorCount > 0 ? "Frente cerrado" : "Frente"}
+            </div>
+            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="closed" />
           </div>
+          {displayDoorCount > 0 && (
+            <div className="border rounded bg-slate-50 p-2">
+              <div className="text-[11px] font-semibold text-center mb-1">Frente abierto</div>
+              <FrontView itemCode={`${item.code}-open`} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="open" />
+            </div>
+          )}
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Costado</div>
-            <SideView dims={dims} shelves={displayShelfCount} />
+            <SideView dims={dims} shelves={displayShelfCount} hasHanger={visualModel.hasHanger} />
           </div>
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Planta</div>
@@ -322,7 +348,137 @@ function DesignPreview({ item }: { item: QuotationItem }) {
           </div>
         </div>
       </div>
+      <div className="border-t px-3 py-2 flex justify-end">
+        <PlanEditorDialog
+          item={item}
+          sessionId={sessionId}
+          dims={dims}
+          visualModel={visualModel}
+        />
+      </div>
     </section>
+  );
+}
+
+function PlanEditorDialog({
+  item,
+  sessionId,
+  dims,
+  visualModel,
+}: {
+  item: QuotationItem;
+  sessionId: string;
+  dims: ReturnType<typeof inferOverallDimensions>;
+  visualModel: ReturnType<typeof inferVisualModel>;
+}) {
+  const queryClient = useQueryClient();
+  const upsertMutation = useMutation({
+    mutationFn: upsertPiece,
+    onSuccess: (s) => queryClient.setQueryData(qk.session(sessionId), s),
+  });
+  const updateMutation = useMutation({
+    mutationFn: updateItem,
+    onSuccess: (s) => queryClient.setQueryData(qk.session(sessionId), s),
+  });
+
+  const width = dims.width || 0;
+  const height = dims.height || 0;
+  const depth = dims.depth || 0;
+  const thickness = item.thickness_mm || 18;
+  const halfBay = Math.max(width / 2 - thickness * 2, 0);
+
+  const addPiece = (piece: Parameters<typeof upsertPiece>[0]["piece"]) =>
+    upsertMutation.mutate({ sessionId, itemCode: item.code, piece });
+
+  const toggleHanger = () => {
+    const note = item.notes || "";
+    const has = /perchero|barral/i.test(note);
+    updateMutation.mutate({
+      sessionId,
+      itemCode: item.code,
+      fields: {
+        notes: has
+          ? note.replace(/\s*\[plano: perchero\]\s*/gi, " ").trim()
+          : `${note} [plano: perchero]`.trim(),
+      },
+    });
+  };
+
+  return (
+    <Dialog>
+      <DialogTrigger
+        render={
+          <Button type="button" variant="outline" size="sm">
+            <Maximize2 className="h-4 w-4" />
+            Abrir plano
+          </Button>
+        }
+      />
+      <DialogContent className="max-w-[96vw] w-[1100px]">
+        <DialogHeader>
+          <DialogTitle>Plano editable - {item.code}</DialogTitle>
+          <DialogDescription>
+            Retocá el boceto y las piezas principales del mueble.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
+          <div className="overflow-x-auto rounded-md border bg-slate-50 p-3">
+            <div className={visualModel.doorCount > 0 ? "grid min-w-[760px] grid-cols-4 gap-3" : "grid min-w-[560px] grid-cols-3 gap-3"}>
+              <PlanPanel title={visualModel.doorCount > 0 ? "Frente cerrado" : "Frente"}>
+                <FrontView itemCode={`${item.code}-editor`} dims={dims} shelves={visualModel.shelfCount} doorCount={visualModel.doorCount} drawerCount={visualModel.drawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="closed" />
+              </PlanPanel>
+              {visualModel.doorCount > 0 && (
+                <PlanPanel title="Frente abierto">
+                  <FrontView itemCode={`${item.code}-editor-open`} dims={dims} shelves={visualModel.shelfCount} doorCount={visualModel.doorCount} drawerCount={visualModel.drawerCount} drawerPosition={visualModel.drawerPosition} hasHanger={visualModel.hasHanger} mode="open" />
+                </PlanPanel>
+              )}
+              <PlanPanel title="Costado">
+                <SideView dims={dims} shelves={visualModel.shelfCount} hasHanger={visualModel.hasHanger} />
+              </PlanPanel>
+              <PlanPanel title="Planta">
+                <TopView dims={dims} />
+              </PlanPanel>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-md border p-3 space-y-2">
+              <div className="text-xs uppercase font-semibold text-muted-foreground">Agregar piezas</div>
+              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "puerta frente", width_mm: Math.max(width / 2 - thickness, 0), height_mm: height, quantity: 2, edge_sides: ["top", "bottom", "left", "right"] })}>
+                <Plus className="h-4 w-4" /> 2 puertas frente
+              </Button>
+              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "estante", width_mm: halfBay || Math.max(width - 2 * thickness, 0), height_mm: depth, quantity: Math.max(1, visualModel.shelfCount || 1), edge_sides: ["top"] })}>
+                <Plus className="h-4 w-4" /> Estante
+              </Button>
+              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "frente cajón", width_mm: halfBay || Math.max(width / 2 - thickness, 0), height_mm: 200, quantity: Math.max(1, visualModel.drawerCount || 1), edge_sides: ["top", "bottom", "left", "right"] })}>
+                <Plus className="h-4 w-4" /> Cajón
+              </Button>
+              <Button type="button" variant="outline" className="w-full justify-start" onClick={() => addPiece({ label: "división vertical", width_mm: height, height_mm: depth, quantity: 1, edge_sides: ["left"] })}>
+                <Plus className="h-4 w-4" /> División
+              </Button>
+              <Button type="button" variant="outline" className="w-full justify-start" onClick={toggleHanger}>
+                <Plus className="h-4 w-4" /> Perchero
+              </Button>
+            </div>
+            <div className="rounded-md border p-3 text-xs text-muted-foreground">
+              Las líneas del plano todavía no se arrastran con mouse. Esta versión
+              permite agrandar y corregir componentes principales; el siguiente
+              paso es editar divisiones directamente sobre el dibujo.
+            </div>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PlanPanel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="rounded-md border bg-card p-2">
+      <div className="text-[11px] font-semibold text-center mb-1">{title}</div>
+      {children}
+    </div>
   );
 }
 
@@ -372,6 +528,8 @@ function FrontView({
   doorCount,
   drawerCount,
   drawerPosition,
+  hasHanger,
+  mode = "closed",
 }: {
   itemCode: string;
   dims: ReturnType<typeof inferOverallDimensions>;
@@ -379,20 +537,29 @@ function FrontView({
   doorCount: number;
   drawerCount: number;
   drawerPosition: "top" | "bottom";
+  hasHanger: boolean;
+  mode?: "closed" | "open";
 }) {
   const bodyX = 38;
   const bodyY = 20;
   const bodyW = 152;
   const bodyH = 118;
   const hasDoorsAndDrawers = drawerCount > 0 && doorCount > 0;
-  const drawerAreaH = hasDoorsAndDrawers ? 34 : bodyH;
-  const drawersOnBottom = hasDoorsAndDrawers && drawerPosition === "bottom";
+  const hasOpenInteriorAndDrawers = drawerCount > 0 && (shelves > 0 || hasHanger) && doorCount === 0;
+  const hasSeparatedDrawers = hasDoorsAndDrawers || hasOpenInteriorAndDrawers;
+  const drawerAreaH = hasSeparatedDrawers ? Math.min(62, Math.max(34, drawerCount * 22)) : bodyH;
+  const drawersOnBottom = hasSeparatedDrawers && (drawerPosition === "bottom" || hasOpenInteriorAndDrawers);
   const drawerY = drawersOnBottom ? bodyY + bodyH - drawerAreaH : bodyY;
-  const lowerY = hasDoorsAndDrawers && !drawersOnBottom ? bodyY + drawerAreaH : bodyY;
+  const lowerY = hasSeparatedDrawers && !drawersOnBottom ? bodyY + drawerAreaH : bodyY;
   const lowerBottom = drawersOnBottom ? drawerY : bodyY + bodyH;
   const lowerH = lowerBottom - lowerY;
   const drawerCols = Math.max(1, drawerCount);
   const doorCols = Math.max(1, doorCount);
+  const hasInterior = shelves > 0 || hasHanger;
+  const showInterior = mode === "open" || doorCount === 0;
+  const showDoorLeaves = mode === "closed" && doorCount > 0;
+  const closetW = hasInterior && shelves > 0 ? bodyW * 0.62 : bodyW;
+  const shelfX = bodyX + closetW;
 
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista frontal esquemática">
@@ -403,6 +570,32 @@ function FrontView({
       </defs>
       <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
       <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} fill={`url(#grain-front-${itemCode})`} opacity="0.5" />
+      {showInterior && doorCount > 1 && (
+        <>
+          {Array.from({ length: doorCols - 1 }).map((_, i) => {
+            const x = bodyX + (bodyW / doorCols) * (i + 1);
+            return <line key={`bay-${i}`} x1={x} y1={lowerY} x2={x} y2={lowerBottom} stroke="#92400e" strokeWidth="1" opacity="0.45" strokeDasharray="4 3" />;
+          })}
+        </>
+      )}
+      {showInterior && hasInterior && shelves > 0 && (
+        <line x1={shelfX} y1={lowerY} x2={shelfX} y2={lowerBottom} stroke="#92400e" strokeWidth="1.2" opacity="0.75" />
+      )}
+      {showInterior && hasHanger && (
+        <g>
+          <line x1={bodyX + 12} y1={lowerY + 28} x2={bodyX + closetW - 12} y2={lowerY + 28} stroke="#334155" strokeWidth="2" strokeLinecap="round" />
+          <path d={`M${bodyX + 26} ${lowerY + 28} q10 8 20 0 M${bodyX + 58} ${lowerY + 28} q10 8 20 0`} fill="none" stroke="#64748b" strokeWidth="1" opacity="0.8" />
+        </g>
+      )}
+      {showInterior && shelves > 0 && (
+        <>
+          {Array.from({ length: Math.min(shelves, 4) }).map((_, i) => {
+            const y = lowerY + lowerH * ((i + 1) / (Math.min(shelves, 4) + 1));
+            const x1 = hasInterior && hasHanger ? shelfX + 4 : bodyX + 4;
+            return <line key={`shelf-${i}`} x1={x1} y1={y} x2={bodyX + bodyW - 4} y2={y} stroke="#92400e" strokeWidth="1" opacity="0.7" />;
+          })}
+        </>
+      )}
       {drawerCount > 0 && (
         <>
           {Array.from({ length: drawerCols }).map((_, i) => {
@@ -415,23 +608,19 @@ function FrontView({
               </g>
             );
           })}
-          {hasDoorsAndDrawers && drawersOnBottom && (
+          {hasSeparatedDrawers && drawersOnBottom && (
             <line x1={bodyX} y1={drawerY} x2={bodyX + bodyW} y2={drawerY} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />
           )}
-          {hasDoorsAndDrawers && !drawersOnBottom && (
+          {hasSeparatedDrawers && !drawersOnBottom && (
             <line x1={bodyX} y1={drawerY + drawerAreaH} x2={bodyX + bodyW} y2={drawerY + drawerAreaH} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />
           )}
         </>
       )}
-      {doorCount > 0 && (
+      {showDoorLeaves && (
         <>
           {Array.from({ length: doorCols - 1 }).map((_, i) => {
             const x = bodyX + (bodyW / doorCols) * (i + 1);
-            return <line key={`door-sep-${i}`} x1={x} y1={lowerY} x2={x} y2={bodyY + bodyH} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />;
-          })}
-          {Array.from({ length: Math.min(shelves, 3) }).map((_, i) => {
-            const y = lowerY + lowerH * ((i + 1) / (Math.min(shelves, 3) + 1));
-            return <line key={`shelf-${i}`} x1={bodyX + 4} y1={y} x2={bodyX + bodyW - 4} y2={y} stroke="#92400e" strokeWidth="1" opacity="0.7" />;
+            return <line key={`door-sep-${i}`} x1={x} y1={lowerY} x2={x} y2={lowerBottom} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />;
           })}
           {Array.from({ length: doorCols }).map((_, i) => {
             const x = bodyX + (bodyW / doorCols) * i;
@@ -452,9 +641,11 @@ function FrontView({
 function SideView({
   dims,
   shelves,
+  hasHanger,
 }: {
   dims: ReturnType<typeof inferOverallDimensions>;
   shelves: number;
+  hasHanger: boolean;
 }) {
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista lateral esquemática">
@@ -465,6 +656,7 @@ function SideView({
         const y = 52 + i * 28;
         return <line key={i} x1="66" y1={y} x2="155" y2={y} stroke="#92400e" strokeWidth="1" opacity="0.6" />;
       })}
+      {hasHanger && <line x1="72" y1="48" x2="150" y2="48" stroke="#334155" strokeWidth="2" strokeLinecap="round" />}
       <DimensionLine x1={62} y1={160} x2={180} y2={160} label={mm(dims.depth)} />
       <DimensionLine x1={46} y1={20} x2={46} y2={138} label={mm(dims.height)} vertical />
     </svg>

@@ -28,3 +28,27 @@ export async function PATCH(
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
+
+// POST /api/sessions/:id/items/:code/pieces
+// body: { piece: { label, width_mm, height_mm, quantity, edge_sides } }
+//
+// Create or replace one piece by label and recalculate.
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string; code: string }> },
+) {
+  try {
+    const { id, code } = await params;
+    const body = await req.json().catch(() => ({}));
+    const result = await callPython({
+      action: "piece_upsert",
+      session_id: id,
+      item_code: code,
+      piece: body?.piece,
+    });
+    return NextResponse.json(result);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}

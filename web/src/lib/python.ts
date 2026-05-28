@@ -1,13 +1,32 @@
 import { spawn } from "child_process";
+import fs from "fs";
 import path from "path";
 
 const PROJECT_ROOT = process.env.PROJECT_ROOT || path.resolve(process.cwd(), "..");
+
+function pythonInvocation() {
+  const configured = process.env.PYTHON_CMD;
+  if (configured) {
+    return { command: configured, args: ["-m", "carpinteria.cli_api"] };
+  }
+
+  const venvPython =
+    process.platform === "win32"
+      ? path.join(PROJECT_ROOT, ".venv", "Scripts", "python.exe")
+      : path.join(PROJECT_ROOT, ".venv", "bin", "python");
+  if (fs.existsSync(venvPython)) {
+    return { command: venvPython, args: ["-m", "carpinteria.cli_api"] };
+  }
+
+  return { command: "uv", args: ["run", "python", "-m", "carpinteria.cli_api"] };
+}
 
 export async function callPython(
   input: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const child = spawn("uv", ["run", "python", "-m", "carpinteria.cli_api"], {
+    const py = pythonInvocation();
+    const child = spawn(py.command, py.args, {
       cwd: PROJECT_ROOT,
       env: {
         ...process.env,
@@ -19,6 +38,10 @@ export async function callPython(
 
     let stdout = "";
     let stderr = "";
+
+    child.on("error", (err: Error) => {
+      reject(new Error(`No pude iniciar Python (${py.command}): ${err.message}`));
+    });
 
     child.stdout.on("data", (d: Buffer) => {
       stdout += d.toString();
@@ -58,24 +81,38 @@ export function streamPython(
 ): ReadableStream<string> {
   return new ReadableStream<string>({
     start(controller) {
-      const child = spawn(
-        "uv",
-        ["run", "python", "-m", "carpinteria.cli_api"],
-        {
-          cwd: PROJECT_ROOT,
-          env: {
-            ...process.env,
-            PYTHONDONTWRITEBYTECODE: "1",
-            // PYTHONUNBUFFERED so each json.dumps + flush lands here right
-            // away, instead of being block-buffered by libc.
-            PYTHONUNBUFFERED: "1",
-          },
-          stdio: ["pipe", "pipe", "pipe"],
+      const py = pythonInvocation();
+      const child = spawn(py.command, py.args, {
+        cwd: PROJECT_ROOT,
+        env: {
+          ...process.env,
+          PYTHONDONTWRITEBYTECODE: "1",
+          // PYTHONUNBUFFERED so each json.dumps + flush lands here right
+          // away, instead of being block-buffered by libc.
+          PYTHONUNBUFFERED: "1",
         },
-      );
+        stdio: ["pipe", "pipe", "pipe"],
+      });
 
       let buf = "";
       let stderr = "";
+      let closed = false;
+      const closeController = () => {
+        if (!closed) {
+          closed = true;
+          controller.close();
+        }
+      };
+
+      child.on("error", (err: Error) => {
+        controller.enqueue(
+          JSON.stringify({
+            type: "error",
+            message: `No pude iniciar Python (${py.command}): ${err.message}`,
+          }),
+        );
+        closeController();
+      });
 
       child.stdout.on("data", (d: Buffer) => {
         buf += d.toString();
@@ -100,7 +137,7 @@ export function streamPython(
             JSON.stringify({ type: "error", message: stderr.trim() }),
           );
         }
-        controller.close();
+        closeController();
       });
 
       child.stdin.end(JSON.stringify(input), "utf-8");

@@ -16,6 +16,7 @@ from carpinteria.lista_precios_parser import Producto
 # canonical (familia, material) pair used in the new schema. Order matters —
 # more specific terms first.
 _MATERIAL_QUERY_MAP: list[tuple[str, dict]] = [
+    ("melam",         {"familia": "MELAMINICO"}),
     ("melaminic",     {"familia": "MELAMINICO"}),
     ("melamina",      {"familia": "MELAMINICO"}),
     ("multiplaca",    {"familia": "MULTIPLACA"}),
@@ -37,7 +38,7 @@ _MATERIAL_QUERY_MAP: list[tuple[str, dict]] = [
 
 def _normalize_material_query(q: str) -> dict:
     """Return filter dict {familia?, material?} guessed from the query string."""
-    q_l = q.lower().strip()
+    q_l = _norm_text(q)
     for needle, filt in _MATERIAL_QUERY_MAP:
         if needle in q_l:
             return filt
@@ -93,6 +94,8 @@ class ProductCatalog:
     def from_activa(cls, sheet_id: str | None = None) -> "ProductCatalog":
         from carpinteria.lista_precios_sheets import items_from_dicts, read_activa
         rows = read_activa(sheet_id)
+        if not rows:
+            raise RuntimeError("No pude leer el catalogo Activa de precios de placas.")
         return cls(items_from_dicts(rows))
 
     # ----- generic filtering -----

@@ -15,6 +15,15 @@ COLLECTION = "auth_users"
 AREAS = {"personal", "administracion"}
 BRANDS = {"casa", "pirone"}
 RESET_EMAIL_TO = "lacasadelcarpinterosa@gmail.com"
+DEFAULT_USERS = [
+    {
+        "username": "richard",
+        "password": "MundoCarpinteroSA.",
+        "brand_id": "casa",
+        "area": "personal",
+        "must_change_password": True,
+    },
+]
 
 
 def _coll():
@@ -27,6 +36,39 @@ def ensure_indexes() -> None:
         _coll().create_index([("brand_id", 1), ("area", 1), ("active", 1)], background=True)
     except Exception:
         pass
+
+
+def ensure_default_users() -> None:
+    ensure_indexes()
+    for user in DEFAULT_USERS:
+        username = str(user["username"]).strip().lower()
+        exists = _coll().find_one({
+            "brand_id": user["brand_id"],
+            "username": username,
+        })
+        if exists:
+            continue
+        salt, password_hash = _hash_password(str(user["password"]))
+        now = datetime.now(timezone.utc)
+        doc = {
+            "id": secrets.token_hex(12),
+            "username": username,
+            "brand_id": user["brand_id"],
+            "area": user["area"],
+            "salt": salt,
+            "password_hash": password_hash,
+            "active": True,
+            "all_access": username == "juan pirone",
+            "failed_attempts": 0,
+            "locked": False,
+            "must_change_password": bool(user.get("must_change_password", True)),
+            "created_at": now,
+            "updated_at": now,
+        }
+        try:
+            _coll().insert_one(doc)
+        except Exception:
+            pass
 
 
 def _hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
@@ -62,7 +104,7 @@ def _row(doc: dict[str, Any]) -> dict[str, Any]:
 
 
 def list_users(brand_id: str | None = None) -> list[dict[str, Any]]:
-    ensure_indexes()
+    ensure_default_users()
     q: dict[str, Any] = {}
     if brand_id:
         q["brand_id"] = brand_id
@@ -150,7 +192,7 @@ def update_password(user_id: str, password: str) -> dict[str, Any] | None:
 
 
 def authenticate(*, username: str, password: str, brand_id: str, area: str) -> dict[str, Any] | None:
-    ensure_indexes()
+    ensure_default_users()
     username = username.strip().lower()
     query = {
         "username": username,

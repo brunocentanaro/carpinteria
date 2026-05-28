@@ -264,6 +264,7 @@ export async function updateItem(input: {
     quantity: number;
     name: string;
     edge_banding: string;
+    notes: string;
   }>;
 }) {
   return api(
@@ -298,6 +299,27 @@ export async function setPieceQuantity(input: {
         piece_label: input.pieceLabel,
         quantity: input.quantity,
       }),
+    },
+    z.object({ session: SessionSchema }),
+  ).then((d) => d.session);
+}
+
+export async function upsertPiece(input: {
+  sessionId: string;
+  itemCode: string;
+  piece: {
+    label: string;
+    width_mm: number;
+    height_mm: number;
+    quantity: number;
+    edge_sides?: string[];
+  };
+}) {
+  return api(
+    `/api/sessions/${input.sessionId}/items/${input.itemCode}/pieces`,
+    {
+      method: "POST",
+      body: JSON.stringify({ piece: input.piece }),
     },
     z.object({ session: SessionSchema }),
   ).then((d) => d.session);
