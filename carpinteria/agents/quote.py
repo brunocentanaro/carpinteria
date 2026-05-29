@@ -70,6 +70,7 @@ def calculate_quote(
     edge_banding_name: str = "",
     payment_days: int = 0,
     destination: str = "",
+    quantity: int = 1,
 ) -> str:
     import json
     from carpinteria.shipping import FixedShippingProvider
@@ -88,6 +89,7 @@ def calculate_quote(
         edge_banding_name=edge_banding_name or None,
         payment_days=payment_days if payment_days > 0 else None,
         shipping_provider=shipping,
+        shipping_units=quantity,
         destination=destination,
     )
     return _format_quotation(quotation)
@@ -125,7 +127,7 @@ Flujo:
    - material, thickness_mm, color: datos del plano o los que el usuario indique
    - boards_needed: si lo sabés del plano, pasalo; si no, se estima automáticamente
 
-El precio final se calcula automáticamente: costo USD x TC x multiplicador mano de obra (x2) + ganancia (60%).
+El precio final se calcula automáticamente con placa por área usada + margen, cantos, herrajes, cortes, mano de obra por horas, maquinaria, merma, ganancia y recargos si aplican.
 
 Si faltan datos (ej: qué lados llevan canto), preguntale al usuario.
 Si no se encuentra la placa en el listado de precios, mostrá las opciones disponibles.

@@ -12,14 +12,18 @@ from agents import ModelSettings
 # similar y el costo lo justifique.
 VISION_MODEL = "gpt-5.4-mini"
 AGENT_MODEL = "gpt-5.4-mini"
-MACHINERY_PERCENT = float(os.getenv("MACHINERY_PERCENT", "20"))
-WASTE_PERCENT = float(os.getenv("WASTE_PERCENT", "20"))
+MACHINERY_PERCENT = float(os.getenv("MACHINERY_PERCENT", "7"))
+WASTE_PERCENT = float(os.getenv("WASTE_PERCENT", "17.5"))
 LABOR_PERCENT = float(os.getenv("LABOR_PERCENT", "40"))
+CUTS_PER_LABOR_HOUR = float(os.getenv("CUTS_PER_LABOR_HOUR", "8"))
+LABOR_DAY_HOURS = float(os.getenv("LABOR_DAY_HOURS", "8"))
+LABOR_DAY_PRICE_UYU = float(os.getenv("LABOR_DAY_PRICE_UYU", "2500"))
 CUTS_PERCENT = float(os.getenv("CUTS_PERCENT", "20"))
 CUTS_BASE_MAX = int(os.getenv("CUTS_BASE_MAX", "50"))
 PROFIT_PERCENT = float(os.getenv("PROFIT_PERCENT", "60"))
 
-PARTIAL_BOARD_FULL_THRESHOLD = float(os.getenv("PARTIAL_BOARD_FULL_THRESHOLD", "85"))
+PARTIAL_BOARD_FULL_THRESHOLD = float(os.getenv("PARTIAL_BOARD_FULL_THRESHOLD", "95"))
+PARTIAL_BOARD_AREA_CONTINGENCY_PERCENT = float(os.getenv("PARTIAL_BOARD_AREA_CONTINGENCY_PERCENT", "7.5"))
 PARTIAL_BOARD_TIERS: list[tuple[float, float]] = [
     (70, 10),
     (50, 20),
@@ -27,12 +31,13 @@ PARTIAL_BOARD_TIERS: list[tuple[float, float]] = [
     (0, 40),
 ]
 
-STATE_SURCHARGE_PERCENT = float(os.getenv("STATE_SURCHARGE_PERCENT", "5"))
+STATE_SURCHARGE_PERCENT = float(os.getenv("STATE_SURCHARGE_PERCENT", "0"))
 PAYMENT_DELAY_TIERS: list[tuple[int, float]] = [
-    (30, 7),
-    (45, 10),
-    (60, 12.5),
-    (90, 15),
+    (0, 0),
+    (30, 5),
+    (45, 8),
+    (60, 10),
+    (90, 13),
 ]
 PAYMENT_DELAY_MAX_DAYS = 90
 

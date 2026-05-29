@@ -34,6 +34,7 @@ from carpinteria.quotation_session import (
     get_session,
     save_session,
 )
+from carpinteria.schemas import QuotationLine
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +102,37 @@ def _recalculate_item(
     material = item.material or "melamínico"
     eb_name = item.edge_banding or color
 
+    if hw_prices is None:
+        hw_prices = _hw_prices_map()
+    hw_lines = []
+    pending = []
+    quote_hw_lines: list[QuotationLine] = []
+    for hu in item.hardware:
+        spec = get_by_code(hu.code)
+        if spec is None:
+            continue
+        unit_price = float(hw_prices.get(hu.code, 0.0))
+        subtotal = round(hu.quantity * unit_price, 2)
+        line = {
+            "code": hu.code,
+            "concept": f"Herraje: {spec.name}",
+            "category": spec.category,
+            "quantity": hu.quantity,
+            "unit": hu.unit or spec.unit,
+            "unit_price": round(unit_price, 2),
+            "subtotal": subtotal,
+        }
+        hw_lines.append(line)
+        quote_hw_lines.append(QuotationLine(
+            concept=line["concept"],
+            quantity=hu.quantity,
+            unit=hu.unit or spec.unit,
+            unit_price=round(unit_price, 2),
+            subtotal=subtotal,
+        ))
+        if unit_price <= 0:
+            pending.append(hu.code)
+
     q = calculate_quotation(
         pieces=pieces,
         catalog=catalog,
@@ -112,35 +144,14 @@ def _recalculate_item(
         payment_days=session.payment_days,
         destination=session.destination,
         placa_sku=item.placa_sku,
+        shipping_units=item.quantity,
+        extra_input_lines=quote_hw_lines,
     )
     base = q.model_dump()
 
-    if hw_prices is None:
-        hw_prices = _hw_prices_map()
-    hw_lines = []
-    pending = []
-    for hu in item.hardware:
-        spec = get_by_code(hu.code)
-        if spec is None:
-            continue
-        unit_price = float(hw_prices.get(hu.code, 0.0))
-        line = {
-            "code": hu.code,
-            "concept": f"Herraje: {spec.name}",
-            "category": spec.category,
-            "quantity": hu.quantity,
-            "unit": hu.unit or spec.unit,
-            "unit_price": round(unit_price, 2),
-            "subtotal": round(hu.quantity * unit_price, 2),
-        }
-        hw_lines.append(line)
-        if unit_price <= 0:
-            pending.append(hu.code)
-
     base["hardware_lines"] = hw_lines
     base["pending_hardware_codes"] = pending
-    hw_total = sum(l["subtotal"] for l in hw_lines)
-    base["total_with_hardware"] = round(base.get("total", 0) + hw_total, 2)
+    base["total_with_hardware"] = round(base.get("total", 0), 2)
     base["tc"] = tc
     item.last_quote = base
     return base

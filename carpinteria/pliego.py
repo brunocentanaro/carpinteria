@@ -143,6 +143,15 @@ def _door_count_from_text(text: str) -> int:
     return 0
 
 
+def _drawers_are_stacked(text: str) -> bool:
+    return bool(
+        "cajonera" in text
+        or "cajones vertical" in text
+        or "cajones apil" in text
+        or "cajones uno sobre otro" in text
+    )
+
+
 def _normalize_piece_dimensions(out: dict, item: dict) -> None:
     """Correct common AI orientation mistakes before pricing.
 
@@ -190,11 +199,36 @@ def _normalize_piece_dimensions(out: dict, item: dict) -> None:
 
     label_text = " ".join(_norm(p.get("label", "")) for p in pieces)
     desc_text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
+    if not any(token in label_text for token in ("tapa", "techo")):
+        pieces.append({
+            "width_mm": width,
+            "height_mm": depth,
+            "quantity": 1,
+            "label": "tapa",
+            "edge_sides": ["top", "left", "right"],
+        })
+    if not any(token in label_text for token in ("base", "piso")):
+        pieces.append({
+            "width_mm": width,
+            "height_mm": depth,
+            "quantity": 1,
+            "label": "base",
+            "edge_sides": ["top", "left", "right"],
+        })
+    if "lateral" not in label_text and "costado" not in label_text:
+        pieces.append({
+            "width_mm": height,
+            "height_mm": depth,
+            "quantity": 2,
+            "label": "lateral",
+            "edge_sides": ["left"],
+        })
     if (
         "trasera" not in label_text
         and "fondo trasero" not in label_text
         and "sin fondo" not in desc_text
         and "sin trasera" not in desc_text
+        and "cajonera" not in desc_text
     ):
         pieces.append({
             "width_mm": width,
@@ -204,8 +238,9 @@ def _normalize_piece_dimensions(out: dict, item: dict) -> None:
             "edge_sides": [],
         })
 
+    out["pieces"] = pieces
     _complete_front_doors(out, item, width=width, height=height, thickness=thickness)
-    _complete_drawer_pieces(out, item, width=width, depth=depth, thickness=thickness)
+    _complete_drawer_pieces(out, item, width=width, height=height, depth=depth, thickness=thickness)
 
 
 def _complete_front_doors(out: dict, item: dict, *, width: float, height: float, thickness: float) -> None:
@@ -237,7 +272,7 @@ def _complete_front_doors(out: dict, item: dict, *, width: float, height: float,
     out["pieces"] = pieces
 
 
-def _complete_drawer_pieces(out: dict, item: dict, *, width: float, depth: float, thickness: float) -> None:
+def _complete_drawer_pieces(out: dict, item: dict, *, width: float, height: float, depth: float, thickness: float) -> None:
     pieces = out.get("pieces") or []
     text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
     fronts = [p for p in pieces if "caj" in _norm(p.get("label", "")) and "frente" in _norm(p.get("label", ""))]
@@ -248,14 +283,27 @@ def _complete_drawer_pieces(out: dict, item: dict, *, width: float, depth: float
 
     front_width = _as_float(fronts[0].get("width_mm")) if fronts else 0
     front_height = _as_float(fronts[0].get("height_mm")) if fronts else 0
+    stacked = _drawers_are_stacked(text)
     if front_width <= 0 or front_width > width:
-        front_width = max((width / drawer_count) - 2 * thickness, 0)
+        front_width = width if stacked else max((width / drawer_count) - 2 * thickness, 0)
     if front_height <= 0:
-        front_height = _drawer_height_from_text(text) or 200
-    drawer_depth = max(depth - 50, 0)
+        inferred_height = max(height / drawer_count, 0) if stacked else 0
+        front_height = _drawer_height_from_text(text) or inferred_height or 200
+    drawer_depth = depth if stacked else max(depth - 50, 0)
+
+    if not fronts:
+        front = {
+            "width_mm": front_width,
+            "height_mm": front_height,
+            "quantity": drawer_count,
+            "label": "frente cajon",
+            "edge_sides": ["top", "bottom", "left", "right"],
+        }
+        pieces.append(front)
+        fronts = [front]
 
     for front in fronts:
-        front["width_mm"] = min(_as_float(front.get("width_mm"), front_width), width)
+        front["width_mm"] = min(_as_float(front.get("width_mm"), front_width), width) or front_width
         if _as_float(front.get("height_mm")) <= 0:
             front["height_mm"] = front_height
         if not front.get("edge_sides"):
@@ -272,21 +320,55 @@ def _complete_drawer_pieces(out: dict, item: dict, *, width: float, depth: float
         })
     if "fondo caj" not in label_text and "base caj" not in label_text:
         pieces.append({
-            "width_mm": max(front_width - 2 * thickness, 0),
+            "width_mm": front_width,
             "height_mm": drawer_depth,
             "quantity": drawer_count,
-            "label": "fondo cajón",
+            "label": "base cajon",
             "edge_sides": [],
         })
     if "trasera caj" not in label_text:
         pieces.append({
-            "width_mm": max(front_width - 2 * thickness, 0),
+            "width_mm": front_width,
             "height_mm": front_height,
             "quantity": drawer_count,
             "label": "trasera cajón",
             "edge_sides": [],
         })
+    if stacked and "fondo caj" not in label_text:
+        pieces.append({
+            "width_mm": front_width,
+            "height_mm": front_height,
+            "quantity": drawer_count,
+            "label": "fondo cajon",
+            "edge_sides": [],
+        })
     out["pieces"] = pieces
+
+
+def _ensure_hardware_from_text(out: dict, item: dict) -> None:
+    text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
+    hardware = list(out.get("hardware") or [])
+
+    def upsert(code: str, quantity: int) -> None:
+        for hw in hardware:
+            if (hw.get("code") or "").strip() == code:
+                hw["quantity"] = max(int(hw.get("quantity") or 0), quantity)
+                return
+        hardware.append({"code": code, "quantity": quantity})
+
+    drawer_count = _count_from_text(text, "cajon")
+    if "rueda" in text:
+        match = re.search(r"\b(\d+)\s+ruedas?\b", text)
+        qty = int(match.group(1)) if match else 4
+        upsert("RUEDA_GIR_SIN_FRENO", qty)
+    if "guia telescop" in text and drawer_count:
+        depth = _as_float((item.get("dimensions") or {}).get("depth_mm"), 450)
+        guide_size = min((300, 350, 400, 450, 500, 550), key=lambda x: abs(x - depth))
+        upsert(f"GUIA_TELESC_{guide_size}", drawer_count)
+    if "cerradura" in text and drawer_count:
+        upsert("CERR_CAJONERA_3", drawer_count)
+
+    out["hardware"] = hardware
 
 
 def decompose_furniture(item: dict) -> dict:
@@ -320,6 +402,7 @@ def decompose_furniture(item: dict) -> dict:
 
     out = json.loads(response.choices[0].message.content or "{}")
     _normalize_piece_dimensions(out, item)
+    _ensure_hardware_from_text(out, item)
 
     # Normalize hardware: drop unknown codes, enrich each with display name + category.
     cleaned: list[dict] = []

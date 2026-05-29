@@ -60,6 +60,7 @@ def handle_quote(data: dict) -> dict:
         edge_banding_name=data.get("edge_banding_name") or None,
         payment_days=payment_days,
         shipping_provider=shipping,
+        shipping_units=int(data.get("quantity") or 1),
         destination=destination,
     )
     return q.model_dump()
@@ -83,7 +84,7 @@ def handle_quote_item(data: dict) -> dict:
     from carpinteria.calculator import calculate_quotation
     from carpinteria.hardware_catalog import get_by_code
     from carpinteria.pliego import decompose_furniture
-    from carpinteria.schemas import CutPiece
+    from carpinteria.schemas import CutPiece, QuotationLine
     from carpinteria.shipping import FixedShippingProvider
 
     item = data["item"]
@@ -162,25 +163,13 @@ def handle_quote_item(data: dict) -> dict:
     if isinstance(payment_days, int) and payment_days <= 0:
         payment_days = None
 
-    q = calculate_quotation(
-        pieces=pieces,
-        catalog=catalog,
-        tc=tc,
-        material=material,
-        thickness_mm=float(thickness),
-        color=color,
-        edge_banding_name=eb_name,
-        payment_days=payment_days,
-        shipping_provider=shipping,
-        destination=destination,
-    )
-
     # Hardware: agent already chose curated codes; we just attach the
-    # user-provided price (if any). Codes without a price stay at 0 and the
-    # front shows them as pending input.
+    # user-provided price (if any). Hardware is part of inputs before profit,
+    # but operational surcharges still use only placa+canto as base.
     hardware_prices: dict = data.get("hardware_prices") or {}
     hw_lines = []
     pending_hardware: list[dict] = []
+    quote_hw_lines: list[QuotationLine] = []
     for hw in decomposition.get("hardware", []):
         code = (hw.get("code") or "").strip()
         if not code:
@@ -206,6 +195,13 @@ def handle_quote_item(data: dict) -> dict:
             "subtotal": round(qty * unit_price, 2),
         }
         hw_lines.append(line)
+        quote_hw_lines.append(QuotationLine(
+            concept=line["concept"],
+            quantity=qty,
+            unit=spec.unit,
+            unit_price=round(unit_price, 2),
+            subtotal=line["subtotal"],
+        ))
         if unit_price <= 0:
             pending_hardware.append({
                 "code": spec.code,
@@ -215,9 +211,25 @@ def handle_quote_item(data: dict) -> dict:
                 "quantity": qty,
             })
 
+    q = calculate_quotation(
+        pieces=pieces,
+        catalog=catalog,
+        tc=tc,
+        material=material,
+        thickness_mm=float(thickness),
+        color=color,
+        edge_banding_name=eb_name,
+        payment_days=payment_days,
+        shipping_provider=shipping,
+        shipping_units=int(item.get("quantity", 1) or 1),
+        destination=destination,
+        extra_input_lines=quote_hw_lines,
+    )
+
     result = q.model_dump()
     result["_tc"] = tc
     result["_tc_source"] = f"BCU {tc_fecha}"
+    result["_payment_days"] = payment_days or 0
     result["item_code"] = item.get("code", "")
     result["item_name"] = item.get("name", "")
     result["item_quantity"] = int(item.get("quantity", 1))
@@ -226,10 +238,6 @@ def handle_quote_item(data: dict) -> dict:
     result["pending_hardware"] = pending_hardware
     if warnings:
         result["warnings"] = warnings
-
-    hw_total = sum(h["subtotal"] for h in hw_lines)
-    if hw_total > 0:
-        result["total"] = round(result["total"] + hw_total, 2)
 
     return result
 
@@ -334,7 +342,7 @@ def handle_export_excel(data: dict) -> dict:
         ws.cell(row=4, column=1).fill = pfill
         param_labels = [
             ("A5", "TC (tipo cambio)"), ("A6", "% Cortes base"), ("A7", "Cortes base max"),
-            ("A8", "% Mano de obra"), ("A9", "% Maquinaria"), ("A10", "% Merma"),
+            ("A8", "Mano de obra (jornales)"), ("A9", "% Maquinaria"), ("A10", "% Merma"),
             ("A11", "% Ganancia"), ("A12", "% Recargo financiero"),
             ("A13", "Flete UYU"),
         ]
@@ -346,17 +354,32 @@ def handle_export_excel(data: dict) -> dict:
             CUTS_PERCENT, CUTS_BASE_MAX, LABOR_PERCENT,
             MACHINERY_PERCENT, WASTE_PERCENT, PROFIT_PERCENT,
         )
+        flete_unit = 0.0
+        for line in q.get("lines", []):
+            if "flete" in str(line.get("concept", "")).lower():
+                flete_unit = float(line.get("subtotal", 0) or 0)
+        payment_days_export = int(q.get("_payment_days", 0) or 0)
+        if payment_days_export <= 0:
+            rec_fin_pct = 0.0
+        elif payment_days_export <= 30:
+            rec_fin_pct = 0.05
+        elif payment_days_export <= 45:
+            rec_fin_pct = 0.08
+        elif payment_days_export <= 60:
+            rec_fin_pct = 0.10
+        else:
+            rec_fin_pct = 0.13
 
         param_vals = {
             "B5": q.get("_tc", 40),
             "B6": CUTS_PERCENT / 100,
             "B7": CUTS_BASE_MAX,
-            "B8": LABOR_PERCENT / 100,
+            "B8": n_cuts / 64,
             "B9": MACHINERY_PERCENT / 100,
             "B10": WASTE_PERCENT / 100,
             "B11": PROFIT_PERCENT / 100,
-            "B12": 0.15,
-            "B13": 15000,
+            "B12": rec_fin_pct,
+            "B13": flete_unit,
         }
 
         for cell_ref, label in param_labels:
@@ -475,8 +498,8 @@ def handle_export_excel(data: dict) -> dict:
 
         ws.cell(row=r, column=1, value="Mano de obra").border = bdr
         ws.cell(row=r, column=4, value="=B8").border = bdr
-        ws.cell(row=r, column=4).number_format = pct_fmt
-        ws.cell(row=r, column=6, value=f"=({mat_formula})*D{r}").border = bdr
+        ws.cell(row=r, column=4).number_format = '0.0000'
+        ws.cell(row=r, column=6, value=f"=D{r}*2500").border = bdr
         ws.cell(row=r, column=6).number_format = money
         mo_row = r
         r += 1

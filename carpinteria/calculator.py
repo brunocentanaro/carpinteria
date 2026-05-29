@@ -18,8 +18,12 @@ from carpinteria.schemas import (
 from carpinteria.settings import (
     CUTS_BASE_MAX,
     CUTS_PERCENT,
+    CUTS_PER_LABOR_HOUR,
+    LABOR_DAY_HOURS,
+    LABOR_DAY_PRICE_UYU,
     LABOR_PERCENT,
     MACHINERY_PERCENT,
+    PARTIAL_BOARD_AREA_CONTINGENCY_PERCENT,
     PARTIAL_BOARD_FULL_THRESHOLD,
     PARTIAL_BOARD_TIERS,
     PAYMENT_DELAY_MAX_DAYS,
@@ -63,6 +67,8 @@ def partial_board_surcharge(usage_pct: float) -> tuple[float, str]:
 def payment_surcharge(payment_days: int) -> tuple[float, str]:
     if payment_days > PAYMENT_DELAY_MAX_DAYS:
         return -1.0, f">{PAYMENT_DELAY_MAX_DAYS} días — no cotizable"
+    if payment_days <= 0:
+        return 0.0, "0d 0%"
     delay_pct = 0.0
     for max_days, pct in PAYMENT_DELAY_TIERS:
         if payment_days <= max_days:
@@ -71,7 +77,9 @@ def payment_surcharge(payment_days: int) -> tuple[float, str]:
     else:
         delay_pct = PAYMENT_DELAY_TIERS[-1][1]
     total_pct = STATE_SURCHARGE_PERCENT + delay_pct
-    return total_pct, f"estado {STATE_SURCHARGE_PERCENT:.0f}% + demora {payment_days}d {delay_pct}%"
+    if STATE_SURCHARGE_PERCENT:
+        return total_pct, f"estado {STATE_SURCHARGE_PERCENT:.0f}% + demora {payment_days}d {delay_pct}%"
+    return total_pct, f"{payment_days}d {delay_pct}%"
 
 
 def total_edge_banding_meters(pieces: list[CutPiece]) -> float:
@@ -105,13 +113,18 @@ def calculate_quotation(
     machinery_percent: float = MACHINERY_PERCENT,
     waste_percent: float = WASTE_PERCENT,
     labor_percent: float = LABOR_PERCENT,
+    labor_hours: float | None = None,
+    labor_day_hours: float = LABOR_DAY_HOURS,
+    labor_day_price_uyu: float = LABOR_DAY_PRICE_UYU,
     cuts_percent: float = CUTS_PERCENT,
     cuts_base_max: int = CUTS_BASE_MAX,
     profit_percent: float = PROFIT_PERCENT,
     payment_days: int | None = None,
     shipping_provider: ShippingProvider | None = None,
+    shipping_units: int = 1,
     destination: str = "",
     placa_sku: str | None = None,
+    extra_input_lines: list[QuotationLine] | None = None,
 ) -> Quotation:
     """Calcular cotización para una pieza/placa de placa + cantos + recargos.
 
@@ -189,12 +202,14 @@ def calculate_quotation(
                 subtotal=full_total,
             ))
         if leftover_area > 0:
-            surcharge_pct, surcharge_label = partial_board_surcharge(leftover_pct)
             if leftover_pct >= PARTIAL_BOARD_FULL_THRESHOLD:
                 partial_price = placa_unit_uyu
+                surcharge_label = "placa entera"
             else:
-                proportional = round(placa_unit_uyu * leftover_pct / 100, 2)
-                partial_price = round(proportional * (1 + surcharge_pct / 100), 2)
+                surcharge_pct = PARTIAL_BOARD_AREA_CONTINGENCY_PERCENT
+                surcharge_label = f"uso {leftover_pct:.0f}% + margen {surcharge_pct:.1f}%"
+                proportional = placa_unit_uyu * leftover_pct / 100
+                partial_price = round(min(placa_unit_uyu, proportional * (1 + surcharge_pct / 100)), 2)
             placa_total_uyu += partial_price
             lines.append(QuotationLine(
                 concept=f"{placa_label} parcial ({surcharge_label}){approx_suffix}",
@@ -233,6 +248,11 @@ def calculate_quotation(
 
     # Recargos sobre material (placa + canto)
     material_subtotal = round(placa_total_uyu + canto_total_uyu, 2)
+    extra_inputs_total = 0.0
+    for extra_line in extra_input_lines or []:
+        lines.append(extra_line)
+        extra_inputs_total += extra_line.subtotal
+    extra_inputs_total = round(extra_inputs_total, 2)
 
     n_cuts = total_cuts(pieces)
     cuts_factor = n_cuts / cuts_base_max if cuts_base_max else 0
@@ -244,9 +264,12 @@ def calculate_quotation(
         unit_price=cuts_amount, subtotal=cuts_amount,
     ))
 
-    labor_amount = round(material_subtotal * labor_percent / 100, 2)
+    if labor_hours is None:
+        labor_hours = round(n_cuts / CUTS_PER_LABOR_HOUR, 2) if CUTS_PER_LABOR_HOUR else 0.0
+    labor_days = labor_hours / labor_day_hours if labor_day_hours else 0.0
+    labor_amount = round(labor_days * labor_day_price_uyu, 2)
     lines.append(QuotationLine(
-        concept=f"Mano de obra ({labor_percent:.0f}%)",
+        concept=f"Mano de obra ({labor_hours:.2f}h / {labor_day_hours:.0f}h x UYU {labor_day_price_uyu:.0f})",
         quantity=1, unit="recargo",
         unit_price=labor_amount, subtotal=labor_amount,
     ))
@@ -265,7 +288,7 @@ def calculate_quotation(
         unit_price=waste_amount, subtotal=waste_amount,
     ))
 
-    subtotal = round(material_subtotal + cuts_amount + labor_amount + machinery_amount + waste_amount, 2)
+    subtotal = round(material_subtotal + extra_inputs_total + cuts_amount + labor_amount + machinery_amount + waste_amount, 2)
     profit_amount = round(subtotal * profit_percent / 100, 2)
     total = round(subtotal + profit_amount, 2)
 
@@ -284,12 +307,14 @@ def calculate_quotation(
     if shipping_provider and destination:
         sq = shipping_provider.get_quote(destination)
         if sq:
+            units = max(1, int(shipping_units or 1))
+            unit_shipping = round(sq.price / units, 2)
             lines.append(QuotationLine(
-                concept=sq.description,
+                concept=f"{sq.description} / {units} unidades",
                 quantity=1, unit="flete",
-                unit_price=sq.price, subtotal=sq.price,
+                unit_price=unit_shipping, subtotal=unit_shipping,
             ))
-            total = round(total + sq.price, 2)
+            total = round(total + unit_shipping, 2)
 
     return Quotation(
         lines=lines,
