@@ -73,11 +73,11 @@ def calculate_quote(
     quantity: int = 1,
 ) -> str:
     import json
-    from carpinteria.shipping import FixedShippingProvider
+    from carpinteria.shipping import default_shipping_provider
     pieces_data = json.loads(pieces_json)
     pieces = [CutPiece(**p) for p in pieces_data]
     catalog = ProductCatalog.from_activa()
-    shipping = FixedShippingProvider({"Rivera": 15000}) if destination else None
+    shipping = default_shipping_provider() if destination else None
     quotation = calculate_quotation(
         pieces=pieces,
         catalog=catalog,

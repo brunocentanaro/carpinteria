@@ -3,6 +3,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 from carpinteria.schemas import ShippingQuote
+from carpinteria.settings import MONTEVIDEO_FLETE_UYU
+
+DEFAULT_SHIPPING_RATES = {
+    "montevideo": MONTEVIDEO_FLETE_UYU,
+    "mvd": MONTEVIDEO_FLETE_UYU,
+    "rivera": 15000,
+}
 
 
 class ShippingProvider(ABC):
@@ -25,3 +32,7 @@ class FixedShippingProvider(ShippingProvider):
             if key in dest_l or dest_l in key:
                 return ShippingQuote(description=f"Flete a {destination}", price=price)
         return None
+
+
+def default_shipping_provider() -> FixedShippingProvider:
+    return FixedShippingProvider(DEFAULT_SHIPPING_RATES)

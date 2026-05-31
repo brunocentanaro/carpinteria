@@ -17,9 +17,13 @@ import zipfile
 
 
 IVA_RATE = 1.22
+VARILLA_LENGTH_M = 3.3
+SCALE_THRESHOLD_VARILLAS = 20
+ESTIMATED_MOLDURA_SURCHARGE = 1.15
 
 DEFAULT_PRICE_FILES = [
     Path(r"C:\Users\Peluca\Documents\La casa del Carpintero\Licitaciones 2026\Listado de precios Molduras 26.5.26.xlsx"),
+    Path(r"C:\Users\Peluca\Documents\La casa del Carpintero\Licitaciones 2026\Listado de precios Molduras 2026 - Mio util arreglado MANU.xlsx"),
     Path(r"C:\Users\Peluca\Downloads\Listado de precios Molduras 2026 - Mio util arreglado MANU.xlsx"),
 ]
 
@@ -54,6 +58,36 @@ class MolduraQuote:
     total: float
     iva_included: bool
     scale_hint: bool
+    estimated: bool = False
+    note: str = ""
+    source: str = "listado"
+    breakdown: dict[str, float | str] | None = None
+
+
+@dataclass(frozen=True)
+class WoodTable:
+    material: str
+    name: str
+    thickness_in: float
+    width_in: float
+    length_m: float
+    price_uyu: float
+
+    @property
+    def thickness_cm(self) -> float:
+        return self.thickness_in * 2.25
+
+    @property
+    def width_cm(self) -> float:
+        return self.width_in * 2.25
+
+
+@dataclass(frozen=True)
+class FamilyCost:
+    name: str
+    minutes: float
+    setup_days: float
+    profit_percent: float
 
 
 def _norm(text: object) -> str:
@@ -219,6 +253,173 @@ def _material_score(code: str, material: str | None) -> int:
     return 0
 
 
+def _material_kind(material: str | None) -> str:
+    mat = _norm(material)
+    if mat in {"euca", "eucaliptus", "eucalipto", "imp", "importado"}:
+        return "euca"
+    return "pino"
+
+
+def _family_group(family: str | None, description: str = "") -> str:
+    haystack = f"{_norm(family)} {_norm(description)}"
+    if any(token in haystack for token in ("barrote", "barrotes")):
+        return "Barrotes"
+    if any(token in haystack for token in ("liston", "listones", "tabla", "tablas")):
+        return "Listones / Tablas"
+    return "Molduras"
+
+
+def _family_cost(group: str, material: str | None) -> FamilyCost:
+    kind = _material_kind(material)
+    table = {
+        "pino": {
+            "Listones / Tablas": FamilyCost("Listones / Tablas", 7, 0.1, 0.75),
+            "Molduras": FamilyCost("Molduras", 12, 0.3125, 0.625),
+            "Barrotes": FamilyCost("Barrotes", 14.5, 0.625, 0.375),
+        },
+        "euca": {
+            "Listones / Tablas": FamilyCost("Listones / Tablas", 7, 0.1, 0.8),
+            "Molduras": FamilyCost("Molduras", 12, 0.3125, 0.625),
+            "Barrotes": FamilyCost("Barrotes", 14.5, 0.625, 0.45),
+        },
+    }
+    return table[kind].get(group, table[kind]["Molduras"])
+
+
+@lru_cache(maxsize=4)
+def load_wood_tables(path: str | None = None) -> tuple[WoodTable, ...]:
+    paths = [Path(path)] if path else _candidate_paths()
+    for candidate in paths:
+        if not candidate or not candidate.exists():
+            continue
+        try:
+            with zipfile.ZipFile(candidate) as zf:
+                shared_strings = _load_shared_strings(zf)
+                sheet_path = _workbook_sheets(zf).get("Datos")
+                if not sheet_path:
+                    continue
+                ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+                rows: list[WoodTable] = []
+                with zf.open(sheet_path) as fh:
+                    for _, row in ET.iterparse(fh, events=("end",)):
+                        if row.tag != ns + "row":
+                            continue
+                        row_idx = int(row.attrib.get("r", "0") or 0)
+                        if row_idx < 4:
+                            row.clear()
+                            continue
+                        cells: dict[str, str] = {}
+                        for cell in row.findall(ns + "c"):
+                            col = _column(cell.attrib.get("r", ""))
+                            if col in {"B", "C", "D", "F", "H", "J"}:
+                                cells[col] = _cell_value(cell, shared_strings)
+                        material = str(cells.get("B", "")).strip()
+                        if not material:
+                            row.clear()
+                            continue
+                        features = str(cells.get("C", "")).strip()
+                        thickness = _float(cells.get("D"))
+                        length = _float(cells.get("F"))
+                        width = _float(cells.get("H"))
+                        price = _float(cells.get("J"))
+                        if thickness and width and length and price:
+                            rows.append(WoodTable(
+                                material=material,
+                                name=f"{material} {features}".strip(),
+                                thickness_in=thickness,
+                                width_in=width,
+                                length_m=length,
+                                price_uyu=price,
+                            ))
+                        row.clear()
+                if rows:
+                    return tuple(rows)
+        except Exception:
+            continue
+    return ()
+
+
+def _select_wood_table(width_mm: float, height_mm: float, material: str | None) -> WoodTable | None:
+    kind = _material_kind(material)
+    thick_cm = min(width_mm, height_mm) / 10
+    wide_cm = max(width_mm, height_mm) / 10
+    candidates: list[tuple[float, WoodTable]] = []
+    for table in load_wood_tables():
+        table_kind = _material_kind(table.material)
+        if table_kind != kind:
+            continue
+        if table.thickness_cm + 0.01 < thick_cm or table.width_cm + 0.01 < wide_cm:
+            continue
+        capacity = max((table.thickness_cm / thick_cm) * (table.width_cm / wide_cm) * (1 - 0.35), 0.01)
+        mp_per_varilla = table.price_uyu / capacity
+        waste_ratio = (table.thickness_cm * table.width_cm - thick_cm * wide_cm) / max(thick_cm * wide_cm, 1)
+        candidates.append((mp_per_varilla + waste_ratio * 0.05, table))
+    if candidates:
+        return sorted(candidates, key=lambda row: row[0])[0][1]
+    fallback = [t for t in load_wood_tables() if _material_kind(t.material) == kind]
+    return sorted(fallback, key=lambda t: (t.price_uyu, t.width_cm), reverse=False)[0] if fallback else None
+
+
+def estimate_price_from_conversor(
+    width_mm: float,
+    height_mm: float,
+    material: str | None = None,
+    family: str | None = None,
+) -> MolduraPrice | None:
+    table = _select_wood_table(width_mm, height_mm, material)
+    if table is None:
+        return None
+    group = _family_group(family)
+    cost = _family_cost(group, material)
+
+    thick_cm = min(width_mm, height_mm) / 10
+    wide_cm = max(width_mm, height_mm) / 10
+    if thick_cm <= 0 or wide_cm <= 0:
+        return None
+    molduras_per_table = (table.thickness_cm / thick_cm) * (table.width_cm / wide_cm)
+    molduras_per_table = max(molduras_per_table * (1 - 0.35), 0.01)
+    mp_per_varilla = table.price_uyu / molduras_per_table
+
+    labor_day = 2300.0
+    labor_hour = labor_day / 8
+    setup_avg = 20.0
+    machinery_pct = 0.10
+    mo_per_varilla = (cost.minutes / 60) * labor_hour
+    setup_per_varilla = (cost.setup_days * labor_day) / setup_avg
+    machinery = (mp_per_varilla + mo_per_varilla) * machinery_pct
+    base_cost = mp_per_varilla + mo_per_varilla + setup_per_varilla + machinery
+    profit = base_cost * cost.profit_percent
+    price_varilla = (base_cost + profit) * IVA_RATE * ESTIMATED_MOLDURA_SURCHARGE
+    price_meter = price_varilla / VARILLA_LENGTH_M * 1.20
+
+    item = MolduraPrice(
+        code="EST-CONVERSOR",
+        family=f"{group} estimativo",
+        description=f"No stock, calculado con conversor sobre {table.name} {table.thickness_in:g}x{table.width_in:g}\"",
+        width_mm=float(width_mm),
+        height_mm=float(height_mm),
+        price_meter_iva=round(price_meter, 2),
+        price_varilla_iva=round(price_varilla, 2),
+        source_path="Conversor MANU",
+        sheet_name=f"Conversor ({'EUCA' if _material_kind(material) == 'euca' else 'PN'})",
+    )
+    object.__setattr__(item, "_breakdown", {
+        "madera": table.name,
+        "tabla_espesor_pulg": table.thickness_in,
+        "tabla_ancho_pulg": table.width_in,
+        "precio_tabla_uyu": table.price_uyu,
+        "molduras_por_tabla_merma": round(molduras_per_table, 4),
+        "materia_prima_varilla": round(mp_per_varilla, 2),
+        "mo_minutos": cost.minutes,
+        "mo_varilla": round(mo_per_varilla, 2),
+        "seteo_varilla": round(setup_per_varilla, 2),
+        "maquinaria": round(machinery, 2),
+        "ganancia_pct": cost.profit_percent,
+        "recargo_modelo_no_listado": ESTIMATED_MOLDURA_SURCHARGE - 1,
+    })
+    return item
+
+
 def _family_score(family: str, description: str, query_family: str | None) -> int:
     haystack = f"{_norm(family)} {_norm(description)}"
     query = _norm(query_family)
@@ -271,6 +472,57 @@ def find_price(
     return best
 
 
+def estimate_price(
+    width_mm: float,
+    height_mm: float,
+    material: str | None = None,
+    family: str | None = None,
+) -> MolduraPrice | None:
+    """Return a competitive estimate for a non-stock moldura."""
+    from_conversor = estimate_price_from_conversor(width_mm, height_mm, material=material, family=family)
+    if from_conversor is not None:
+        return from_conversor
+
+    # Fallback if the MANU conversor cannot be read: use the nearest listed item.
+    width = float(width_mm)
+    height = float(height_mm)
+    candidates: list[tuple[float, MolduraPrice]] = []
+    for item in load_prices():
+        mat_score = _material_score(item.code, material)
+        fam_score = _family_score(item.family, item.description, family)
+        if mat_score < 0:
+            continue
+        if family and fam_score < 0:
+            continue
+        dw = abs(item.width_mm - width) / max(width, item.width_mm, 1)
+        dh = abs(item.height_mm - height) / max(height, item.height_mm, 1)
+        score = dw + dh - (mat_score + max(fam_score, 0)) / 1000
+        candidates.append((score, item))
+    if not candidates and family:
+        return estimate_price(width, height, material=material, family=None)
+    if not candidates:
+        return None
+
+    _, ref = sorted(candidates, key=lambda row: row[0])[0]
+    ref_area = max(ref.width_mm * ref.height_mm, 1)
+    requested_area = max(width * height, 1)
+    area_factor = requested_area / ref_area
+    meter = ref.price_meter_iva * area_factor * ESTIMATED_MOLDURA_SURCHARGE
+    varilla = ref.price_varilla_iva * area_factor * ESTIMATED_MOLDURA_SURCHARGE
+    fam = family or ref.family
+    return MolduraPrice(
+        code=f"EST-{ref.code}",
+        family=f"{fam} estimativo",
+        description=f"No stock, estimado segun {ref.code} {ref.width_mm:g}x{ref.height_mm:g}",
+        width_mm=width,
+        height_mm=height,
+        price_meter_iva=round(meter, 2),
+        price_varilla_iva=round(varilla, 2),
+        source_path=ref.source_path,
+        sheet_name=ref.sheet_name,
+    )
+
+
 def quote_price(
     width_mm: float,
     height_mm: float,
@@ -281,8 +533,14 @@ def quote_price(
     include_iva: bool = True,
 ) -> MolduraQuote | None:
     item = find_price(width_mm, height_mm, material=material, family=family)
+    estimated = False
+    note = ""
     if item is None:
-        return None
+        item = estimate_price(width_mm, height_mm, material=material, family=family)
+        if item is None:
+            return None
+        estimated = True
+        note = "No disponemos de esa moldura en stock/listado; este es un precio estimativo."
     unit_n = _norm(unit)
     is_meter = unit_n in {"m", "mt", "mts", "metro", "metros"}
     if is_meter:
@@ -298,6 +556,9 @@ def quote_price(
         unit_price=unit_price,
         total=unit_price * float(quantity),
         iva_included=include_iva,
-        scale_hint=unit_label == "varilla" and float(quantity) > 20,
+        scale_hint=unit_label == "varilla" and float(quantity) > SCALE_THRESHOLD_VARILLAS,
+        estimated=estimated,
+        note=note,
+        source="conversor" if estimated and item.code == "EST-CONVERSOR" else ("estimado-listado" if estimated else "listado"),
+        breakdown=getattr(item, "_breakdown", None),
     )
-

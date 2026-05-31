@@ -8,12 +8,218 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _payment_days_from_text(text: str) -> int | None:
+    import re
+    if not text:
+        return None
+    matches = [int(m.group(1)) for m in re.finditer(r"(\d{1,3})\s*d[ií]as?", text.lower())]
+    if matches:
+        return max(matches)
+    return None
+
+
+def _default_shipping_unit(destination: str, quantity: int) -> float:
+    from carpinteria.settings import (
+        DEFAULT_BID_DESTINATION,
+        LABOR_DAY_HOURS,
+        SHIPPING_UNLOAD_DAY_PRICE_UYU,
+        SHIPPING_UNLOAD_EMPLOYEES,
+        SHIPPING_UNLOAD_HOURS,
+    )
+    if not destination:
+        destination = DEFAULT_BID_DESTINATION
+    from carpinteria.shipping import DEFAULT_SHIPPING_RATES
+    dest = destination.lower()
+    for key, price in DEFAULT_SHIPPING_RATES.items():
+        if key in dest or dest in key:
+            unload_total = 0.0
+            if "montevideo" in dest or "mvd" in dest:
+                unload_total = SHIPPING_UNLOAD_EMPLOYEES * SHIPPING_UNLOAD_HOURS / max(LABOR_DAY_HOURS, 1) * SHIPPING_UNLOAD_DAY_PRICE_UYU
+            return round((price + unload_total) / max(1, int(quantity or 1)), 2)
+    return 0.0
+
+
+def _effective_payment_days(payment_days: int | None, payment_terms: str = "") -> int:
+    from carpinteria.settings import DEFAULT_BID_PAYMENT_DAYS
+    return payment_days or _payment_days_from_text(payment_terms) or DEFAULT_BID_PAYMENT_DAYS
+
+
+def _effective_destination(destination: str = "") -> str:
+    from carpinteria.settings import DEFAULT_BID_DESTINATION
+    return destination or DEFAULT_BID_DESTINATION
+
+
 def _get_tc() -> tuple[float, str]:
     try:
         from carpinteria.exchange_rate import fetch_bcu_usd
         return fetch_bcu_usd()
     except Exception:
         return 40.0, "fallback"
+
+
+def _norm_export_text(value: object) -> str:
+    import unicodedata
+    raw = str(value or "").lower()
+    raw = unicodedata.normalize("NFKD", raw)
+    raw = "".join(ch for ch in raw if not unicodedata.combining(ch))
+    return raw
+
+
+def _count_piece_labels(pieces: list[dict], *needles: str) -> int:
+    total = 0
+    for piece in pieces:
+        label = _norm_export_text(piece.get("label", ""))
+        if all(needle in label for needle in needles):
+            total += int(piece.get("quantity", 1) or 1)
+    return total
+
+
+def _is_drawer_base_piece(piece: dict) -> bool:
+    label = _norm_export_text(piece.get("label", ""))
+    return "caj" in label and ("base" in label or "parte de abajo" in label)
+
+
+def _parse_moldura_request_text(text: str) -> dict | None:
+    import re
+    normalized = _norm_export_text(text)
+    dim = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:mm)?\s*x\s*(\d+(?:[.,]\d+)?)\s*(?:mm)?\b", normalized)
+    if not dim:
+        return None
+    material = None
+    if any(token in normalized for token in ("pino", "nac", "nacional", " pn")):
+        material = "pino"
+    elif any(token in normalized for token in ("euca", "eucalipto", "eucaliptus", "imp", "importado")):
+        material = "euca"
+    family = None
+    for candidate in ("liston", "barrote", "zocalo", "contravidrio", "media cana", "moldura"):
+        if candidate in normalized:
+            family = candidate
+            break
+    qty_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:varillas?|listones?|barrotes?|zocalos?|molduras?|metros?|mts?|m)\b", normalized)
+    quantity = float(qty_match.group(1).replace(",", ".")) if qty_match else 1.0
+    unit = "metro" if re.search(r"\b(?:metros?|mts?|m)\b", normalized) and "3.3" not in normalized else "varilla"
+    return {
+        "width_mm": float(dim.group(1).replace(",", ".")),
+        "height_mm": float(dim.group(2).replace(",", ".")),
+        "material": material,
+        "family": family,
+        "quantity": quantity,
+        "unit": unit,
+        "include_iva": True,
+    }
+
+
+def _make_plan_images(q: dict, out_dir: str) -> list[tuple[str, str]]:
+    from pathlib import Path
+    import re
+    from PIL import Image as PILImage, ImageDraw, ImageFont
+
+    pieces = list((q.get("decomposition") or {}).get("pieces") or [])
+    dims = q.get("dimensions") or {}
+    width = float(dims.get("width_mm") or q.get("width_mm") or 0)
+    height = float(dims.get("height_mm") or q.get("height_mm") or 0)
+    depth = float(dims.get("depth_mm") or q.get("depth_mm") or 0)
+    if not width:
+        width = max((float(p.get("width_mm") or 0) for p in pieces), default=380)
+    if not height:
+        height = max((float(p.get("height_mm") or 0) for p in pieces), default=600)
+    if not depth:
+        depth = max((float(p.get("height_mm") or 0) for p in pieces if "lateral" in _norm_export_text(p.get("label"))), default=460)
+
+    text = _norm_export_text(f"{q.get('item_name', '')} {q.get('notes', '')}")
+    drawer_count = _count_piece_labels(pieces, "caj", "frente")
+    door_count = _count_piece_labels(pieces, "puerta")
+    shelf_count = _count_piece_labels(pieces, "estante")
+    has_wheels = "rueda" in text or "movil" in text or any("RUEDA" in str(h.get("code", "")) for h in q.get("hardware_lines", []))
+    has_lock = "cerradura" in text or "traba" in text or any("CERR" in str(h.get("code", "")) for h in q.get("hardware_lines", []))
+    stacked_drawers = "cajonera" in text or (drawer_count > 1 and door_count == 0 and shelf_count == 0)
+
+    try:
+        font_title = ImageFont.truetype("arial.ttf", 18)
+        font = ImageFont.truetype("arial.ttf", 12)
+    except Exception:
+        font_title = ImageFont.load_default()
+        font = ImageFont.load_default()
+
+    bg = "#f8fafc"
+    wood = "#fed7aa"
+    wood_light = "#fff7ed"
+    stroke = "#92400e"
+    ink = "#334155"
+
+    def canvas(title: str) -> tuple[PILImage.Image, ImageDraw.ImageDraw]:
+        img = PILImage.new("RGB", (360, 260), bg)
+        d = ImageDraw.Draw(img)
+        d.text((180, 14), title, fill="#0f172a", font=font_title, anchor="ma")
+        return img, d
+
+    def dims_label(d: ImageDraw.ImageDraw, box: tuple[int, int, int, int], w_label: str, h_label: str) -> None:
+        x1, y1, x2, y2 = box
+        d.line((x1, y2 + 18, x2, y2 + 18), fill=ink, width=1)
+        d.line((x1, y2 + 12, x1, y2 + 24), fill=ink, width=1)
+        d.line((x2, y2 + 12, x2, y2 + 24), fill=ink, width=1)
+        d.text(((x1 + x2) / 2, y2 + 25), w_label, fill=ink, font=font, anchor="ma")
+        d.line((x1 - 18, y1, x1 - 18, y2), fill=ink, width=1)
+        d.line((x1 - 24, y1, x1 - 12, y1), fill=ink, width=1)
+        d.line((x1 - 24, y2, x1 - 12, y2), fill=ink, width=1)
+        d.text((x1 - 34, (y1 + y2) / 2), h_label, fill=ink, font=font, anchor="mm")
+
+    prefix = re.sub(r"[^A-Za-z0-9_-]+", "_", str(q.get("item_code") or "item"))[:24]
+
+    def save(img: PILImage.Image, name: str) -> str:
+        path = str(Path(out_dir) / f"{prefix}_{name}.png")
+        img.save(path)
+        return path
+
+    images: list[tuple[str, str]] = []
+
+    front, d = canvas("Frente")
+    box = (75, 55, 285, 205)
+    d.rounded_rectangle(box, radius=4, fill=wood_light, outline=stroke, width=3)
+    if drawer_count:
+        rows = drawer_count if stacked_drawers else 1
+        gap = 8
+        row_h = (box[3] - box[1] - gap * (rows + 1)) / rows
+        for i in range(rows):
+            y = box[1] + gap + i * (row_h + gap)
+            d.rectangle((box[0] + 8, y, box[2] - 8, y + row_h), fill=wood, outline=stroke, width=2)
+            d.ellipse(((box[0] + box[2]) / 2 - 3, y + row_h / 2 - 3, (box[0] + box[2]) / 2 + 3, y + row_h / 2 + 3), fill=stroke)
+            if has_lock:
+                lx = box[2] - 28
+                ly = y + row_h / 2
+                d.ellipse((lx - 5, ly - 5, lx + 5, ly + 5), fill="#f8fafc", outline=ink, width=2)
+                d.rectangle((lx - 1, ly + 4, lx + 2, ly + 10), fill=ink)
+    elif door_count:
+        for i in range(door_count):
+            x = box[0] + i * ((box[2] - box[0]) / door_count)
+            d.line((x, box[1], x, box[3]), fill=stroke, width=2)
+    if has_wheels:
+        for x in (box[0] + 35, box[2] - 35):
+            d.line((x, box[3], x, box[3] + 18), fill=ink, width=3)
+            d.ellipse((x - 8, box[3] + 12, x + 8, box[3] + 28), fill="#94a3b8", outline=ink, width=2)
+    dims_label(d, box, f"{width:.0f}mm", f"{height:.0f}mm")
+    images.append(("H2", save(front, "plano_frente")))
+
+    side, d = canvas("Costado")
+    box = (95, 55, 240, 205)
+    d.polygon([(box[0], box[1]), (box[2], box[1]), (box[2] + 35, box[1] + 25), (box[0] + 35, box[1] + 25)], fill=wood, outline=stroke)
+    d.polygon([(box[2], box[1]), (box[2] + 35, box[1] + 25), (box[2] + 35, box[3]), (box[2], box[3] - 25)], fill="#fdba74", outline=stroke)
+    d.rectangle((box[0], box[1], box[2], box[3]), fill=wood_light, outline=stroke, width=3)
+    if has_wheels:
+        for x in (box[0] + 20, box[2] - 20, box[2] + 15, box[2] + 35):
+            d.ellipse((x - 6, box[3] + 6, x + 6, box[3] + 18), fill="#94a3b8", outline=ink, width=2)
+    dims_label(d, box, f"{depth:.0f}mm", f"{height:.0f}mm")
+    images.append(("L2", save(side, "plano_costado")))
+
+    top, d = canvas("Planta")
+    box = (70, 85, 290, 180)
+    d.rounded_rectangle(box, radius=3, fill=wood_light, outline=stroke, width=3)
+    d.rectangle((box[0] + 18, box[1] + 16, box[2] - 18, box[3] - 16), fill=wood, outline="#d97706", width=1)
+    d.line(((box[0] + box[2]) / 2, box[1], (box[0] + box[2]) / 2, box[3]), fill=stroke, width=1)
+    dims_label(d, box, f"{width:.0f}mm", f"{depth:.0f}mm")
+    images.append(("P2", save(top, "plano_planta")))
+
+    return images
 
 
 def handle_prices() -> dict:
@@ -36,18 +242,19 @@ def handle_quote(data: dict) -> dict:
     from carpinteria.catalog import ProductCatalog
     from carpinteria.calculator import calculate_quotation
     from carpinteria.schemas import CutPiece
-    from carpinteria.shipping import FixedShippingProvider
+    from carpinteria.shipping import default_shipping_provider
 
     pieces = [CutPiece(**p) for p in data["pieces"]]
     catalog = ProductCatalog.from_activa()
     tc, _ = _get_tc()
 
-    destination = data.get("destination", "")
-    shipping = FixedShippingProvider({"Rivera": 15000}) if destination else None
+    destination = _effective_destination(data.get("destination", ""))
+    shipping = default_shipping_provider() if destination else None
 
     payment_days = data.get("payment_days")
     if isinstance(payment_days, int) and payment_days <= 0:
         payment_days = None
+    payment_days = _effective_payment_days(payment_days)
 
     q = calculate_quotation(
         pieces=pieces,
@@ -82,10 +289,10 @@ def handle_analyze_pliego(data: dict) -> dict:
 def handle_quote_item(data: dict) -> dict:
     from carpinteria.catalog import ProductCatalog
     from carpinteria.calculator import calculate_quotation
-    from carpinteria.hardware_catalog import get_by_code
+    from carpinteria.hardware_catalog import DEFAULT_HARDWARE_PRICES_UYU, get_by_code
     from carpinteria.pliego import decompose_furniture
     from carpinteria.schemas import CutPiece, QuotationLine
-    from carpinteria.shipping import FixedShippingProvider
+    from carpinteria.shipping import default_shipping_provider
 
     item = data["item"]
     missing: list[str] = []
@@ -156,12 +363,13 @@ def handle_quote_item(data: dict) -> dict:
     if not canto:
         warnings.append(f"No se encontro canto para '{eb_name or color}'. Se cotiza sin canto.")
 
-    destination = data.get("destination", "")
-    shipping = FixedShippingProvider({"Rivera": 15000}) if destination else None
+    destination = _effective_destination(data.get("destination", ""))
+    shipping = default_shipping_provider() if destination else None
 
     payment_days = data.get("payment_days")
     if isinstance(payment_days, int) and payment_days <= 0:
         payment_days = None
+    payment_days = _effective_payment_days(payment_days, str((data.get("general_specs") or {}).get("payment_terms", "")))
 
     # Hardware: agent already chose curated codes; we just attach the
     # user-provided price (if any). Hardware is part of inputs before profit,
@@ -184,7 +392,7 @@ def handle_quote_item(data: dict) -> dict:
             qty = 0
         if qty <= 0:
             continue
-        unit_price = float(hardware_prices.get(code, 0) or 0)
+        unit_price = float(hardware_prices.get(code, 0) or DEFAULT_HARDWARE_PRICES_UYU.get(code, 0) or 0)
         line = {
             "code": spec.code,
             "concept": f"Herraje: {spec.name}",
@@ -233,6 +441,7 @@ def handle_quote_item(data: dict) -> dict:
     result["item_code"] = item.get("code", "")
     result["item_name"] = item.get("name", "")
     result["item_quantity"] = int(item.get("quantity", 1))
+    result["dimensions"] = item.get("dimensions") or {}
     result["decomposition"] = decomposition
     result["hardware_lines"] = hw_lines
     result["pending_hardware"] = pending_hardware
@@ -243,8 +452,10 @@ def handle_quote_item(data: dict) -> dict:
 
 
 def handle_export_excel(data: dict) -> dict:
+    import shutil
     import tempfile
     import openpyxl
+    from openpyxl.drawing.image import Image as XLImage
     from openpyxl.styles import Font, PatternFill, Border, Side
     from openpyxl.utils import get_column_letter as cl
 
@@ -253,6 +464,7 @@ def handle_export_excel(data: dict) -> dict:
         return {"error": "No hay cotizaciones para exportar"}
 
     wb = openpyxl.Workbook()
+    image_tmp = tempfile.mkdtemp(prefix="planos_")
     hf = Font(bold=True, size=11)
     hfw = Font(bold=True, color="FFFFFF", size=11)
     hfill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
@@ -344,21 +556,40 @@ def handle_export_excel(data: dict) -> dict:
             ("A5", "TC (tipo cambio)"), ("A6", "% Cortes base"), ("A7", "Cortes base max"),
             ("A8", "Mano de obra (jornales)"), ("A9", "% Maquinaria"), ("A10", "% Merma"),
             ("A11", "% Ganancia"), ("A12", "% Recargo financiero"),
-            ("A13", "Flete UYU"),
+            ("A13", "Flete base UYU"), ("A14", "Empleados descarga"), ("A15", "Horas descarga"),
+            ("A16", "Jornal descarga UYU"), ("A17", "Cantidad entrega"),
         ]
         decomp = q.get("decomposition", {})
-        pieces = decomp.get("pieces", [])
+        pieces = [p for p in decomp.get("pieces", []) if not _is_drawer_base_piece(p)]
         n_cuts = sum(p.get("quantity", 1) * 2 for p in pieces)
 
+        try:
+            for anchor, image_path in _make_plan_images(q, image_tmp):
+                img = XLImage(image_path)
+                img.width = 220
+                img.height = 160
+                ws.add_image(img, anchor)
+            for col_letter in ("H", "I", "J", "L", "M", "N", "P", "Q", "R"):
+                ws.column_dimensions[col_letter].width = 13
+            for row_idx in range(2, 11):
+                ws.row_dimensions[row_idx].height = 19
+        except Exception:
+            pass
+
         from carpinteria.settings import (
-            CUTS_PERCENT, CUTS_BASE_MAX, LABOR_PERCENT,
+            CUTS_PERCENT, CUTS_BASE_MAX, LABOR_DAY_HOURS, LABOR_PERCENT,
             MACHINERY_PERCENT, WASTE_PERCENT, PROFIT_PERCENT,
+            SHIPPING_UNLOAD_DAY_PRICE_UYU, SHIPPING_UNLOAD_EMPLOYEES, SHIPPING_UNLOAD_HOURS,
         )
         flete_unit = 0.0
         for line in q.get("lines", []):
             if "flete" in str(line.get("concept", "")).lower():
                 flete_unit = float(line.get("subtotal", 0) or 0)
+        if flete_unit <= 0:
+            flete_unit = _default_shipping_unit(str(q.get("_destination", "") or ""), int(q.get("item_quantity", 1) or 1))
         payment_days_export = int(q.get("_payment_days", 0) or 0)
+        if payment_days_export <= 0:
+            payment_days_export = _payment_days_from_text(str(q.get("_payment_terms", "") or "")) or 0
         if payment_days_export <= 0:
             rec_fin_pct = 0.0
         elif payment_days_export <= 30:
@@ -379,8 +610,21 @@ def handle_export_excel(data: dict) -> dict:
             "B10": WASTE_PERCENT / 100,
             "B11": PROFIT_PERCENT / 100,
             "B12": rec_fin_pct,
-            "B13": flete_unit,
+            "B13": 0,
+            "B14": SHIPPING_UNLOAD_EMPLOYEES,
+            "B15": SHIPPING_UNLOAD_HOURS,
+            "B16": SHIPPING_UNLOAD_DAY_PRICE_UYU,
+            "B17": int(q.get("item_quantity", 1) or 1),
         }
+        destination_for_flete = str(q.get("_destination", "") or "")
+        from carpinteria.shipping import DEFAULT_SHIPPING_RATES
+        for key, price in DEFAULT_SHIPPING_RATES.items():
+            dest_norm = destination_for_flete.lower()
+            if key in dest_norm or dest_norm in key:
+                param_vals["B13"] = price
+                break
+        if flete_unit > 0 and param_vals["B13"] <= 0:
+            param_vals["B13"] = flete_unit * max(1, int(q.get("item_quantity", 1) or 1))
 
         for cell_ref, label in param_labels:
             ws[cell_ref] = label
@@ -390,11 +634,11 @@ def handle_export_excel(data: dict) -> dict:
             ws[cell_ref].border = bdr
             if "%" in (dict(param_labels).get("A" + cell_ref[1:], "")):
                 ws[cell_ref].number_format = pct_fmt
-            elif cell_ref in ("B13",):
+            elif cell_ref in ("B13", "B16"):
                 ws[cell_ref].number_format = money
 
-        # Row 15: Piezas de placa
-        r = 15
+        # Row 19: Piezas de placa
+        r = 19
         ws.cell(row=r, column=1, value="PIEZAS DE PLACA").font = Font(bold=True, size=11)
         ws.cell(row=r, column=1).fill = pfill
         r += 1
@@ -406,9 +650,6 @@ def handle_export_excel(data: dict) -> dict:
             h = p.get("height_mm", 0)
             qty = p.get("quantity", 1)
             edges = p.get("edge_sides", [])
-            edge_top_bot = sum(1 for s in edges if s in ("top", "bottom"))
-            edge_left_right = sum(1 for s in edges if s in ("left", "right"))
-
             ws.cell(row=r, column=1, value=p.get("label", "")).border = bdr
             ws.cell(row=r, column=2, value=w).border = bdr
             ws.cell(row=r, column=3, value=h).border = bdr
@@ -416,7 +657,7 @@ def handle_export_excel(data: dict) -> dict:
             ws.cell(row=r, column=5, value=", ".join(edges) if edges else "sin canto").border = bdr
             ws.cell(row=r, column=6, value=f"=B{r}*C{r}*D{r}/1000000").border = bdr
             ws.cell(row=r, column=6).number_format = '0.0000'
-            ws.cell(row=r, column=7, value=f"=(B{r}*{edge_top_bot}+C{r}*{edge_left_right})*D{r}/1000").border = bdr
+            ws.cell(row=r, column=7, value=f"=2*(B{r}+C{r})*D{r}/1000").border = bdr
             ws.cell(row=r, column=7).number_format = '0.00'
             r += 1
         piece_end = r - 1
@@ -451,7 +692,16 @@ def handle_export_excel(data: dict) -> dict:
                 ws.cell(row=r, column=4).number_format = '0.0000'
                 ws.cell(row=r, column=5, value=f"=D{r}*B5").border = bdr
                 ws.cell(row=r, column=5).number_format = money
-                ws.cell(row=r, column=6, value=f"=B{r}*E{r}").border = bdr
+                if "placa" in concept:
+                    board_meta = ((q.get("metadata") or {}).get("selected_placa") or {})
+                    board_area = float(board_meta.get("area_m2") or 0)
+                    contingency = float(board_meta.get("partial_contingency_percent") or 7.5) / 100
+                    if board_area > 0:
+                        ws.cell(row=r, column=6, value=f"=MIN(E{r},{area_total_cell}/{board_area}*E{r}*(1+{contingency}))").border = bdr
+                    else:
+                        ws.cell(row=r, column=6, value=f"=B{r}*E{r}").border = bdr
+                else:
+                    ws.cell(row=r, column=6, value=f"=B{r}*E{r}").border = bdr
                 ws.cell(row=r, column=6).number_format = money
                 r += 1
 
@@ -547,7 +797,7 @@ def handle_export_excel(data: dict) -> dict:
         r += 1
 
         ws.cell(row=r, column=5, value="FLETE")
-        ws.cell(row=r, column=6, value="=B13")
+        ws.cell(row=r, column=6, value=f"=(B13+(B14*B15/{LABOR_DAY_HOURS}*B16))/MAX(1,B17)")
         ws.cell(row=r, column=6).number_format = money
         flete_cell = f"F{r}"
         r += 1
@@ -572,6 +822,149 @@ def handle_export_excel(data: dict) -> dict:
         ws.column_dimensions["G"].width = 15
 
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="cotizacion_")
+    wb.save(path)
+    shutil.rmtree(image_tmp, ignore_errors=True)
+    return {"excel_path": path}
+
+
+def handle_export_molduras_excel(data: dict) -> dict:
+    import tempfile
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Border, Side
+
+    from carpinteria.molduras_prices import (
+        IVA_RATE,
+        SCALE_THRESHOLD_VARILLAS,
+        VARILLA_LENGTH_M,
+        quote_price,
+    )
+
+    requests = list(data.get("items") or [])
+    if not requests:
+        parsed = _parse_moldura_request_text(str(data.get("text") or ""))
+        if parsed:
+            requests = [parsed]
+    if not requests:
+        return {"error": "No hay molduras para exportar"}
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Resumen"
+    detail = wb.create_sheet("Modelo molduras")
+
+    hf = Font(bold=True)
+    hfw = Font(bold=True, color="FFFFFF")
+    hfill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    pfill = PatternFill(start_color="E2F0D9", end_color="E2F0D9", fill_type="solid")
+    warn_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    bdr = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+    money = '#,##0.00'
+
+    def hdr(sheet, row: int, labels: list[str]) -> None:
+        for i, label in enumerate(labels, 1):
+            cell = sheet.cell(row=row, column=i, value=label)
+            cell.font = hfw
+            cell.fill = hfill
+            cell.border = bdr
+
+    ws.cell(row=1, column=1, value="Cotizacion de molduras").font = Font(bold=True, size=15)
+    hdr(ws, 3, ["Codigo", "Tipo", "Descripcion", "Medida", "Material", "Cant.", "Unidad", "Unitario", "Total", "Nota"])
+
+    detail.cell(row=1, column=1, value="Modelo de razonamiento - molduras").font = Font(bold=True, size=15)
+    detail.cell(row=3, column=1, value="Parametros").font = hf
+    detail.cell(row=3, column=1).fill = pfill
+    params = [
+        ("IVA", IVA_RATE - 1),
+        ("Largo varilla m", VARILLA_LENGTH_M),
+        ("Umbral escala varillas", SCALE_THRESHOLD_VARILLAS),
+        ("Regla venta directa", "Precio final con IVA incluido"),
+        ("Regla muebles/proyectos", "Usar sin IVA y sumar IVA al final del mueble"),
+        ("Regla cortes por metro", "Si se consume casi la varilla completa, cobrar varilla; no +20% por metro"),
+    ]
+    for i, (label, value) in enumerate(params, 4):
+        detail.cell(row=i, column=1, value=label).border = bdr
+        detail.cell(row=i, column=2, value=value).border = bdr
+        if label == "IVA":
+            detail.cell(row=i, column=2).number_format = "0%"
+
+    hdr(detail, 12, [
+        "Codigo", "Tipo", "Descripcion", "Ancho mm", "Alto mm", "Material",
+        "Cant.", "Unidad", "Precio varilla IVA", "Precio metro IVA",
+        "Unitario usado", "Total", "Nota", "Fuente", "MP", "MO min", "Seteo", "Maq", "Ganancia %",
+    ])
+
+    total_refs = []
+    for idx, raw in enumerate(requests, 1):
+        q = quote_price(
+            width_mm=float(raw.get("width_mm") or raw.get("width") or 0),
+            height_mm=float(raw.get("height_mm") or raw.get("height") or 0),
+            quantity=float(raw.get("quantity") or 1),
+            material=raw.get("material"),
+            family=raw.get("family"),
+            unit=str(raw.get("unit") or "varilla"),
+            include_iva=bool(raw.get("include_iva", True)),
+        )
+        r = idx + 3
+        drow = idx + 12
+        if q is None:
+            for sheet, row in ((ws, r), (detail, drow)):
+                sheet.cell(row=row, column=1, value="SIN REFERENCIA").fill = warn_fill
+                sheet.cell(row=row, column=10 if sheet is ws else 13, value="No se encontro referencia suficiente para estimar").fill = warn_fill
+            continue
+
+        item = q.item
+        measure = f"{item.width_mm:g}x{item.height_mm:g} mm"
+        note_parts = []
+        if q.estimated:
+            note_parts.append("No stock/listado: precio estimativo")
+        if q.scale_hint:
+            note_parts.append("Revisar escala")
+        note = " | ".join(note_parts)
+        total_refs.append(f"I{r}")
+        values = [
+            item.code, item.family, item.description, measure,
+            raw.get("material") or "", q.quantity, q.unit, q.unit_price, q.total, note,
+        ]
+        for col, value in enumerate(values, 1):
+            cell = ws.cell(row=r, column=col, value=value)
+            cell.border = bdr
+            if col in (8, 9):
+                cell.number_format = money
+            if note and col == 10:
+                cell.fill = warn_fill
+
+        detail_values = [
+            item.code, item.family, item.description, item.width_mm, item.height_mm,
+            raw.get("material") or "", q.quantity, q.unit, item.price_varilla_iva,
+            item.price_meter_iva, q.unit_price, q.total, note,
+            q.source,
+            (q.breakdown or {}).get("materia_prima_varilla", ""),
+            (q.breakdown or {}).get("mo_minutos", ""),
+            (q.breakdown or {}).get("seteo_varilla", ""),
+            (q.breakdown or {}).get("maquinaria", ""),
+            (q.breakdown or {}).get("ganancia_pct", ""),
+        ]
+        for col, value in enumerate(detail_values, 1):
+            cell = detail.cell(row=drow, column=col, value=value)
+            cell.border = bdr
+            if col in (9, 10, 11, 12, 15, 17, 18):
+                cell.number_format = money
+            if col == 19:
+                cell.number_format = "0%"
+            if note and col == 13:
+                cell.fill = warn_fill
+
+    total_row = len(requests) + 5
+    ws.cell(row=total_row, column=8, value="TOTAL").font = hf
+    ws.cell(row=total_row, column=9, value=f"=SUM({','.join(total_refs)})" if total_refs else 0).font = hf
+    ws.cell(row=total_row, column=9).number_format = money
+
+    for sheet in (ws, detail):
+        for col in range(1, 14):
+            sheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 16
+        sheet.column_dimensions["C"].width = 34
+
+    fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="cotizacion_molduras_")
     wb.save(path)
     return {"excel_path": path}
 
@@ -1077,12 +1470,13 @@ def _session_to_quotes_payload(session) -> list[dict]:
             "item_code": it.code,
             "item_name": it.name,
             "item_quantity": it.quantity,
+            "dimensions": dict(it.dimensions),
             "has_error": has_error,
             "missing_inputs": missing,
             "notes": notes,
             "pending_hardware_codes": pending,
             "decomposition": {
-                "pieces": [p.model_dump() for p in it.pieces],
+                "pieces": [p.model_dump() for p in it.pieces if not _is_drawer_base_piece(p.model_dump())],
             },
             "lines": list(last.get("lines") or []),
             "hardware_lines": list(last.get("hardware_lines") or []),
@@ -1096,18 +1490,27 @@ def _session_to_quotes_payload(session) -> list[dict]:
             "total": total,
             "total_with_hardware": float(last.get("total_with_hardware", 0) or 0),
             "_tc": float(last.get("tc", 40) or 40),
+            "_payment_days": _effective_payment_days(session.payment_days, session.general_specs.payment_terms),
+            "_payment_terms": session.general_specs.payment_terms,
+            "_destination": _effective_destination(session.destination or session.general_specs.delivery_location),
+            "metadata": dict(last.get("metadata") or {}),
         })
     return quotes
 
 
 def handle_export_excel_session(data: dict) -> dict:
-    from carpinteria.quotation_session import get_session
+    from carpinteria.quotation_session import get_session, save_session
     sid = str(data.get("session_id") or "")
     if not sid:
         return {"error": "missing session_id"}
     s = get_session(sid)
     if s is None:
         return {"error": "session not found"}
+    try:
+        _recalc_all_items(s)
+        save_session(s)
+    except Exception:
+        pass
     return handle_export_excel({"quotes": _session_to_quotes_payload(s)})
 
 
@@ -1318,6 +1721,8 @@ def main() -> None:
             result = handle_quote_item(data)
         elif action == "export_excel":
             result = handle_export_excel(data)
+        elif action == "export_molduras_excel":
+            result = handle_export_molduras_excel(data)
         elif action == "export_docx":
             result = handle_export_docx(data)
         elif action == "lista_precios_preview":

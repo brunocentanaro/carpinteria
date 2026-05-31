@@ -138,7 +138,7 @@ IMPORTANTE:
   - Tapa/base/techo/piso/estantes horizontales: ancho del módulo x profundidad.
   - Trasera/fondo trasero: ancho x alto.
   - Puertas/frentes: cubren el frente del mueble; si hay 2 puertas en un mueble de 2000mm de ancho, son 2 piezas de aprox. 1000mm x alto del mueble. Si hay una sola puerta, es ancho x alto.
-  - Cajones: frente cajón = ancho visible x alto del frente; lateral cajón = profundidad x alto; fondo/base cajón = ancho x profundidad; trasera cajón = ancho x alto. Los cajones NO llevan tapa.
+  - Cajones: frente cajón = ancho visible x alto del frente; lateral cajón = profundidad x alto; fondo cajón = ancho x alto; trasera cajón = ancho x alto. Los cajones NO llevan tapa ni base de placa salvo que el pedido la nombre explícitamente.
 - El espesor de la placa se resta de las dimensiones internas (ej: si el mueble mide 800mm de ancho y la placa es 18mm, el estante interno mide 800 - 2*18 = 764mm)
 - Contá bien las bisagras: hasta 100cm de puerta = 3 bisagras, más de 100cm = 4 bisagras
 - Para guías de cajón elegí el largo en mm más cercano a la profundidad del cajón

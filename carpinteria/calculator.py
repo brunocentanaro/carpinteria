@@ -23,6 +23,9 @@ from carpinteria.settings import (
     LABOR_DAY_PRICE_UYU,
     LABOR_PERCENT,
     MACHINERY_PERCENT,
+    SHIPPING_UNLOAD_DAY_PRICE_UYU,
+    SHIPPING_UNLOAD_EMPLOYEES,
+    SHIPPING_UNLOAD_HOURS,
     PARTIAL_BOARD_AREA_CONTINGENCY_PERCENT,
     PARTIAL_BOARD_FULL_THRESHOLD,
     PARTIAL_BOARD_TIERS,
@@ -85,11 +88,7 @@ def payment_surcharge(payment_days: int) -> tuple[float, str]:
 def total_edge_banding_meters(pieces: list[CutPiece]) -> float:
     total_mm = 0.0
     for piece in pieces:
-        for side in piece.edge_sides:
-            if side in ("top", "bottom"):
-                total_mm += piece.width_mm * piece.quantity
-            elif side in ("left", "right"):
-                total_mm += piece.height_mm * piece.quantity
+        total_mm += (piece.width_mm + piece.height_mm) * 2 * piece.quantity
     return total_mm / 1000.0
 
 
@@ -160,6 +159,7 @@ def calculate_quotation(
     placa = match.producto
     if match.is_approx:
         notes_parts.append(match.thickness_note)
+    board_area_m2 = ((placa.ancho_mm or 0) * (placa.largo_mm or 0)) / 1_000_000
 
     placa_label = (
         f"Placa {placa.material or placa.familia} "
@@ -221,9 +221,8 @@ def calculate_quotation(
         placa_total_uyu = round(placa_total_uyu, 2)
 
     # Cantos
-    has_edge_sides = any(p.edge_sides for p in pieces)
     canto_total_uyu = 0.0
-    if has_edge_sides:
+    if pieces:
         canto_query = edge_banding_name or color
         canto = catalog.find_canto(canto_query)
         meters = total_edge_banding_meters(pieces)
@@ -308,9 +307,24 @@ def calculate_quotation(
         sq = shipping_provider.get_quote(destination)
         if sq:
             units = max(1, int(shipping_units or 1))
-            unit_shipping = round(sq.price / units, 2)
+            unload_total = 0.0
+            if "montevideo" in destination.lower() or "mvd" in destination.lower():
+                unload_total = (
+                    SHIPPING_UNLOAD_EMPLOYEES
+                    * SHIPPING_UNLOAD_HOURS
+                    / max(labor_day_hours, 1)
+                    * SHIPPING_UNLOAD_DAY_PRICE_UYU
+                )
+            shipping_total = round(sq.price + unload_total, 2)
+            unit_shipping = round(shipping_total / units, 2)
+            unload_label = ""
+            if unload_total:
+                unload_label = (
+                    f" + descarga ({SHIPPING_UNLOAD_EMPLOYEES:g} emp x "
+                    f"{SHIPPING_UNLOAD_HOURS:g}h)"
+                )
             lines.append(QuotationLine(
-                concept=f"{sq.description} / {units} unidades",
+                concept=f"{sq.description}{unload_label} / {units} unidades",
                 quantity=1, unit="flete",
                 unit_price=unit_shipping, subtotal=unit_shipping,
             ))
@@ -323,6 +337,18 @@ def calculate_quotation(
         margin_amount=profit_amount,
         total=total,
         notes="\n".join(notes_parts) if notes_parts else "",
+        metadata={
+            "selected_placa": {
+                "sku": placa.sku,
+                "nombre": placa.nombre,
+                "espesor_mm": placa.espesor_mm,
+                "ancho_mm": placa.ancho_mm,
+                "largo_mm": placa.largo_mm,
+                "area_m2": board_area_m2,
+                "unit_price_uyu": placa_unit_uyu,
+                "partial_contingency_percent": PARTIAL_BOARD_AREA_CONTINGENCY_PERCENT,
+            }
+        },
     )
 
 

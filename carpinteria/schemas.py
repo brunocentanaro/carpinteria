@@ -58,6 +58,7 @@ class Quotation(BaseModel):
     margin_amount: float = 0.0
     total: float = 0.0
     notes: str = ""
+    metadata: dict = Field(default_factory=dict)
 
 
 class HardwareItem(BaseModel):

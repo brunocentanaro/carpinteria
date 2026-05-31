@@ -199,7 +199,7 @@ def _normalize_piece_dimensions(out: dict, item: dict) -> None:
 
     label_text = " ".join(_norm(p.get("label", "")) for p in pieces)
     desc_text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
-    if not any(token in label_text for token in ("tapa", "techo")):
+    if not any(("caj" not in _norm(p.get("label", "")) and any(token in _norm(p.get("label", "")) for token in ("tapa", "techo"))) for p in pieces):
         pieces.append({
             "width_mm": width,
             "height_mm": depth,
@@ -207,7 +207,7 @@ def _normalize_piece_dimensions(out: dict, item: dict) -> None:
             "label": "tapa",
             "edge_sides": ["top", "left", "right"],
         })
-    if not any(token in label_text for token in ("base", "piso")):
+    if not any(("caj" not in _norm(p.get("label", "")) and any(token in _norm(p.get("label", "")) for token in ("base", "piso"))) for p in pieces):
         pieces.append({
             "width_mm": width,
             "height_mm": depth,
@@ -215,7 +215,7 @@ def _normalize_piece_dimensions(out: dict, item: dict) -> None:
             "label": "base",
             "edge_sides": ["top", "left", "right"],
         })
-    if "lateral" not in label_text and "costado" not in label_text:
+    if not any(("caj" not in _norm(p.get("label", "")) and any(token in _norm(p.get("label", "")) for token in ("lateral", "costado"))) for p in pieces):
         pieces.append({
             "width_mm": height,
             "height_mm": depth,
@@ -275,6 +275,13 @@ def _complete_front_doors(out: dict, item: dict, *, width: float, height: float,
 def _complete_drawer_pieces(out: dict, item: dict, *, width: float, height: float, depth: float, thickness: float) -> None:
     pieces = out.get("pieces") or []
     text = _norm(f"{item.get('name', '')} {item.get('description', '')}")
+    pieces = [
+        p for p in pieces
+        if not (
+            "caj" in _norm(p.get("label", ""))
+            and ("base" in _norm(p.get("label", "")) or "parte de abajo" in _norm(p.get("label", "")))
+        )
+    ]
     fronts = [p for p in pieces if "caj" in _norm(p.get("label", "")) and "frente" in _norm(p.get("label", ""))]
     drawer_count = sum(max(1, int(_as_float(p.get("quantity"), 1))) for p in fronts)
     drawer_count = drawer_count or _count_from_text(text, "cajon")
@@ -284,6 +291,9 @@ def _complete_drawer_pieces(out: dict, item: dict, *, width: float, height: floa
     front_width = _as_float(fronts[0].get("width_mm")) if fronts else 0
     front_height = _as_float(fronts[0].get("height_mm")) if fronts else 0
     stacked = _drawers_are_stacked(text)
+    if stacked:
+        front_width = width
+        front_height = _drawer_height_from_text(text) or max(height / drawer_count, 0) or front_height
     if front_width <= 0 or front_width > width:
         front_width = width if stacked else max((width / drawer_count) - 2 * thickness, 0)
     if front_height <= 0:
@@ -303,11 +313,32 @@ def _complete_drawer_pieces(out: dict, item: dict, *, width: float, height: floa
         fronts = [front]
 
     for front in fronts:
-        front["width_mm"] = min(_as_float(front.get("width_mm"), front_width), width) or front_width
-        if _as_float(front.get("height_mm")) <= 0:
+        if stacked:
+            front["width_mm"] = front_width
+        else:
+            front["width_mm"] = min(_as_float(front.get("width_mm"), front_width), width) or front_width
+        if stacked or _as_float(front.get("height_mm")) <= 0:
             front["height_mm"] = front_height
         if not front.get("edge_sides"):
             front["edge_sides"] = ["top", "bottom", "left", "right"]
+
+    if stacked:
+        for piece in pieces:
+            label = _norm(piece.get("label", ""))
+            if "caj" not in label or "frente" in label:
+                continue
+            if "lateral" in label:
+                piece["width_mm"] = drawer_depth
+                piece["height_mm"] = front_height
+                piece["quantity"] = drawer_count * 2
+            elif "fondo" in label:
+                piece["width_mm"] = front_width
+                piece["height_mm"] = front_height
+                piece["quantity"] = drawer_count
+            elif "trasera" in label:
+                piece["width_mm"] = front_width
+                piece["height_mm"] = front_height
+                piece["quantity"] = drawer_count
 
     label_text = " ".join(_norm(p.get("label", "")) for p in pieces)
     if "lateral caj" not in label_text:
@@ -317,14 +348,6 @@ def _complete_drawer_pieces(out: dict, item: dict, *, width: float, height: floa
             "quantity": drawer_count * 2,
             "label": "lateral cajón",
             "edge_sides": ["top"],
-        })
-    if "fondo caj" not in label_text and "base caj" not in label_text:
-        pieces.append({
-            "width_mm": front_width,
-            "height_mm": drawer_depth,
-            "quantity": drawer_count,
-            "label": "base cajon",
-            "edge_sides": [],
         })
     if "trasera caj" not in label_text:
         pieces.append({

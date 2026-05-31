@@ -74,6 +74,13 @@ CURATED_HARDWARE: list[HardwareSpec] = [
 
 _BY_CODE: dict[str, HardwareSpec] = {h.code: h for h in CURATED_HARDWARE}
 
+# Precios que Juan ya compartió en el Excel de referencia de la cajonera.
+# Si la hoja de herrajes tiene un precio cargado, ese valor pisa estos defaults.
+DEFAULT_HARDWARE_PRICES_UYU: dict[str, float] = {
+    "RUEDA_GIR_SIN_FRENO": 98.115,
+    "CERR_CAJONERA_3": 0.39,
+}
+
 
 def get_by_code(code: str) -> HardwareSpec | None:
     return _BY_CODE.get(code)

@@ -18,12 +18,13 @@ from agents import Agent, RunContextWrapper, Runner, function_tool
 from carpinteria.calculator import calculate_quotation
 from carpinteria.catalog import ProductCatalog
 from carpinteria.exchange_rate import fetch_bcu_usd
-from carpinteria.hardware_catalog import CURATED_HARDWARE, get_by_code
+from carpinteria.hardware_catalog import CURATED_HARDWARE, DEFAULT_HARDWARE_PRICES_UYU, get_by_code
 from carpinteria.hardware_prices_sheet import read_all as read_hw_prices, upsert_price as upsert_hw_price
 from carpinteria import memory as agent_memory
 from carpinteria.molduras_prices import quote_price
 from carpinteria.pliego import analyze_pliego, decompose_furniture
-from carpinteria.settings import AGENT_MODEL
+from carpinteria.settings import AGENT_MODEL, DEFAULT_BID_DESTINATION, DEFAULT_BID_PAYMENT_DAYS
+from carpinteria.shipping import default_shipping_provider
 from carpinteria.quotation_session import (
     CutPiece,
     HardwareUsage,
@@ -49,7 +50,29 @@ def _tc() -> float:
 
 def _hw_prices_map() -> dict[str, float]:
     rows = read_hw_prices()
-    return {code: float(d.get("precio_uyu") or 0) for code, d in rows.items()}
+    prices = dict(DEFAULT_HARDWARE_PRICES_UYU)
+    for code, d in rows.items():
+        price = float(d.get("precio_uyu") or 0)
+        if price > 0:
+            prices[code] = price
+    return prices
+
+
+def _payment_days_from_text(text: str) -> int | None:
+    matches = [int(m.group(1)) for m in re.finditer(r"(\d{1,3})\s*d[ií]as?", text.lower())]
+    return max(matches) if matches else None
+
+
+def _effective_payment_days(session: QuotationSession) -> int:
+    return (
+        session.payment_days
+        or _payment_days_from_text(session.general_specs.payment_terms)
+        or DEFAULT_BID_PAYMENT_DAYS
+    )
+
+
+def _effective_destination(session: QuotationSession) -> str:
+    return session.destination or session.general_specs.delivery_location or DEFAULT_BID_DESTINATION
 
 
 def _recalculate_item(
@@ -87,6 +110,11 @@ def _recalculate_item(
         }
         return item.last_quote
 
+    def is_drawer_base(label: str) -> bool:
+        norm = _norm_text(label)
+        return "caj" in norm and ("base" in norm or "parte de abajo" in norm)
+
+    item.pieces = [p for p in item.pieces if not is_drawer_base(p.label)]
     pieces = [
         type("P", (), {  # CutPiece-shaped duck for calculator (avoid pydantic re-validation)
             "width_mm": p.width_mm,
@@ -133,6 +161,9 @@ def _recalculate_item(
         if unit_price <= 0:
             pending.append(hu.code)
 
+    payment_days = _effective_payment_days(session)
+    destination = _effective_destination(session)
+
     q = calculate_quotation(
         pieces=pieces,
         catalog=catalog,
@@ -141,8 +172,9 @@ def _recalculate_item(
         thickness_mm=float(item.thickness_mm or 18),
         color=color,
         edge_banding_name=eb_name,
-        payment_days=session.payment_days,
-        destination=session.destination,
+        payment_days=payment_days,
+        shipping_provider=default_shipping_provider() if destination else None,
+        destination=destination,
         placa_sku=item.placa_sku,
         shipping_units=item.quantity,
         extra_input_lines=quote_hw_lines,
@@ -277,6 +309,18 @@ def _format_moldura_quote_reply(q: Any) -> str:
         f"Unitario {unit_name}: {_format_uyu(q.unit_price)} {iva_label}",
         f"Total: {_format_uyu(q.total)} {iva_label}",
     ]
+    if getattr(q, "estimated", False):
+        lines.insert(0, "No disponemos de esa moldura en stock/listado; este es el precio estimativo.")
+        if getattr(q, "source", "") == "conversor":
+            bd = getattr(q, "breakdown", None) or {}
+            lines.append(
+                "Calculo: conversor MANU "
+                f"(MP {_format_uyu(float(bd.get('materia_prima_varilla', 0) or 0))}, "
+                f"MO {bd.get('mo_minutos', 0)} min, seteo {_format_uyu(float(bd.get('seteo_varilla', 0) or 0))}, "
+                f"ganancia {float(bd.get('ganancia_pct', 0) or 0):.0%})."
+            )
+        else:
+            lines.append("Para producirla a medida, tomé una referencia competitiva del listado y le sumé recargo por modelo no listado.")
     if q.scale_hint:
         lines.append("Como son mas de 20 varillas, te conviene revisar opcion de cotizar a escala.")
     return "\n".join(lines)
@@ -289,7 +333,7 @@ def _try_direct_moldura_reply(message: str) -> str | None:
     q = quote_price(**parsed, include_iva=True)
     if q is None:
         return (
-            "No encontre esa moldura en el listado. Pasame material, medida en mm "
+            "No encontre una referencia suficiente para estimar esa moldura. Pasame material, medida en mm "
             "y si es liston/barrote/zocalo/moldura para ubicarla mejor."
         )
     return _format_moldura_quote_reply(q)
@@ -398,8 +442,11 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
     )
     if gs.get("delivery_location") and not s.destination:
         s.destination = gs["delivery_location"]
-    if gs.get("delivery_days") and not s.payment_days:
-        s.payment_days = int(gs["delivery_days"])
+    if not s.payment_days:
+        pay_days = _payment_days_from_text(str(gs.get("payment_terms", "")))
+        s.payment_days = pay_days or DEFAULT_BID_PAYMENT_DAYS
+    if not s.destination:
+        s.destination = DEFAULT_BID_DESTINATION
     s.pliego_filenames = list({*s.pliego_filenames, *file_paths})
 
     # Auto-title from the first pliego filename when the session has no
@@ -542,7 +589,7 @@ def quote_moldura_price(
     )
     if q is None:
         return (
-            "No encontre esa moldura en el listado. Pasame material, medida en mm "
+            "No encontre una referencia suficiente para estimar esa moldura. Pasame material, medida en mm "
             "y si es liston/barrote/zocalo/moldura para ubicarla mejor."
         )
     return _format_moldura_quote_reply(q)
@@ -815,7 +862,7 @@ Sos el asistente de cotización de carpintería. Trabajás sobre una sesión de 
 Cómo trabajás:
 - Si el usuario pregunta cómo está la cotización, llamá `get_state`.
 - Cuando el usuario te diga "subí este pliego" / "ingestá este archivo" y te pase paths, usá `ingest_pliego`.
-- Si el usuario pide precio de venta de varillas/listones/barrotes/zócalos/molduras por medida (ej: "2 varillas de pino 10x10 de 3.3 m"), usá `quote_moldura_price`. No uses `add_custom_item` para eso y no armes pliego/diseño.
+- Si el usuario pide precio de venta de varillas/listones/barrotes/zócalos/molduras por medida (ej: "2 varillas de pino 10x10 de 3.3 m"), usá `quote_moldura_price`. No uses `add_custom_item` para eso y no armes pliego/diseño. Si la medida no existe en stock/listado, igual devolvé precio estimativo y aclaralo.
 - Si el usuario describe un mueble a medida en texto ("cotizame un bajo mesada...", "armame precio para...") sin subir pliego, usá `add_custom_item`.
   Convertí medidas a mm antes de llamar la tool. Si faltan medidas/material/espesor, pedí solo esos datos.
 - Si el usuario corrige un plano/despiece diciendo que faltan puertas, cajones, estantes, perchero u otro componente, rehacé el item con `add_custom_item` usando la descripción completa corregida; no respondas solo con una disculpa.
