@@ -247,8 +247,12 @@ def _material_score(code: str, material: str | None) -> int:
             return 30
         if "pn" in code_n:
             return 25
+        if "impc" in code_n:
+            return 20
         return -100
     if mat in {"euca", "eucaliptus", "eucalipto", "imp", "importado"}:
+        if "impc" in code_n:
+            return -100
         return 30 if "imp" in code_n else -100
     return 0
 
@@ -265,6 +269,8 @@ def _family_group(family: str | None, description: str = "") -> str:
     if any(token in haystack for token in ("barrote", "barrotes")):
         return "Barrotes"
     if any(token in haystack for token in ("liston", "listones", "tabla", "tablas")):
+        return "Listones / Tablas"
+    if any(token in haystack for token in ("montante", "montantes")):
         return "Listones / Tablas"
     return "Molduras"
 
@@ -394,7 +400,7 @@ def estimate_price_from_conversor(
 
     item = MolduraPrice(
         code="EST-CONVERSOR",
-        family=f"{group} estimativo",
+        family=f"{(family or group)} estimativo",
         description=f"No stock, calculado con conversor sobre {table.name} {table.thickness_in:g}x{table.width_in:g}\"",
         width_mm=float(width_mm),
         height_mm=float(height_mm),
@@ -424,12 +430,41 @@ def _family_score(family: str, description: str, query_family: str | None) -> in
     haystack = f"{_norm(family)} {_norm(description)}"
     query = _norm(query_family)
     if query:
+        def model_token(text: str) -> str | None:
+            explicit = re.search(r"\b(?:n|no|num|numero|nro)\s*[°º.]?\s*([a-z0-9-]+)\b", text)
+            if explicit:
+                return explicit.group(1)
+            all_tokens = re.findall(r"\b(?:z-\d+|\d+[a-z]?)\b", text)
+            return all_tokens[-1] if all_tokens else None
+
+        query_no = model_token(query)
+        if "contravidrio" in query and query_no:
+            wanted = query_no
+            found = model_token(haystack)
+            if found and found == wanted:
+                return 80
+            return -40
+        media_no = model_token(query)
+        if "media cana" in query and media_no:
+            wanted = media_no
+            found = model_token(haystack)
+            if found and found == wanted:
+                return 80
+            return -40
+        cuadro_no = model_token(query)
+        if "cuadro" in query and cuadro_no:
+            wanted = cuadro_no
+            found = model_token(haystack)
+            if found and found == wanted:
+                return 80
+            return -40
         aliases = {
             "liston": ("liston", "listones"),
             "barrote": ("barrote", "barrotes"),
             "zocalo": ("zocalo", "zocalos"),
             "contravidrio": ("contravidrio", "contravidrios"),
             "media cana": ("media cana",),
+            "montante": ("montante", "montantes"),
             "moldura": ("moldura",),
         }
         for alias in aliases.get(query, (query,)):
@@ -437,6 +472,8 @@ def _family_score(family: str, description: str, query_family: str | None) -> in
                 return 40
         return -20
     if "liston" in haystack:
+        return 12
+    if "montante" in haystack:
         return 12
     if "barrote" in haystack:
         return 8
@@ -460,14 +497,16 @@ def find_price(
     ranked = sorted(
         exact,
         key=lambda item: (
-            _material_score(item.code, material),
             _family_score(item.family, item.description, family),
+            _material_score(item.code, material),
             -len(item.code),
         ),
         reverse=True,
     )
     best = ranked[0]
     if _material_score(best.code, material) < 0:
+        return None
+    if family and _family_score(best.family, best.description, family) < 0:
         return None
     return best
 

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from carpinteria.db import collection
 
@@ -65,6 +65,30 @@ class QuotationItem(BaseModel):
     last_quote: dict[str, Any] | None = None
     notes: str = ""
 
+    @field_validator("code", "name", "description", "material", "color", "edge_banding", "notes", mode="before")
+    @classmethod
+    def none_to_empty_string(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
+
+class MolduraQuoteItem(BaseModel):
+    code: str = ""
+    family: str = ""
+    description: str = ""
+    width_mm: float
+    height_mm: float
+    material: str = ""
+    quantity: float = 1
+    unit: str = "varilla"
+    unit_price: float = 0
+    total: float = 0
+    iva_included: bool = True
+    estimated: bool = False
+    source: str = ""
+    note: str = ""
+    breakdown: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
 
 class GeneralSpecs(BaseModel):
     delivery_location: str = ""
@@ -73,6 +97,35 @@ class GeneralSpecs(BaseModel):
     materials: str = ""
     colors: list[str] = Field(default_factory=list)
     edge_banding: str = ""
+    offer_maintenance_days: int | None = None
+    samples_required: str = ""
+    bid_guarantee: str = ""
+    performance_guarantee: str = ""
+    product_warranty: str = ""
+    other_conditions: str = ""
+
+    @field_validator(
+        "delivery_location",
+        "payment_terms",
+        "materials",
+        "edge_banding",
+        "samples_required",
+        "bid_guarantee",
+        "performance_guarantee",
+        "product_warranty",
+        "other_conditions",
+        mode="before",
+    )
+    @classmethod
+    def none_to_empty_string(cls, value: Any) -> str:
+        return "" if value is None else str(value)
+
+
+class AdditionalServices(BaseModel):
+    rectification: bool = False
+    installation: bool = False
+    painting: bool = False
+    varnishing: bool = False
 
 
 class ChatMessage(BaseModel):
@@ -109,10 +162,12 @@ class QuotationSession(BaseModel):
 
     # Cotización state
     items: list[QuotationItem] = Field(default_factory=list)
+    moldura_quotes: list[MolduraQuoteItem] = Field(default_factory=list)
     color_default: str = ""
     payment_days: int | None = None
     destination: str = ""
     general_specs: GeneralSpecs = Field(default_factory=GeneralSpecs)
+    additional_services: AdditionalServices = Field(default_factory=AdditionalServices)
 
     # Audit
     pliego_filenames: list[str] = Field(default_factory=list)

@@ -67,6 +67,26 @@ export const QuotationItemSchema = z.object({
 });
 export type QuotationItem = z.infer<typeof QuotationItemSchema>;
 
+export const MolduraQuoteSchema = z.object({
+  code: z.string().default(""),
+  family: z.string().default(""),
+  description: z.string().default(""),
+  width_mm: z.number(),
+  height_mm: z.number(),
+  material: z.string().default(""),
+  quantity: z.number().default(1),
+  unit: z.string().default("varilla"),
+  unit_price: z.number().default(0),
+  total: z.number().default(0),
+  iva_included: z.boolean().default(true),
+  estimated: z.boolean().default(false),
+  source: z.string().default(""),
+  note: z.string().default(""),
+  breakdown: z.record(z.string(), z.unknown()).default({}),
+  created_at: z.string().optional(),
+});
+export type MolduraQuote = z.infer<typeof MolduraQuoteSchema>;
+
 export const SessionSchema = z.object({
   id: z.string(),
   title: z.string().default(""),
@@ -93,9 +113,23 @@ export const SessionSchema = z.object({
   total: z.number().default(0),
   last_response_id: z.string().nullable().default(null),
   items: z.array(QuotationItemSchema).default([]),
+  moldura_quotes: z.array(MolduraQuoteSchema).default([]),
   color_default: z.string().default(""),
   payment_days: z.number().nullable().default(null),
   destination: z.string().default(""),
+  additional_services: z
+    .object({
+      rectification: z.boolean().default(false),
+      installation: z.boolean().default(false),
+      painting: z.boolean().default(false),
+      varnishing: z.boolean().default(false),
+    })
+    .default({
+      rectification: false,
+      installation: false,
+      painting: false,
+      varnishing: false,
+    }),
   general_specs: z
     .object({
       colors: z.array(z.string()).default([]),
@@ -104,6 +138,12 @@ export const SessionSchema = z.object({
       payment_terms: z.string().default(""),
       materials: z.string().default(""),
       edge_banding: z.string().default(""),
+      offer_maintenance_days: z.number().nullable().default(null),
+      samples_required: z.string().default(""),
+      bid_guarantee: z.string().default(""),
+      performance_guarantee: z.string().default(""),
+      product_warranty: z.string().default(""),
+      other_conditions: z.string().default(""),
     })
     .partial()
     .optional(),

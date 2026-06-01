@@ -49,6 +49,52 @@ def _effective_destination(destination: str = "") -> str:
     return destination or DEFAULT_BID_DESTINATION
 
 
+def _payment_delay_percent(days: int) -> float:
+    from carpinteria.settings import PAYMENT_DELAY_TIERS
+    if days <= 0:
+        return 0.0
+    for max_days, pct in PAYMENT_DELAY_TIERS:
+        if days <= max_days:
+            return float(pct) / 100
+    return float(PAYMENT_DELAY_TIERS[-1][1]) / 100
+
+
+def _guarantee_percent(text: str) -> float:
+    import re
+    norm = _norm_export_text(text)
+    match = re.search(r"(\d+(?:[.,]\d+)?)\s*%", norm)
+    if match:
+        return float(match.group(1).replace(",", ".")) / 100
+    if "fiel" in norm or "cumplimiento" in norm:
+        return 0.05
+    return 0.0
+
+
+ADDITIONAL_SERVICE_LABELS = {
+    "rectification": "Rectificacion de medidas",
+    "installation": "Colocacion",
+    "painting": "Pintura",
+    "varnishing": "Barnizado/Lustrado",
+}
+
+
+def _additional_services_from_data(data: dict) -> dict[str, bool]:
+    raw = data.get("additional_services") or {}
+    return {
+        key: bool(raw.get(key))
+        for key in ADDITIONAL_SERVICE_LABELS
+    }
+
+
+def _additional_services_text(services: dict[str, bool]) -> str:
+    selected = [
+        label
+        for key, label in ADDITIONAL_SERVICE_LABELS.items()
+        if services.get(key)
+    ]
+    return ", ".join(selected) if selected else "No incluidos"
+
+
 def _get_tc() -> tuple[float, str]:
     try:
         from carpinteria.exchange_rate import fetch_bcu_usd
@@ -91,10 +137,24 @@ def _parse_moldura_request_text(text: str) -> dict | None:
     elif any(token in normalized for token in ("euca", "eucalipto", "eucaliptus", "imp", "importado")):
         material = "euca"
     family = None
-    for candidate in ("liston", "barrote", "zocalo", "contravidrio", "media cana", "moldura"):
+    for candidate in ("liston", "barrote", "zocalo", "contravidrio", "media cana", "cuadro", "montante", "moldura"):
         if candidate in normalized:
             family = candidate
             break
+    if family is None and "picado" in normalized:
+        family = "montante"
+    if family == "contravidrio":
+        model_match = re.search(r"\b(?:n|no|num|numero|nro|nro\.)\s*[°º.]?\s*(\d{1,3})\b", normalized)
+        if model_match:
+            family = f"contravidrio {model_match.group(1)}"
+    if family == "media cana":
+        model_match = re.search(r"\b(?:n|no|num|numero|nro|nro\.)\s*[°º.]?\s*([a-z0-9-]+)\b", normalized)
+        if model_match:
+            family = f"media cana {model_match.group(1)}"
+    if family == "cuadro":
+        model_match = re.search(r"\b(?:n|no|num|numero|nro|nro\.)\s*[°º.]?\s*([a-z0-9-]+)\b", normalized)
+        if model_match:
+            family = f"cuadro {model_match.group(1)}"
     qty_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:varillas?|listones?|barrotes?|zocalos?|molduras?|metros?|mts?|m)\b", normalized)
     quantity = float(qty_match.group(1).replace(",", ".")) if qty_match else 1.0
     unit = "metro" if re.search(r"\b(?:metros?|mts?|m)\b", normalized) and "3.3" not in normalized else "varilla"
@@ -462,6 +522,7 @@ def handle_export_excel(data: dict) -> dict:
     quotes = data.get("quotes", [])
     if not quotes:
         return {"error": "No hay cotizaciones para exportar"}
+    additional_services = _additional_services_from_data(data)
 
     wb = openpyxl.Workbook()
     image_tmp = tempfile.mkdtemp(prefix="planos_")
@@ -518,6 +579,12 @@ def handle_export_excel(data: dict) -> dict:
         ws_r.cell(row=tr, column=5, value=f"={'+'.join(total_refs)}")
     ws_r.cell(row=tr, column=5).font = Font(bold=True, size=13)
     ws_r.cell(row=tr, column=5).number_format = money
+
+    services_row = tr + 2
+    ws_r.cell(row=services_row, column=1, value="SERVICIOS ADICIONALES").font = hf
+    ws_r.cell(row=services_row, column=1).fill = pfill
+    ws_r.cell(row=services_row, column=2, value=_additional_services_text(additional_services)).border = bdr
+    ws_r.merge_cells(start_row=services_row, start_column=2, end_row=services_row, end_column=6)
 
     ws_r.column_dimensions["A"].width = 10
     ws_r.column_dimensions["B"].width = 40
@@ -802,6 +869,11 @@ def handle_export_excel(data: dict) -> dict:
         flete_cell = f"F{r}"
         r += 1
 
+        ws.cell(row=r, column=5, value="SERVICIOS ADICIONALES")
+        ws.cell(row=r, column=6, value=_additional_services_text(additional_services))
+        ws.cell(row=r, column=6).border = bdr
+        r += 1
+
         ws.cell(row=r, column=5, value="TOTAL UNITARIO").font = Font(bold=True, size=14)
         ws.cell(row=r, column=6, value=f"={total_base_cell}+{fin_cell}+{flete_cell}")
         ws.cell(row=r, column=6).font = Font(bold=True, size=14)
@@ -828,14 +900,20 @@ def handle_export_excel(data: dict) -> dict:
 
 
 def handle_export_molduras_excel(data: dict) -> dict:
+    import os
     import tempfile
     import openpyxl
-    from openpyxl.styles import Font, PatternFill, Border, Side
+    from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
 
     from carpinteria.molduras_prices import (
+        ESTIMATED_MOLDURA_SURCHARGE,
         IVA_RATE,
         SCALE_THRESHOLD_VARILLAS,
         VARILLA_LENGTH_M,
+        _family_cost,
+        _family_group,
+        _material_kind,
+        estimate_price_from_conversor,
         quote_price,
     )
 
@@ -847,51 +925,525 @@ def handle_export_molduras_excel(data: dict) -> dict:
     if not requests:
         return {"error": "No hay molduras para exportar"}
 
+    commercial = data.get("commercial") or {}
+    general_specs = data.get("general_specs") or {}
+    additional_services = _additional_services_from_data(data)
+    payment_days = _effective_payment_days(
+        commercial.get("payment_days"),
+        str(general_specs.get("payment_terms") or ""),
+    )
+    destination = _effective_destination(str(commercial.get("destination") or general_specs.get("delivery_location") or ""))
+    delivery_days = general_specs.get("delivery_days")
+    guarantee_text = str(general_specs.get("performance_guarantee") or "")
+    guarantee_pct = _guarantee_percent(guarantee_text)
+    payment_pct = _payment_delay_percent(payment_days)
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Resumen"
-    detail = wb.create_sheet("Modelo molduras")
 
     hf = Font(bold=True)
+    title_font = Font(bold=True, size=15)
+    small_font = Font(size=9)
     hfw = Font(bold=True, color="FFFFFF")
     hfill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-    pfill = PatternFill(start_color="E2F0D9", end_color="E2F0D9", fill_type="solid")
-    warn_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
-    bdr = Border(left=Side(style="thin"), right=Side(style="thin"), top=Side(style="thin"), bottom=Side(style="thin"))
+    input_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    section_fill = PatternFill(start_color="E2F0D9", end_color="E2F0D9", fill_type="solid")
+    warn_fill = PatternFill(start_color="FCE4D6", end_color="FCE4D6", fill_type="solid")
+    total_fill = PatternFill(start_color="D9EAF7", end_color="D9EAF7", fill_type="solid")
+    bdr = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
     money = '#,##0.00'
 
-    def hdr(sheet, row: int, labels: list[str]) -> None:
-        for i, label in enumerate(labels, 1):
+    def hdr(sheet, row: int, labels: list[str], start_col: int = 1) -> None:
+        for i, label in enumerate(labels, start_col):
             cell = sheet.cell(row=row, column=i, value=label)
             cell.font = hfw
             cell.fill = hfill
             cell.border = bdr
+            cell.alignment = Alignment(horizontal="center")
 
-    ws.cell(row=1, column=1, value="Cotizacion de molduras").font = Font(bold=True, size=15)
-    hdr(ws, 3, ["Codigo", "Tipo", "Descripcion", "Medida", "Material", "Cant.", "Unidad", "Unitario", "Total", "Nota"])
+    def box(sheet, row: int, col: int, value="", fill=None, bold: bool = False):
+        cell = sheet.cell(row=row, column=col, value=value)
+        cell.border = bdr
+        if fill:
+            cell.fill = fill
+        if bold:
+            cell.font = hf
+        return cell
 
-    detail.cell(row=1, column=1, value="Modelo de razonamiento - molduras").font = Font(bold=True, size=15)
-    detail.cell(row=3, column=1, value="Parametros").font = hf
-    detail.cell(row=3, column=1).fill = pfill
-    params = [
-        ("IVA", IVA_RATE - 1),
-        ("Largo varilla m", VARILLA_LENGTH_M),
-        ("Umbral escala varillas", SCALE_THRESHOLD_VARILLAS),
-        ("Regla venta directa", "Precio final con IVA incluido"),
-        ("Regla muebles/proyectos", "Usar sin IVA y sumar IVA al final del mueble"),
-        ("Regla cortes por metro", "Si se consume casi la varilla completa, cobrar varilla; no +20% por metro"),
-    ]
-    for i, (label, value) in enumerate(params, 4):
-        detail.cell(row=i, column=1, value=label).border = bdr
-        detail.cell(row=i, column=2, value=value).border = bdr
-        if label == "IVA":
-            detail.cell(row=i, column=2).number_format = "0%"
+    def quoted_sheet(title: str) -> str:
+        return "'" + title.replace("'", "''") + "'"
 
-    hdr(detail, 12, [
-        "Codigo", "Tipo", "Descripcion", "Ancho mm", "Alto mm", "Material",
-        "Cant.", "Unidad", "Precio varilla IVA", "Precio metro IVA",
-        "Unitario usado", "Total", "Nota", "Fuente", "MP", "MO min", "Seteo", "Maq", "Ganancia %",
-    ])
+    def sheet_safe_name(base: str, idx: int) -> str:
+        clean = "".join(ch for ch in base if ch not in r'[]:*?/\\').strip()[:24]
+        return f"{clean} {idx}"[:31]
+
+    def profile_kind(family: str, description: str) -> str:
+        import re
+        text = _norm_export_text(f"{family} {description}")
+        if "barrote" in text:
+            return "barrote"
+        if "zocal" in text:
+            return "zocalo"
+        if "contravidrio" in text:
+            model = re.search(r"n[°º]?\s*\.?\s*(\d+)", text)
+            if model and model.group(1) in {"1", "2", "31", "113", "137", "180", "229", "299", "410", "411", "412"}:
+                return f"contravidrio-{model.group(1)}"
+            return "contravidrio"
+        if "contramarco" in text:
+            if "finger" in text or "7x" in text or "9x" in text:
+                return "contramarco-finger-n2" if "n2" in text else "contramarco-finger-n1"
+            if re.search(r"\b6\s*x", text):
+                return "contramarco-canal"
+            return "contramarco-nariz"
+        if "media cana" in text:
+            model = re.search(r"n[°º]?\s*\.?\s*([a-z0-9-]+)", text)
+            if model:
+                value = model.group(1)
+                if value in {"17", "38", "39", "50", "101", "101-a", "101a", "z-4", "z-6", "7-6"}:
+                    return "media-cana-alta"
+                if value in {"28", "30", "32", "33", "34", "35", "36"}:
+                    return "media-cana-larga"
+                if value in {"113", "229", "48", "4"}:
+                    return "media-cana-cuadrada"
+            return "media-cana-larga" if "x" in text and re.search(r"\b(5|6|8|9|10|11)\s*x\s*(1[7-9]|2[0-9]|3[0-9])", text) else "media-cana-cuadrada"
+        if "cuadro" in text:
+            model = re.search(r"n[Â°Âº]?\s*\.?\s*([a-z0-9-]+)", text)
+            if model:
+                value = model.group(1).replace("-a", "a")
+                if value in {"118", "131", "133", "203", "213a", "224", "232", "234", "45", "53", "57", "60", "63", "95", "z-1"}:
+                    return f"cuadro-{value}"
+            return "cuadro"
+        if "montante" in text:
+            return "montante"
+        if "liston" in text or "tabla" in text:
+            return "liston"
+        return "moldura"
+
+    def product_title(item, material: str) -> str:
+        import re
+        text = _norm_export_text(f"{item.code} {item.family} {item.description} {material}")
+        mat = ""
+        if "impc" in text:
+            mat = " PINO NACIONAL"
+        elif "imp" in text or "euca" in text:
+            mat = " EUCALYPTUS"
+        elif "nac" in text or "pino" in text:
+            mat = " PINO NACIONAL"
+        model = re.search(r"n[°º]?\s*\.?\s*(\d+)", text)
+        if "contravidrio" in text:
+            no = f" No. {model.group(1)}" if model else ""
+            return f"CONTRAVIDRIO {item.width_mm:g}x{item.height_mm:g}mm LA VARILLA 3.30mts{no}{mat}"
+        if "contramarco" in text:
+            finger = ""
+            if "finger" in text:
+                finger = f" Finger {'N2' if 'n2' in text else 'N1'}"
+            length = "3.05mts" if finger else "3.30mts"
+            return f"CONTRAMARCO {item.width_mm:g}x{item.height_mm:g}MM LA VARILLA {length}{finger}{mat}"
+        if "media cana" in text:
+            no = f" No. {model.group(1)}" if model else ""
+            return f"MEDIA CAÑA {item.width_mm:g}x{item.height_mm:g}mm LA VARILLA 3.30mts{no}{mat}"
+        if "cuadro" in text:
+            model = re.search(r"n[Â°Âº]?\s*\.?\s*([a-z0-9-]+)", text)
+            no = f" No. {model.group(1)}" if model else ""
+            return f"MOLDURA P/CUADRO{no} LA VARILLA 3.30mts{mat}"
+        if "montante" in text:
+            return f"MONTANTE {item.width_mm:g}x{item.height_mm:g}MM LA VARILLA 3.30mts{mat}"
+        return f"{item.family} {item.width_mm:g}x{item.height_mm:g}mm{mat}"
+
+    image_paths: list[str] = []
+
+    def add_profile_image(sheet, family: str, description: str, width_mm: float, height_mm: float) -> None:
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            from openpyxl.drawing.image import Image as XLImage
+        except Exception:
+            sheet.cell(row=15, column=10, value=f"Perfil: {profile_kind(family, description)}")
+            return
+
+        kind = profile_kind(family, description)
+        img = Image.new("RGB", (360, 230), "white")
+        draw = ImageDraw.Draw(img)
+        ink = "#8B3F10"
+        dim = "#5F6B73"
+        fill = "#FFF3E3"
+        hatch = "#C98A54"
+
+        def paste_hatch(mask):
+            layer = Image.new("RGB", img.size, fill)
+            layer_draw = ImageDraw.Draw(layer)
+            for x in range(-120, 420, 16):
+                layer_draw.line((x, 220, x + 210, 10), fill=hatch, width=2)
+            img.paste(layer, mask=mask)
+
+        def hatch_polygon(points):
+            mask = Image.new("L", img.size, 0)
+            ImageDraw.Draw(mask).polygon(points, fill=255)
+            paste_hatch(mask)
+            draw.line(points + [points[0]], fill=ink, width=4)
+
+        def hatch_ellipse(box):
+            mask = Image.new("L", img.size, 0)
+            ImageDraw.Draw(mask).ellipse(box, fill=255)
+            paste_hatch(mask)
+            draw.ellipse(box, outline=ink, width=4)
+
+        if kind == "barrote":
+            body = [(164, 48), (308, 72), (308, 142), (164, 164)]
+            draw.polygon(body, fill="#FFE2B7", outline=ink)
+            draw.line((190, 55, 308, 74), fill=hatch, width=2)
+            draw.line((194, 157, 308, 140), fill=hatch, width=2)
+            hatch_ellipse((80, 44, 194, 158))
+            draw.arc((80, 44, 194, 158), -82, 82, fill=ink, width=3)
+        elif kind == "zocalo":
+            pts = [(142, 22), (188, 28), (204, 60), (192, 92), (218, 125), (220, 194), (126, 194), (112, 150), (132, 112), (113, 88), (132, 58)]
+            hatch_polygon(pts)
+        elif kind == "contramarco-nariz":
+            draw.polygon([(82, 112), (302, 46), (322, 66), (104, 146)], fill="#FFE2B7", outline=ink)
+            draw.polygon([(78, 86), (298, 22), (322, 44), (100, 122)], fill="#FFF3E3", outline=ink)
+            draw.line((116, 72, 250, 33), fill=ink, width=4)
+            draw.line((132, 91, 270, 48), fill=hatch, width=4)
+            draw.line((172, 78, 292, 43), fill=hatch, width=3)
+            nose = [(78, 86), (58, 97), (63, 120), (100, 122), (88, 104)]
+            hatch_polygon(nose)
+        elif kind == "contramarco-canal":
+            draw.polygon([(84, 122), (304, 52), (324, 74), (104, 154)], fill="#FFE2B7", outline=ink)
+            draw.polygon([(80, 94), (300, 30), (324, 52), (102, 132)], fill="#FFF3E3", outline=ink)
+            draw.line((128, 84, 252, 48), fill=ink, width=4)
+            draw.line((142, 102, 270, 62), fill=ink, width=4)
+            nose = [(80, 94), (60, 106), (66, 132), (102, 132), (90, 112)]
+            hatch_polygon(nose)
+        elif kind in {"contramarco-finger-n1", "contramarco-finger-n2"}:
+            draw.polygon([(84, 122), (304, 54), (324, 76), (106, 154)], fill="#FFE2B7", outline=ink)
+            draw.polygon([(80, 96), (300, 32), (324, 54), (102, 132)], fill="#FFF3E3", outline=ink)
+            if kind == "contramarco-finger-n2":
+                draw.line((128, 84, 238, 50), fill=ink, width=4)
+                draw.line((156, 96, 262, 62), fill=hatch, width=3)
+            else:
+                draw.line((130, 90, 258, 52), fill=hatch, width=4)
+            nose = [(80, 96), (61, 108), (67, 132), (102, 132), (90, 114)]
+            hatch_polygon(nose)
+        elif kind == "contravidrio-113":
+            draw.polygon([(86, 90), (290, 42), (312, 64), (106, 134)], fill="#FFE2B7", outline=ink)
+            nose = [(86, 90), (62, 106), (70, 136), (106, 134), (94, 112)]
+            hatch_polygon(nose)
+            draw.line((122, 90, 236, 56), fill=hatch, width=3)
+        elif kind == "contravidrio-137":
+            draw.polygon([(90, 68), (140, 40), (312, 72), (312, 132), (88, 132)], fill="#FFE2B7", outline=ink)
+            hatch_ellipse((56, 52, 138, 136))
+            draw.rectangle((96, 94, 312, 132), fill="#FFE2B7", outline=ink)
+            draw.line((148, 62, 300, 88), fill=hatch, width=3)
+        elif kind in {"contravidrio-229", "contravidrio-299"}:
+            pts = [(74, 148), (300, 148), (300, 96), (188, 104), (128, 148)]
+            hatch_polygon(pts)
+        elif kind == "contravidrio-1":
+            pts = [(82, 150), (302, 150), (238, 58), (136, 58)]
+            hatch_polygon(pts)
+        elif kind == "contravidrio-2":
+            pts = [(76, 150), (308, 150), (244, 48), (138, 48), (138, 82), (104, 82)]
+            hatch_polygon(pts)
+        elif kind == "contravidrio-31":
+            pts = [(76, 146), (306, 146), (306, 102), (134, 102), (134, 70), (76, 70)]
+            hatch_polygon(pts)
+        elif kind == "contravidrio-180":
+            pts = [(78, 150), (300, 150), (300, 104), (250, 72), (134, 72), (78, 104)]
+            hatch_polygon(pts)
+        elif kind in {"contravidrio-410", "contravidrio-411", "contravidrio-412"}:
+            pts = [(76, 150), (306, 150), (264, 66), (126, 66)]
+            hatch_polygon(pts)
+        elif kind == "contravidrio":
+            pts = [(108, 166), (230, 166), (196, 54), (136, 54)]
+            hatch_polygon(pts)
+        elif kind == "media-cana":
+            mask = Image.new("L", img.size, 0)
+            mask_draw = ImageDraw.Draw(mask)
+            mask_draw.pieslice((94, 44, 236, 186), 180, 360, fill=255)
+            mask_draw.rectangle((94, 115, 236, 186), fill=255)
+            paste_hatch(mask)
+            draw.pieslice((94, 44, 236, 186), 180, 360, outline=ink, width=4)
+            draw.line((94, 115, 236, 115), fill=ink, width=4)
+        elif kind == "media-cana-cuadrada":
+            mask = Image.new("L", img.size, 0)
+            md = ImageDraw.Draw(mask)
+            md.pieslice((92, 50, 244, 202), 180, 360, fill=255)
+            md.rectangle((92, 126, 244, 202), fill=255)
+            paste_hatch(mask)
+            draw.pieslice((92, 50, 244, 202), 180, 360, outline=ink, width=4)
+            draw.line((92, 126, 244, 126), fill=ink, width=4)
+        elif kind == "media-cana-larga":
+            pts = [(70, 168), (300, 168), (260, 96), (212, 70), (148, 70), (96, 96)]
+            hatch_polygon(pts)
+            draw.arc((118, 48, 242, 172), 190, 350, fill=ink, width=4)
+        elif kind == "media-cana-alta":
+            pts = [(78, 178), (286, 178), (286, 64), (254, 64), (226, 100), (116, 126), (78, 126)]
+            hatch_polygon(pts)
+            draw.arc((92, 54, 226, 188), 205, 340, fill=ink, width=4)
+            draw.line((96, 154, 274, 154), fill=hatch, width=3)
+            draw.line((108, 166, 282, 166), fill=hatch, width=3)
+        elif kind == "liston":
+            mask = Image.new("L", img.size, 0)
+            max_dim = max(float(width_mm or 1), float(height_mm or 1), 1.0)
+            rect_w = max(42, min(190, 190 * float(width_mm or 1) / max_dim))
+            rect_h = max(42, min(125, 125 * float(height_mm or 1) / max_dim))
+            cx, cy = 168, 106
+            box = (
+                int(cx - rect_w / 2),
+                int(cy - rect_h / 2),
+                int(cx + rect_w / 2),
+                int(cy + rect_h / 2),
+            )
+            ImageDraw.Draw(mask).rectangle(box, fill=255)
+            paste_hatch(mask)
+            draw.rectangle(box, outline=ink, width=4)
+        elif kind == "montante":
+            box = (64, 82, 304, 140)
+            draw.rectangle(box, fill="#FFF3E3", outline=ink, width=4)
+            for i in range(4):
+                x = 88 + i * 48
+                cutout = Image.new("RGBA", (56, 34), (255, 255, 255, 0))
+                cutout_draw = ImageDraw.Draw(cutout)
+                cutout_draw.rounded_rectangle((6, 10, 50, 24), radius=7, fill=fill, outline=ink, width=4)
+                for hx in range(12, 48, 8):
+                    cutout_draw.line((hx, 24, hx + 16, 10), fill=hatch, width=2)
+                cutout = cutout.rotate(-28, expand=True)
+                img.paste(cutout, (x - 8, 92), cutout)
+        elif kind.startswith("cuadro-") or kind == "cuadro":
+            if kind in {"cuadro-203", "cuadro-224", "cuadro-232"}:
+                pts = [(72, 170), (128, 46), (154, 86), (238, 102), (298, 98), (298, 128), (252, 128), (252, 150), (208, 150), (208, 170)]
+            elif kind == "cuadro-45":
+                pts = [(76, 172), (76, 70), (122, 34), (234, 34), (302, 72), (232, 100), (212, 138), (302, 138), (302, 172)]
+            elif kind == "cuadro-57":
+                pts = [(78, 170), (116, 90), (164, 58), (208, 108), (292, 92), (292, 130), (232, 146), (204, 170)]
+            elif kind == "cuadro-z1":
+                pts = [(82, 178), (82, 38), (118, 38), (118, 86), (210, 146), (284, 146), (284, 174), (182, 174), (182, 178)]
+            elif kind == "cuadro-234":
+                pts = [(86, 176), (86, 50), (124, 50), (124, 92), (210, 126), (294, 126), (294, 154), (220, 154), (220, 176)]
+            else:
+                pts = [(78, 174), (78, 54), (112, 28), (150, 34), (168, 76), (210, 88), (294, 88), (294, 120), (252, 120), (252, 154), (190, 154), (190, 174)]
+            hatch_polygon(pts)
+        else:
+            pts = [(112, 34), (220, 34), (198, 70), (220, 104), (190, 128), (215, 176), (112, 176)]
+            hatch_polygon(pts)
+
+        draw.line((36, 202, 300, 202), fill=dim, width=3)
+        draw.line((36, 194, 36, 210), fill=dim, width=3)
+        draw.line((300, 194, 300, 210), fill=dim, width=3)
+        draw.line((34, 30, 34, 188), fill=dim, width=3)
+        draw.line((26, 30, 42, 30), fill=dim, width=3)
+        draw.line((26, 188, 42, 188), fill=dim, width=3)
+        width_label = f"{width_mm:g} mm"
+        height_label = f"{height_mm:g} mm"
+        label = f"Ø {max(width_mm, height_mm):g} mm" if kind == "barrote" else width_label
+        draw.text((142, 204), label, fill=dim)
+        if kind != "barrote":
+            rotated = Image.new("RGBA", (92, 24), (255, 255, 255, 0))
+            rdraw = ImageDraw.Draw(rotated)
+            rdraw.text((2, 3), height_label, fill=dim)
+            rotated = rotated.rotate(90, expand=True)
+            img.paste(rotated, (3, 78), rotated)
+        draw.text((245, 28), kind.replace("-", " "), fill=dim)
+
+        fd, path = tempfile.mkstemp(suffix=".png", prefix="perfil_moldura_")
+        os.close(fd)
+        img.save(path)
+        image_paths.append(path)
+        xl_img = XLImage(path)
+        xl_img.width = 270
+        xl_img.height = 172
+        sheet.add_image(xl_img, "J4")
+
+    def material_hint(raw: dict, item) -> str:
+        explicit = str(raw.get("material") or "").strip()
+        if explicit:
+            return explicit
+        code = str(getattr(item, "code", "") or "").upper()
+        if "IMPC" in code:
+            return "pino"
+        return "euca" if "IMP" in code else "pino"
+
+    def write_conversor_sheet(sheet, q, raw: dict, idx: int) -> dict[str, str]:
+        item = q.item
+        material = material_hint(raw, item)
+        group = _family_group(raw.get("family") or item.family, item.description)
+        cost = _family_cost(group, material)
+        breakdown = q.breakdown or {}
+        if not breakdown:
+            model_item = estimate_price_from_conversor(
+                item.width_mm,
+                item.height_mm,
+                material=material,
+                family=raw.get("family") or item.family,
+            )
+            breakdown = getattr(model_item, "_breakdown", {}) if model_item is not None else {}
+
+        thick_cm = min(item.width_mm, item.height_mm) / 10
+        wide_cm = max(item.width_mm, item.height_mm) / 10
+        surcharge = float(breakdown.get("recargo_modelo_no_listado") or (ESTIMATED_MOLDURA_SURCHARGE - 1 if q.estimated else 0))
+
+        sheet.cell(row=1, column=1, value=f"Conversor molduras - {item.family}").font = title_font
+        sheet.cell(row=2, column=1, value="Esta hoja queda editable: podes tocar los campos amarillos y Excel recalcula el precio.").font = small_font
+        sheet.cell(row=4, column=10, value="PERFIL / SECCION").font = hf
+        sheet.cell(row=4, column=10).fill = section_fill
+        add_profile_image(sheet, raw.get("family") or item.family, item.description, item.width_mm, item.height_mm)
+
+        sheet.cell(row=4, column=1, value="MEDIDAS DE MOLDURA A REALIZAR").font = hf
+        sheet.cell(row=4, column=1).fill = section_fill
+        for row, label, value in (
+            (5, "Espesor / alto cm", thick_cm),
+            (6, "Ancho cm", wide_cm),
+            (7, "Largo varilla m", VARILLA_LENGTH_M),
+            (8, "Cantidad pedida", q.quantity),
+            (9, "Unidad pedida", q.unit),
+            (10, "Fuente del precio", q.source),
+            (11, "Precio varilla listado", item.price_varilla_iva if q.iva_included else item.price_varilla_without_iva),
+            (12, "Precio metro listado", item.price_meter_iva if q.iva_included else item.price_meter_without_iva),
+            (13, "Titulo asociado", product_title(item, material)),
+        ):
+            box(sheet, row, 1, label)
+            c = box(sheet, row, 2, value, input_fill)
+            if isinstance(value, (int, float)):
+                c.number_format = "0.00"
+            if row in (11, 12):
+                c.number_format = money
+
+        sheet.cell(row=4, column=4, value="TABLA PARA COTIZACION").font = hf
+        sheet.cell(row=4, column=4).fill = section_fill
+        hdr(sheet, 5, ["Madera", "Espesor pulg", "Ancho pulg", "Largo m", "Precio tabla UYU"], start_col=4)
+        wood_values = [
+            breakdown.get("madera") or ("Pino" if _material_kind(material) == "pino" else "Eucaliptus"),
+            breakdown.get("tabla_espesor_pulg") or "",
+            breakdown.get("tabla_ancho_pulg") or "",
+            breakdown.get("tabla_largo_m") or VARILLA_LENGTH_M,
+            breakdown.get("precio_tabla_uyu") or "",
+        ]
+        for col, value in enumerate(wood_values, 4):
+            cell = box(sheet, 6, col, value, input_fill)
+            if col == 8:
+                cell.number_format = money
+
+        sheet.cell(row=8, column=4, value="CALCULO DE MATERIA PRIMA").font = hf
+        sheet.cell(row=8, column=4).fill = section_fill
+        calc_rows = [
+            ("Espesor tabla cm", "=E6*2.25"),
+            ("Ancho tabla cm", "=F6*2.25"),
+            ("Molduras por tabla sin merma", "=(E9/B5)*(E10/B6)"),
+            ("Merma", 0.35),
+            ("Molduras por tabla con merma", "=E11*(1-E12)"),
+            ("MP por varilla", "=H6/E13"),
+        ]
+        for pos, (label, value) in enumerate(calc_rows, 9):
+            box(sheet, pos, 4, label)
+            cell = box(sheet, pos, 5, value, input_fill if label == "Merma" else None)
+            if pos in (12,):
+                cell.number_format = "0%"
+            if pos == 14:
+                cell.number_format = money
+
+        sheet.cell(row=17, column=1, value="PARAMETROS").font = hf
+        sheet.cell(row=17, column=1).fill = section_fill
+        params = [
+            ("Costo dia MO", 2300),
+            ("Horas por dia", 8),
+            ("Costo hora MO", "=B18/B19"),
+            ("Seteos promedio", 20),
+            ("Maquinaria", 0.10),
+            ("IVA", IVA_RATE - 1),
+            ("Recargo modelo no listado", surcharge),
+            ("Umbral escala varillas", SCALE_THRESHOLD_VARILLAS),
+        ]
+        for offset, (label, value) in enumerate(params, 18):
+            box(sheet, offset, 1, label)
+            cell = box(sheet, offset, 2, value, input_fill if not isinstance(value, str) else None)
+            if label in {"Maquinaria", "IVA", "Recargo modelo no listado"}:
+                cell.number_format = "0%"
+            if label.startswith("Costo"):
+                cell.number_format = money
+
+        sheet.cell(row=17, column=4, value="COSTOS POR TIPO").font = hf
+        sheet.cell(row=17, column=4).fill = section_fill
+        hdr(sheet, 18, ["Tipo", "Minutos MO", "Seteo dias", "Ganancia"], start_col=4)
+        for offset, fam in enumerate(("Listones / Tablas", "Molduras", "Barrotes"), 19):
+            fam_cost = _family_cost(fam, material)
+            values = [fam, fam_cost.minutes, fam_cost.setup_days, fam_cost.profit_percent]
+            for col, value in enumerate(values, 4):
+                cell = box(sheet, offset, col, value, input_fill if fam == group else None)
+                if col == 7:
+                    cell.number_format = "0%"
+
+        product_row = 29
+        sheet.cell(row=product_row - 2, column=1, value="PRODUCTO").font = hf
+        sheet.cell(row=product_row - 2, column=1).fill = section_fill
+        hdr(sheet, product_row - 1, [
+            "Producto", "Tipo", "MP x varilla", "MO min", "MO x varilla", "Seteo x varilla",
+            "Maquinaria", "Costo total", "% Ganancia", "Ganancia", "Precio total + IVA",
+            "Precio metro +20%", "Unitario modelo", "Unitario cotizado", "Total cotizado",
+        ])
+        product_name = f"{item.family} {item.width_mm:g}x{item.height_mm:g} mm"
+        values = [
+            product_name,
+            group,
+            "=E14",
+            f'=VLOOKUP(B{product_row},$D$19:$G$21,2,FALSE)',
+            f"=(D{product_row}/60)*$B$20",
+            f'=(VLOOKUP(B{product_row},$D$19:$G$21,3,FALSE)*$B$18)/$B$21',
+            f"=(C{product_row}+E{product_row})*$B$22",
+            f"=C{product_row}+E{product_row}+F{product_row}+G{product_row}",
+            f'=VLOOKUP(B{product_row},$D$19:$G$21,4,FALSE)',
+            f"=H{product_row}*I{product_row}",
+            f"=(H{product_row}+J{product_row})*(1+$B$23)*(1+$B$24)",
+            f"=K{product_row}/$B$7*1.2",
+            f'=IF($B$9="metro",L{product_row},K{product_row})',
+            q.unit_price,
+            f"=N{product_row}*$B$8",
+        ]
+        for col, value in enumerate(values, 1):
+            cell = box(sheet, product_row, col, value)
+            if col in (3, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15):
+                cell.number_format = money
+            if col == 9:
+                cell.number_format = "0%"
+        sheet.cell(row=product_row, column=14).fill = total_fill
+        sheet.cell(row=product_row, column=15).fill = total_fill
+        sheet.cell(row=product_row, column=14).font = hf
+        sheet.cell(row=product_row, column=15).font = hf
+
+        sheet.cell(row=product_row + 3, column=1, value="NOTAS").font = hf
+        notes = [
+            "Unitario cotizado es el precio efectivamente usado en la cotizacion.",
+            "Unitario modelo muestra el precio que surge del conversor para controlar el razonamiento.",
+            "Venta directa/listado: precio final con IVA incluido.",
+            "Para muebles/proyectos: usar sin IVA y sumar IVA al final del mueble.",
+            "Precio por metro suma 20%, salvo que se consuma casi la varilla completa.",
+            "Si supera 20 varillas, revisar opcion de escala.",
+        ]
+        if q.estimated:
+            notes.insert(0, "No disponemos de esa moldura en stock/listado; este es precio estimativo con conversor.")
+        else:
+            notes.insert(0, "Producto encontrado en listado: el precio cotizado se toma del listado y el conversor queda como respaldo editable.")
+        for offset, note in enumerate(notes, product_row + 4):
+            sheet.cell(row=offset, column=1, value=note)
+            sheet.merge_cells(start_row=offset, start_column=1, end_row=offset, end_column=8)
+
+        for col in range(1, 16):
+            letter = openpyxl.utils.get_column_letter(col)
+            sheet.column_dimensions[letter].width = 18
+        sheet.column_dimensions["A"].width = 28
+        sheet.column_dimensions["D"].width = 22
+        sheet.freeze_panes = "A28"
+
+        return {
+            "unit_cell": f"N{product_row}",
+            "total_cell": f"O{product_row}",
+        }
+
+    ws.cell(row=1, column=1, value="Cotizacion de molduras").font = title_font
+    ws.cell(row=2, column=1, value="Resumen de licitacion/venta. Cada hoja Conversor PN/EUCA muestra el armado editable del precio.").font = small_font
+    hdr(ws, 4, ["Codigo", "Tipo", "Descripcion", "Medida", "Material", "Cant.", "Unidad", "Unitario", "Total", "Hoja", "Nota"])
 
     total_refs = []
     for idx, raw in enumerate(requests, 1):
@@ -904,69 +1456,136 @@ def handle_export_molduras_excel(data: dict) -> dict:
             unit=str(raw.get("unit") or "varilla"),
             include_iva=bool(raw.get("include_iva", True)),
         )
-        r = idx + 3
-        drow = idx + 12
+        r = idx + 4
         if q is None:
-            for sheet, row in ((ws, r), (detail, drow)):
-                sheet.cell(row=row, column=1, value="SIN REFERENCIA").fill = warn_fill
-                sheet.cell(row=row, column=10 if sheet is ws else 13, value="No se encontro referencia suficiente para estimar").fill = warn_fill
+            ws.cell(row=r, column=1, value="SIN REFERENCIA").fill = warn_fill
+            ws.cell(row=r, column=11, value="No se encontro referencia suficiente para estimar").fill = warn_fill
             continue
 
         item = q.item
+        kind_label = "EUCA" if _material_kind(material_hint(raw, item)) == "euca" else "PN"
+        conv = wb.create_sheet(sheet_safe_name(f"Conversor {kind_label}", idx))
+        refs = write_conversor_sheet(conv, q, raw, idx)
         measure = f"{item.width_mm:g}x{item.height_mm:g} mm"
         note_parts = []
         if q.estimated:
             note_parts.append("No stock/listado: precio estimativo")
         if q.scale_hint:
             note_parts.append("Revisar escala")
-        note = " | ".join(note_parts)
         total_refs.append(f"I{r}")
+        unit_expr = f"{quoted_sheet(conv.title)}!{refs['unit_cell']}"
+        total_expr = f"{quoted_sheet(conv.title)}!{refs['total_cell']}"
+        length_m = float(raw.get("length_m") or raw.get("requested_length_m") or VARILLA_LENGTH_M)
+        if abs(length_m - VARILLA_LENGTH_M) > 0.001:
+            unit_expr = f"{unit_expr}*{length_m / VARILLA_LENGTH_M:.8f}"
+            total_expr = f"{unit_expr}*F{r}"
+            note_parts.append(f"Largo solicitado {length_m:g} m")
+        unit_ref = f"={unit_expr}"
+        total_ref = f"={total_expr}"
+        note = " | ".join(note_parts)
         values = [
             item.code, item.family, item.description, measure,
-            raw.get("material") or "", q.quantity, q.unit, q.unit_price, q.total, note,
+            raw.get("material") or "", q.quantity, q.unit, unit_ref, total_ref, conv.title, note,
         ]
         for col, value in enumerate(values, 1):
             cell = ws.cell(row=r, column=col, value=value)
             cell.border = bdr
             if col in (8, 9):
                 cell.number_format = money
-            if note and col == 10:
+            if note and col == 11:
                 cell.fill = warn_fill
 
-        detail_values = [
-            item.code, item.family, item.description, item.width_mm, item.height_mm,
-            raw.get("material") or "", q.quantity, q.unit, item.price_varilla_iva,
-            item.price_meter_iva, q.unit_price, q.total, note,
-            q.source,
-            (q.breakdown or {}).get("materia_prima_varilla", ""),
-            (q.breakdown or {}).get("mo_minutos", ""),
-            (q.breakdown or {}).get("seteo_varilla", ""),
-            (q.breakdown or {}).get("maquinaria", ""),
-            (q.breakdown or {}).get("ganancia_pct", ""),
-        ]
-        for col, value in enumerate(detail_values, 1):
-            cell = detail.cell(row=drow, column=col, value=value)
-            cell.border = bdr
-            if col in (9, 10, 11, 12, 15, 17, 18):
-                cell.number_format = money
-            if col == 19:
-                cell.number_format = "0%"
-            if note and col == 13:
-                cell.fill = warn_fill
-
-    total_row = len(requests) + 5
-    ws.cell(row=total_row, column=8, value="TOTAL").font = hf
+    total_row = len(requests) + 6
+    ws.cell(row=total_row, column=8, value="Subtotal productos").font = hf
     ws.cell(row=total_row, column=9, value=f"=SUM({','.join(total_refs)})" if total_refs else 0).font = hf
     ws.cell(row=total_row, column=9).number_format = money
 
-    for sheet in (ws, detail):
-        for col in range(1, 14):
-            sheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 16
-        sheet.column_dimensions["C"].width = 34
+    state_row = total_row + 2
+    ws.cell(row=state_row, column=1, value="CONDICIONES LICITACION ESTATAL").font = hf
+    ws.cell(row=state_row, column=1).fill = section_fill
+    state_lines = [
+        ("Lugar de entrega", destination),
+        ("Plazo de entrega", f"{delivery_days} dias" if delivery_days else "A confirmar en pliego"),
+        ("Plazo de pago", f"{payment_days} dias"),
+        ("% recargo financiero", payment_pct),
+        ("Garantia fiel cumplimiento", guarantee_text or "No indicada"),
+        ("% garantia aplicado", guarantee_pct),
+        ("Flete/descarga unitario", _default_shipping_unit(destination, sum(int(float(r.get("quantity") or 1)) for r in requests))),
+        ("Servicios adicionales", _additional_services_text(additional_services)),
+        ("Mantenimiento oferta", f"{general_specs.get('offer_maintenance_days')} dias" if general_specs.get("offer_maintenance_days") else ""),
+        ("Otras condiciones", general_specs.get("other_conditions") or ""),
+    ]
+    for offset, (label, value) in enumerate(state_lines, state_row + 1):
+        box(ws, offset, 1, label)
+        cell = box(ws, offset, 2, value, input_fill if label.startswith("%") or "Flete" in label else None)
+        if label.startswith("%"):
+            cell.number_format = "0%"
+        if "Flete" in label:
+            cell.number_format = money
+
+    final_row = state_row + len(state_lines) + 2
+    final_lines = [
+        ("Recargo financiero", f"=I{total_row}*B{state_row + 4}"),
+        ("Garantia fiel cumplimiento", f"=I{total_row}*B{state_row + 6}"),
+        ("Flete/descarga total", f"=B{state_row + 7}*SUM(F5:F{len(requests)+4})"),
+        ("TOTAL LICITACION", f"=I{total_row}+B{final_row}+B{final_row+1}+B{final_row+2}"),
+    ]
+    for offset, (label, value) in enumerate(final_lines, final_row):
+        box(ws, offset, 1, label, total_fill if "TOTAL" in label else None, bold=True)
+        cell = box(ws, offset, 2, value, total_fill if "TOTAL" in label else None, bold=True)
+        cell.number_format = money
+
+    for col in range(1, 12):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 16
+    ws.column_dimensions["C"].width = 42
+    ws.column_dimensions["J"].width = 18
+    ws.column_dimensions["K"].width = 36
 
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="cotizacion_molduras_")
+    os.close(fd)
     wb.save(path)
+    for image_path in image_paths:
+        try:
+            os.unlink(image_path)
+        except OSError:
+            pass
     return {"excel_path": path}
+
+
+def handle_export_molduras_excel_session(data: dict) -> dict:
+    from carpinteria.quotation_session import get_session
+
+    sid = str(data.get("session_id") or "")
+    if not sid:
+        return {"error": "missing session_id"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    items = []
+    for q in s.moldura_quotes:
+        length_m = (q.breakdown or {}).get("largo_solicitado_m")
+        items.append({
+            "width_mm": q.width_mm,
+            "height_mm": q.height_mm,
+            "quantity": q.quantity,
+            "material": q.material,
+            "family": q.family,
+            "unit": q.unit,
+            "include_iva": q.iva_included,
+            "length_m": length_m,
+        })
+    if not items:
+        return {"error": "No hay cotizaciones de molduras para exportar"}
+    general_specs = s.general_specs.model_dump() if s.general_specs else {}
+    return handle_export_molduras_excel({
+        "items": items,
+        "commercial": {
+            "payment_days": _effective_payment_days(s.payment_days, str(general_specs.get("payment_terms") or "")),
+            "destination": _effective_destination(s.destination or str(general_specs.get("delivery_location") or "")),
+        },
+        "general_specs": general_specs,
+        "additional_services": s.additional_services.model_dump() if s.additional_services else {},
+    })
 
 
 def handle_export_docx(data: dict) -> dict:
@@ -1151,7 +1770,7 @@ def _recalc_all_items(session) -> None:
 def handle_session_update(data: dict) -> dict:
     """Patch session-level fields and recalculate every item.
 
-    Accepts any subset of: color_default, payment_days, destination.
+    Accepts any subset of: color_default, payment_days, destination, additional_services.
     Empty strings/None clear the field.
     """
     from carpinteria.quotation_session import get_session, save_session
@@ -1171,6 +1790,11 @@ def handle_session_update(data: dict) -> dict:
         s.destination = str(data.get("destination") or "")
     if "title" in data:
         s.title = str(data.get("title") or "").strip()
+    if "additional_services" in data:
+        raw = data.get("additional_services") or {}
+        current = s.additional_services.model_dump() if s.additional_services else {}
+        current.update({key: bool(raw.get(key)) for key in ADDITIONAL_SERVICE_LABELS if key in raw})
+        s.additional_services = type(s.additional_services)(**current)
 
     _recalc_all_items(s)
     save_session(s)
@@ -1511,7 +2135,10 @@ def handle_export_excel_session(data: dict) -> dict:
         save_session(s)
     except Exception:
         pass
-    return handle_export_excel({"quotes": _session_to_quotes_payload(s)})
+    return handle_export_excel({
+        "quotes": _session_to_quotes_payload(s),
+        "additional_services": s.additional_services.model_dump() if s.additional_services else {},
+    })
 
 
 def handle_export_docx_session(data: dict) -> dict:
@@ -1723,6 +2350,8 @@ def main() -> None:
             result = handle_export_excel(data)
         elif action == "export_molduras_excel":
             result = handle_export_molduras_excel(data)
+        elif action == "export_molduras_excel_session":
+            result = handle_export_molduras_excel_session(data)
         elif action == "export_docx":
             result = handle_export_docx(data)
         elif action == "lista_precios_preview":

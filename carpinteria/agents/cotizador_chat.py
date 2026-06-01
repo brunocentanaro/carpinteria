@@ -22,12 +22,14 @@ from carpinteria.hardware_catalog import CURATED_HARDWARE, DEFAULT_HARDWARE_PRIC
 from carpinteria.hardware_prices_sheet import read_all as read_hw_prices, upsert_price as upsert_hw_price
 from carpinteria import memory as agent_memory
 from carpinteria.molduras_prices import quote_price
+from carpinteria.openai_errors import friendly_openai_error
 from carpinteria.pliego import analyze_pliego, decompose_furniture
 from carpinteria.settings import AGENT_MODEL, DEFAULT_BID_DESTINATION, DEFAULT_BID_PAYMENT_DAYS
 from carpinteria.shipping import default_shipping_provider
 from carpinteria.quotation_session import (
     CutPiece,
     HardwareUsage,
+    MolduraQuoteItem,
     QuotationItem,
     QuotationSession,
     append_message,
@@ -264,10 +266,8 @@ def _parse_quantity(text: str) -> float:
 def _parse_moldura_query(message: str) -> dict[str, Any] | None:
     normalized = _norm_text(message)
     if not any(token in normalized for token in (
-        "varilla", "liston", "barrote", "zocalo", "moldura", "contravidrio", "media cana",
+        "varilla", "liston", "barrote", "zocalo", "moldura", "contravidrio", "media cana", "montante", "picado",
     )):
-        return None
-    if not any(token in normalized for token in ("precio", "cotiz", "cuanto", "sale", "pedi", "quiero")):
         return None
     dim_match = re.search(
         r"\b(\d+(?:[.,]\d+)?)\s*(?:mm)?\s*x\s*(\d+(?:[.,]\d+)?)\s*(?:mm)?\b",
@@ -283,10 +283,24 @@ def _parse_moldura_query(message: str) -> dict[str, Any] | None:
     elif any(token in normalized for token in ("euca", "eucalipto", "eucaliptus", "imp", "importado")):
         material = "euca"
     family = None
-    for candidate in ("liston", "barrote", "zocalo", "contravidrio", "media cana", "moldura"):
+    for candidate in ("liston", "barrote", "zocalo", "contravidrio", "media cana", "cuadro", "montante", "moldura"):
         if candidate in normalized:
             family = candidate
             break
+    if family is None and "picado" in normalized:
+        family = "montante"
+    if family == "contravidrio":
+        model_match = re.search(r"\b(?:n|no|num|numero|nro|nro\.)\s*[°º.]?\s*(\d{1,3})\b", normalized)
+        if model_match:
+            family = f"contravidrio {model_match.group(1)}"
+    if family == "media cana":
+        model_match = re.search(r"\b(?:n|no|num|numero|nro|nro\.)\s*[°º.]?\s*([a-z0-9-]+)\b", normalized)
+        if model_match:
+            family = f"media cana {model_match.group(1)}"
+    if family == "cuadro":
+        model_match = re.search(r"\b(?:n|no|num|numero|nro|nro\.)\s*[°º.]?\s*([a-z0-9-]+)\b", normalized)
+        if model_match:
+            family = f"cuadro {model_match.group(1)}"
     text_for_unit = normalized.replace(",", ".")
     unit = "metro" if re.search(r"\b(?:metros?|mts?|m)\b", normalized) and "3.3" not in text_for_unit else "varilla"
     return {
@@ -296,6 +310,85 @@ def _parse_moldura_query(message: str) -> dict[str, Any] | None:
         "family": family,
         "quantity": _parse_quantity(message),
         "unit": unit,
+    }
+
+
+def _pliego_moldura_request(raw: dict[str, Any]) -> dict[str, Any] | None:
+    text = _norm_text(" ".join(str(raw.get(k) or "") for k in ("code", "name", "description", "material")))
+    if not any(token in text for token in ("barrote", "barrotes", "moldura", "molduras", "liston", "listones", "zocalo", "montante", "contravidrio", "media cana")):
+        return None
+    if any(token in text for token in ("melamin", "mdf", "puerta", "cajon", "armario", "mueble", "placa")) and "barrote" not in text:
+        return None
+
+    material = "euca" if any(token in text for token in ("euca", "eucaliptus", "eucalipto", "clear", "imp")) else "pino"
+    family = None
+    for candidate in ("barrote", "liston", "zocalo", "contravidrio", "media cana", "montante", "moldura"):
+        if candidate in text:
+            family = candidate
+            break
+
+    dims = []
+    raw_dims = raw.get("dimensions") or {}
+    raw_cross = []
+    for key in ("width_mm", "height_mm"):
+        value = raw_dims.get(key)
+        if value is not None:
+            try:
+                raw_cross.append(float(value))
+            except Exception:
+                pass
+    explicit_pair = re.search(
+        r"\b(\d+(?:[.,]\d+)?)\s*(?:mm)?\s*x\s*(\d+(?:[.,]\d+)?)\s*(?:mm)?\b",
+        text,
+    )
+    if len(raw_cross) >= 2:
+        width, height = raw_cross[0], raw_cross[1]
+    elif explicit_pair:
+        width = float(explicit_pair.group(1).replace(",", "."))
+        height = float(explicit_pair.group(2).replace(",", "."))
+    else:
+        width = height = 0.0
+
+    for value in raw_dims.values():
+        if value is not None:
+            try:
+                dims.append(float(value))
+            except Exception:
+                pass
+    if not width or not height:
+        for match in re.finditer(r"\b(\d+(?:[.,]\d+)?)\s*(?:mm|milimetros?)?\b", text):
+            value = float(match.group(1).replace(",", "."))
+            if value >= 6:
+                dims.append(value)
+    dims = sorted(set(round(v, 2) for v in dims))
+    cross = [v for v in dims if 5 <= v <= 300]
+    long_values = [v for v in dims if v > 1000]
+    length_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:mts?|metros?)\b", text)
+    length_m = None
+    if length_match:
+        length_m = float(length_match.group(1).replace(",", "."))
+    elif long_values:
+        length_m = max(long_values) / 1000
+
+    if width and height:
+        pass
+    elif len(cross) >= 2:
+        width, height = cross[0], cross[1]
+    elif len(cross) == 1:
+        width = height = cross[0]
+    else:
+        return None
+
+    quantity = float(raw.get("quantity") or 1)
+    return {
+        "width_mm": width,
+        "height_mm": height,
+        "material": material,
+        "family": family,
+        "quantity": quantity,
+        "unit": "varilla",
+        "length_m": length_m,
+        "include_iva": True,
     }
 
 
@@ -326,27 +419,86 @@ def _format_moldura_quote_reply(q: Any) -> str:
     return "\n".join(lines)
 
 
-def _try_direct_moldura_reply(message: str) -> str | None:
+def _moldura_session_quote(q: Any, parsed: dict[str, Any]) -> MolduraQuoteItem:
+    item = q.item
+    requested_family = str(parsed.get("family") or "").strip()
+    family = item.family
+    if requested_family and getattr(q, "estimated", False):
+        family = f"{requested_family} estimativo"
+    length_m = parsed.get("length_m")
+    length_factor = float(length_m or 3.3) / 3.3
+    unit_price = float(q.unit_price) * length_factor
+    total = unit_price * float(q.quantity)
+    breakdown = dict(getattr(q, "breakdown", None) or {})
+    if length_m:
+        breakdown["largo_solicitado_m"] = float(length_m)
+        breakdown["ajuste_largo_sobre_3_3"] = length_factor
+    return MolduraQuoteItem(
+        code=item.code,
+        family=family,
+        description=item.description,
+        width_mm=float(item.width_mm),
+        height_mm=float(item.height_mm),
+        material=str(parsed.get("material") or ""),
+        quantity=float(q.quantity),
+        unit=str(q.unit),
+        unit_price=unit_price,
+        total=total,
+        iva_included=bool(q.iva_included),
+        estimated=bool(getattr(q, "estimated", False)),
+        source=str(getattr(q, "source", "")),
+        note=str(getattr(q, "note", "")),
+        breakdown=breakdown,
+    )
+
+
+def _try_direct_moldura_quote(message: str) -> tuple[str, MolduraQuoteItem] | None:
     parsed = _parse_moldura_query(message)
     if parsed is None:
         return None
     q = quote_price(**parsed, include_iva=True)
     if q is None:
-        return (
+        reply = (
             "No encontre una referencia suficiente para estimar esa moldura. Pasame material, medida en mm "
             "y si es liston/barrote/zocalo/moldura para ubicarla mejor."
         )
-    return _format_moldura_quote_reply(q)
+        return reply, MolduraQuoteItem(
+            code="SIN-REFERENCIA",
+            family=str(parsed.get("family") or ""),
+            description=reply,
+            width_mm=float(parsed.get("width_mm") or 0),
+            height_mm=float(parsed.get("height_mm") or 0),
+            material=str(parsed.get("material") or ""),
+            quantity=float(parsed.get("quantity") or 1),
+            unit=str(parsed.get("unit") or "varilla"),
+            note=reply,
+        )
+    return _format_moldura_quote_reply(q), _moldura_session_quote(q, parsed)
+
+
+def _try_direct_moldura_reply(message: str) -> str | None:
+    result = _try_direct_moldura_quote(message)
+    return result[0] if result else None
 
 
 def _format_state(session: QuotationSession) -> str:
-    if not session.items:
+    if not session.items and not session.moldura_quotes:
         return "Sesión vacía. Subí un pliego o agregá items para empezar."
+    services = []
+    if session.additional_services.rectification:
+        services.append("rectificacion de medidas")
+    if session.additional_services.installation:
+        services.append("colocacion")
+    if session.additional_services.painting:
+        services.append("pintura")
+    if session.additional_services.varnishing:
+        services.append("barnizado/lustrado")
     body = [
         f"**Sesión** id `{session.id}`",
         f"Color por defecto: `{session.color_default or '—'}` | "
         f"Pago: {session.payment_days or '—'}d | "
         f"Destino: `{session.destination or '—'}`",
+        f"Servicios adicionales: {', '.join(services) if services else 'sin adicionales'}",
         "",
     ]
     grand = 0.0
@@ -355,6 +507,9 @@ def _format_state(session: QuotationSession) -> str:
         body.append("")
         if item.last_quote:
             grand += float(item.last_quote.get("total_with_hardware", 0)) * item.quantity
+    if session.moldura_quotes:
+        body.append(f"Molduras/barrotes: {len(session.moldura_quotes)}")
+        grand += sum(float(q.total or 0) for q in session.moldura_quotes)
     body.append(f"**Total estimado: UYU {grand:,.2f}**")
     return "\n".join(body)
 
@@ -384,9 +539,18 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
     pliego = analyze_pliego(file_paths)
     items_payload = pliego.get("items") or []
     s.items = []
+    s.moldura_quotes = []
     for raw in items_payload:
         if not raw.get("wood_only", True):
             # Skip non-carpentry items per the prompt's classification
+            continue
+        moldura_request = _pliego_moldura_request(raw)
+        if moldura_request is not None:
+            q = quote_price(**{k: v for k, v in moldura_request.items() if k != "length_m"})
+            if q is not None:
+                mq = _moldura_session_quote(q, moldura_request)
+                mq.note = "Pliego estatal: cotizar con conversor/listado de molduras, no como mueble de placa."
+                s.moldura_quotes.append(mq)
             continue
         try:
             decomp = decompose_furniture(raw)
@@ -425,7 +589,7 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
             dimensions=dims,
             material=raw.get("material", "melamínico"),
             thickness_mm=float(raw.get("thickness_mm", 18) or 18),
-            edge_banding=raw.get("edge_banding", ""),
+            edge_banding=raw.get("edge_banding") or "",
             pieces=pieces,
             hardware=hardware,
         )
@@ -438,7 +602,13 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
         payment_terms=gs.get("payment_terms", ""),
         materials=gs.get("materials", ""),
         colors=list(gs.get("colors") or []),
-        edge_banding=gs.get("edge_banding", ""),
+        edge_banding=gs.get("edge_banding") or "",
+        offer_maintenance_days=gs.get("offer_maintenance_days"),
+        samples_required=gs.get("samples_required", ""),
+        bid_guarantee=gs.get("bid_guarantee", ""),
+        performance_guarantee=gs.get("performance_guarantee", ""),
+        product_warranty=gs.get("product_warranty", ""),
+        other_conditions=gs.get("other_conditions", ""),
     )
     if gs.get("delivery_location") and not s.destination:
         s.destination = gs["delivery_location"]
@@ -472,7 +642,7 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
             pass
 
     save_session(s)
-    return f"Ingerido pliego con {len(s.items)} muebles. {_format_state(s)}"
+    return f"Ingerido pliego con {len(s.items)} muebles y {len(s.moldura_quotes)} molduras/barrotes. {_format_state(s)}"
 
 
 def _next_manual_code(session: QuotationSession) -> str:
@@ -575,9 +745,9 @@ def quote_moldura_price(
     """Busca precio de venta directa de molduras/listones/barrotes por medida.
 
     Usala para consultas simples como "2 varillas de pino 10x10 de 3.3 m".
-    No agrega items a la cotizacion: solo devuelve el precio de catalogo.
+    Guarda la moldura cotizada en la sesion para poder exportar el Excel del razonamiento.
     """
-    _ensure_session(ctx)
+    session = _ensure_session(ctx)
     q = quote_price(
         width_mm=width_mm,
         height_mm=height_mm,
@@ -592,6 +762,12 @@ def quote_moldura_price(
             "No encontre una referencia suficiente para estimar esa moldura. Pasame material, medida en mm "
             "y si es liston/barrote/zocalo/moldura para ubicarla mejor."
         )
+    parsed = {
+        "material": material or "",
+        "family": family or "",
+    }
+    session.moldura_quotes.append(_moldura_session_quote(q, parsed))
+    save_session(session)
     return _format_moldura_quote_reply(q)
 
 
@@ -696,6 +872,33 @@ def set_destination(ctx: RunContextWrapper[str], destination: str) -> str:
         _recalculate_item(item, s)
     save_session(s)
     return f"Destino = {destination}."
+
+
+@function_tool
+def set_additional_services(
+    ctx: RunContextWrapper[str],
+    rectification: bool = False,
+    installation: bool = False,
+    painting: bool = False,
+    varnishing: bool = False,
+) -> str:
+    """Setea servicios adicionales de la cotizacion: rectificacion de medidas, colocacion, pintura y barnizado/lustrado."""
+    s = _ensure_session(ctx)
+    s.additional_services.rectification = bool(rectification)
+    s.additional_services.installation = bool(installation)
+    s.additional_services.painting = bool(painting)
+    s.additional_services.varnishing = bool(varnishing)
+    save_session(s)
+    selected = []
+    if s.additional_services.rectification:
+        selected.append("rectificacion de medidas")
+    if s.additional_services.installation:
+        selected.append("colocacion")
+    if s.additional_services.painting:
+        selected.append("pintura")
+    if s.additional_services.varnishing:
+        selected.append("barnizado/lustrado")
+    return "Servicios adicionales: " + (", ".join(selected) if selected else "sin adicionales")
 
 
 @function_tool
@@ -868,7 +1071,7 @@ Cómo trabajás:
 - Si el usuario corrige un plano/despiece diciendo que faltan puertas, cajones, estantes, perchero u otro componente, rehacé el item con `add_custom_item` usando la descripción completa corregida; no respondas solo con una disculpa.
 - Si te pide cambiar cantidades de herrajes ("3 bisagras en vez de 2"), usá `set_hardware_quantity`.
 - Si te pasa precios de herrajes, usá `set_hardware_price` (es global, se persiste para todas las sesiones).
-- Si te dice color/días de pago/destino, usá las tools correspondientes.
+- Si te dice color/días de pago/destino o servicios adicionales (rectificación de medidas, colocación, pintura, barnizado/lustrado), usá las tools correspondientes.
 - Después de mutar algo, mostrá el resumen actualizado del item afectado.
 - Hablás español rioplatense, conciso. Mostrás números formateados (UYU 12.345,67).
 - Códigos de herrajes en MAYÚSCULAS_CON_GUION_BAJO (ej: BISAGRA_FRENO, GUIA_TELESC_400). Si dudás, llamá `list_hardware_catalog`.
@@ -913,6 +1116,7 @@ def build_agent(session: QuotationSession | None = None) -> Agent:
             set_color,
             set_payment_days,
             set_destination,
+            set_additional_services,
             set_hardware_quantity,
             set_hardware_price,
             list_hardware_catalog,
@@ -954,11 +1158,15 @@ async def run_turn_stream(session_id: str, message: str):
 
     append_message(session_id, "user", message)
 
-    direct_reply = _try_direct_moldura_reply(message)
-    if direct_reply is not None:
+    direct_quote = _try_direct_moldura_quote(message)
+    if direct_quote is not None:
+        direct_reply, moldura_quote = direct_quote
+        fresh = get_session(session_id) or s
+        fresh.moldura_quotes.append(moldura_quote)
+        save_session(fresh)
         append_message(session_id, "assistant", direct_reply)
         yield "token", {"delta": direct_reply}
-        yield "done", {"reply": direct_reply, "last_response_id": s.last_response_id}
+        yield "done", {"reply": direct_reply, "last_response_id": fresh.last_response_id}
         return
 
     agent = build_agent(s)
@@ -966,26 +1174,32 @@ async def run_turn_stream(session_id: str, message: str):
     if s.last_response_id:
         kwargs["previous_response_id"] = s.last_response_id
 
-    streamed = Runner.run_streamed(agent, message, **kwargs)
+    try:
+        streamed = Runner.run_streamed(agent, message, **kwargs)
 
-    async for event in streamed.stream_events():
-        ev_type = getattr(event, "type", "")
-        if ev_type == "raw_response_event" and isinstance(
-            event.data, ResponseTextDeltaEvent
-        ):
-            delta = event.data.delta
-            if delta:
-                yield "token", {"delta": delta}
-        elif ev_type == "run_item_stream_event":
-            item = event.item
-            item_type = getattr(item, "type", "")
-            if item_type == "tool_call_item":
-                raw = getattr(item, "raw_item", None)
-                yield "tool_call", {"tool": getattr(raw, "name", "")}
-            elif item_type == "tool_call_output_item":
-                output = getattr(item, "output", "")
-                preview = output[:300] if isinstance(output, str) else str(output)[:300]
-                yield "tool_result", {"output": preview}
+        async for event in streamed.stream_events():
+            ev_type = getattr(event, "type", "")
+            if ev_type == "raw_response_event" and isinstance(
+                event.data, ResponseTextDeltaEvent
+            ):
+                delta = event.data.delta
+                if delta:
+                    yield "token", {"delta": delta}
+            elif ev_type == "run_item_stream_event":
+                item = event.item
+                item_type = getattr(item, "type", "")
+                if item_type == "tool_call_item":
+                    raw = getattr(item, "raw_item", None)
+                    yield "tool_call", {"tool": getattr(raw, "name", "")}
+                elif item_type == "tool_call_output_item":
+                    output = getattr(item, "output", "")
+                    preview = output[:300] if isinstance(output, str) else str(output)[:300]
+                    yield "tool_result", {"output": preview}
+    except Exception as exc:
+        msg = friendly_openai_error(exc)
+        append_message(session_id, "assistant", msg)
+        yield "error", {"message": msg}
+        return
 
     new_resp_id = getattr(streamed, "last_response_id", None)
     if new_resp_id:
@@ -1019,12 +1233,16 @@ async def run_turn(session_id: str, message: str) -> dict[str, Any]:
     # a record of what was asked.
     append_message(session_id, "user", message)
 
-    direct_reply = _try_direct_moldura_reply(message)
-    if direct_reply is not None:
+    direct_quote = _try_direct_moldura_quote(message)
+    if direct_quote is not None:
+        direct_reply, moldura_quote = direct_quote
+        fresh = get_session(session_id) or s
+        fresh.moldura_quotes.append(moldura_quote)
+        save_session(fresh)
         append_message(session_id, "assistant", direct_reply)
         return {
             "reply": direct_reply,
-            "last_response_id": s.last_response_id,
+            "last_response_id": fresh.last_response_id,
         }
 
     # Pass the current session into the prompt builder so the agent always
@@ -1035,7 +1253,12 @@ async def run_turn(session_id: str, message: str) -> dict[str, Any]:
     if s.last_response_id:
         kwargs["previous_response_id"] = s.last_response_id
 
-    result = await Runner.run(agent, message, **kwargs)
+    try:
+        result = await Runner.run(agent, message, **kwargs)
+    except Exception as exc:
+        msg = friendly_openai_error(exc)
+        append_message(session_id, "assistant", msg)
+        return {"error": msg}
 
     # The SDK exposes the response id on `result.last_response_id` (recent
     # versions) or on the trace. Fall back to walking result attributes.

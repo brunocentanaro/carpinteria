@@ -9,6 +9,7 @@ import unicodedata
 from openai import OpenAI
 
 from carpinteria.prompts import FURNITURE_DECOMPOSE, PLIEGO_ANALYSIS
+from carpinteria.openai_errors import friendly_openai_error
 from carpinteria.settings import AGENT_MODEL
 
 _client: OpenAI | None = None
@@ -70,15 +71,18 @@ def analyze_pliego(file_paths: list[str]) -> dict:
         combined = combined[:100_000]
 
     client = _get_client()
-    response = client.chat.completions.create(
-        model=AGENT_MODEL,
-        messages=[
-            {"role": "system", "content": PLIEGO_ANALYSIS},
-            {"role": "user", "content": combined},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=AGENT_MODEL,
+            messages=[
+                {"role": "system", "content": PLIEGO_ANALYSIS},
+                {"role": "user", "content": combined},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+    except Exception as exc:
+        raise RuntimeError(friendly_openai_error(exc)) from exc
 
     return json.loads(response.choices[0].message.content or "{}")
 
@@ -413,15 +417,18 @@ def decompose_furniture(item: dict) -> dict:
         f"Canto: {item.get('edge_banding', '')}"
     )
 
-    response = client.chat.completions.create(
-        model=AGENT_MODEL,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": desc},
-        ],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=AGENT_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": desc},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+    except Exception as exc:
+        raise RuntimeError(friendly_openai_error(exc)) from exc
 
     out = json.loads(response.choices[0].message.content or "{}")
     _normalize_piece_dimensions(out, item)

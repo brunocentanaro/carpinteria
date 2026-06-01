@@ -6,6 +6,7 @@ import json
 from openai import OpenAI
 
 from carpinteria.prompts import IMAGE_ANALYSIS
+from carpinteria.openai_errors import friendly_openai_error
 from carpinteria.schemas import CutPiece, ImageAnalysisResult
 from carpinteria.settings import VISION_MODEL
 _client: OpenAI | None = None
@@ -32,12 +33,15 @@ def analyze_cutting_plan(image_path: str) -> list[ImageAnalysisResult]:
     ]
 
     client = _get_client()
-    response = client.chat.completions.create(
-        model=VISION_MODEL,
-        messages=[{"role": "user", "content": content}],
-        response_format={"type": "json_object"},
-        temperature=0.2,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=VISION_MODEL,
+            messages=[{"role": "user", "content": content}],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+    except Exception as exc:
+        raise RuntimeError(friendly_openai_error(exc)) from exc
 
     raw = json.loads(response.choices[0].message.content or "{}")
     plans = raw.get("plans", [raw] if "pieces" in raw else [])

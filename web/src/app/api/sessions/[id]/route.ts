@@ -57,6 +57,7 @@ export async function PATCH(
     if ("payment_days" in body) payload.payment_days = body.payment_days;
     if ("destination" in body) payload.destination = body.destination;
     if ("title" in body) payload.title = body.title;
+    if ("additional_services" in body) payload.additional_services = body.additional_services;
     if (hasCommercialField) {
       if (auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede cambiar estados comerciales" }, { status: 403 });

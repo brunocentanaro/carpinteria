@@ -84,6 +84,12 @@ export async function patchSession(
     color_default: string;
     payment_days: number | null;
     destination: string;
+    additional_services: {
+      rectification?: boolean;
+      installation?: boolean;
+      painting?: boolean;
+      varnishing?: boolean;
+    };
     title: string;
     approval_status: "pending" | "approved";
     client_sent: boolean;
