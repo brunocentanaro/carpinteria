@@ -24,8 +24,10 @@ from carpinteria import memory as agent_memory
 from carpinteria.molduras_prices import quote_price
 from carpinteria.openai_errors import friendly_openai_error
 from carpinteria.pliego import analyze_pliego, decompose_furniture
+from carpinteria.quote_router import classify_quote_type, validate_quote_lines
 from carpinteria.settings import AGENT_MODEL, DEFAULT_BID_DESTINATION, DEFAULT_BID_PAYMENT_DAYS
 from carpinteria.shipping import default_shipping_provider
+from carpinteria.wood_calculator import quote_solid_wood_table
 from carpinteria.quotation_session import (
     CutPiece,
     HardwareUsage,
@@ -89,6 +91,24 @@ def _recalculate_item(
     Optional `catalog`/`tc`/`hw_prices` are reused across items by callers that
     recalculate many items in one go (otherwise we'd hit the sheet/BCU per item).
     """
+    if (item.last_quote or {}).get("metadata", {}).get("quote_type") == "madera_maciza":
+        q = quote_solid_wood_table(
+            description=item.description,
+            name=item.name,
+            quantity=item.quantity,
+            width_mm=item.dimensions.get("width_mm"),
+            height_mm=item.dimensions.get("height_mm"),
+            depth_mm=item.dimensions.get("depth_mm"),
+            material=item.material,
+            thickness_mm=item.thickness_mm,
+        )
+        base = q.model_dump()
+        base["hardware_lines"] = []
+        base["pending_hardware_codes"] = []
+        base["total_with_hardware"] = round(base.get("total", 0), 2)
+        item.last_quote = base
+        return base
+
     if not item.pieces:
         item.last_quote = None
         return {"error": "El item no tiene piezas todavía"}
@@ -182,6 +202,23 @@ def _recalculate_item(
         extra_input_lines=quote_hw_lines,
     )
     base = q.model_dump()
+    route = classify_quote_type(item.description, material=item.material)
+    ok, forbidden = validate_quote_lines(route, [line.get("concept", "") for line in base.get("lines", [])])
+    if not ok:
+        msg = (
+            f"Cotizacion rechazada: el pedido fue clasificado como {route.quote_type}, "
+            f"pero aparecieron conceptos prohibidos: {', '.join(forbidden)}"
+        )
+        item.last_quote = {
+            "error": msg,
+            "notes": msg,
+            "lines": [],
+            "total": 0,
+            "total_with_hardware": 0,
+            "pending_hardware_codes": [],
+            "metadata": {"quote_type": route.quote_type, "validation_error": forbidden},
+        }
+        return item.last_quote
 
     base["hardware_lines"] = hw_lines
     base["pending_hardware_codes"] = pending
@@ -830,6 +867,45 @@ def add_custom_item(
     s = _ensure_session(ctx)
     if not description.strip():
         return "Necesito una descripción del mueble para poder cotizarlo."
+
+    route = classify_quote_type(description, material=material)
+    if route.quote_type == "madera_maciza":
+        item = QuotationItem(
+            code=(code or _next_manual_code(s)).strip().upper(),
+            name=name.strip() or "mueble en madera maciza",
+            quantity=max(1, int(quantity or 1)),
+            description=description.strip(),
+            dimensions={
+                **({"width_mm": float(width_mm)} if width_mm else {}),
+                **({"height_mm": float(height_mm)} if height_mm else {}),
+                **({"depth_mm": float(depth_mm)} if depth_mm else {}),
+            },
+            material=(material or "pino").strip(),
+            thickness_mm=float(thickness_mm or 25.4),
+            color=(color or "").strip(),
+            edge_banding="",
+            last_quote={"metadata": {"quote_type": "madera_maciza", "subtype": "tablas_encoladas"}},
+        )
+        q = quote_solid_wood_table(
+            description=item.description,
+            name=item.name,
+            quantity=item.quantity,
+            width_mm=item.dimensions.get("width_mm"),
+            height_mm=item.dimensions.get("height_mm"),
+            depth_mm=item.dimensions.get("depth_mm"),
+            material=item.material,
+            thickness_mm=item.thickness_mm,
+        )
+        item.last_quote = q.model_dump()
+        item.last_quote["hardware_lines"] = []
+        item.last_quote["pending_hardware_codes"] = []
+        item.last_quote["total_with_hardware"] = round(item.last_quote.get("total", 0), 2)
+        ok, forbidden = validate_quote_lines(route, [line.get("concept", "") for line in item.last_quote.get("lines", [])])
+        if not ok:
+            return f"No puedo guardar esta cotizacion de madera: aparecieron conceptos prohibidos ({', '.join(forbidden)})."
+        s.items.append(item)
+        save_session(s)
+        return "Agregue el mueble en madera maciza a la cotizacion.\n\n" + _format_item_summary(item)
 
     try:
         item = _item_from_description(
