@@ -126,6 +126,7 @@ class AdditionalServices(BaseModel):
     installation: bool = False
     painting: bool = False
     varnishing: bool = False
+    polishing: bool = False
 
 
 class ChatMessage(BaseModel):

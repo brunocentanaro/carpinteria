@@ -526,7 +526,11 @@ def estimate_price(
     width = float(width_mm)
     height = float(height_mm)
     candidates: list[tuple[float, MolduraPrice]] = []
-    for item in load_prices():
+    try:
+        listed_items = load_prices()
+    except RuntimeError:
+        listed_items = ()
+    for item in listed_items:
         mat_score = _material_score(item.code, material)
         fam_score = _family_score(item.family, item.description, family)
         if mat_score < 0:
@@ -571,7 +575,10 @@ def quote_price(
     unit: str = "varilla",
     include_iva: bool = True,
 ) -> MolduraQuote | None:
-    item = find_price(width_mm, height_mm, material=material, family=family)
+    try:
+        item = find_price(width_mm, height_mm, material=material, family=family)
+    except RuntimeError:
+        item = None
     estimated = False
     note = ""
     if item is None:

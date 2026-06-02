@@ -89,6 +89,7 @@ export async function patchSession(
       installation?: boolean;
       painting?: boolean;
       varnishing?: boolean;
+      polishing?: boolean;
     };
     title: string;
     approval_status: "pending" | "approved";

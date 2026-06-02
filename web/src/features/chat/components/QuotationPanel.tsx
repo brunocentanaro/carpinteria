@@ -667,7 +667,8 @@ function GlobalsPanel({ session }: { session: Session }) {
     { key: "rectification", label: "Rectificación de medidas" },
     { key: "installation", label: "Colocación" },
     { key: "painting", label: "Pintura" },
-    { key: "varnishing", label: "Barnizado/Lustrado" },
+    { key: "varnishing", label: "Barniz" },
+    { key: "polishing", label: "Lustre" },
   ];
 
   return (

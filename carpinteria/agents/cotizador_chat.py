@@ -273,10 +273,20 @@ def _parse_moldura_query(message: str) -> dict[str, Any] | None:
         r"\b(\d+(?:[.,]\d+)?)\s*(?:mm)?\s*x\s*(\d+(?:[.,]\d+)?)\s*(?:mm)?\b",
         normalized,
     )
-    if not dim_match:
+    diameter_match = re.search(
+        r"(?:ø|diametro|diam|redondo\s+de)\s*(\d+(?:[.,]\d+)?)\s*(?:mm)?\b",
+        normalized,
+    ) or re.search(
+        r"\b(\d+(?:[.,]\d+)?)\s*(?:mm)?\s*(?:de\s+)?(?:diametro|diam|redondo)\b",
+        normalized,
+    )
+    if dim_match:
+        width = float(dim_match.group(1).replace(",", "."))
+        height = float(dim_match.group(2).replace(",", "."))
+    elif diameter_match:
+        width = height = float(diameter_match.group(1).replace(",", "."))
+    else:
         return None
-    width = float(dim_match.group(1).replace(",", "."))
-    height = float(dim_match.group(2).replace(",", "."))
     material = None
     if any(token in normalized for token in ("pino", "nac", "nacional", " pn")):
         material = "pino"
@@ -302,7 +312,13 @@ def _parse_moldura_query(message: str) -> dict[str, Any] | None:
         if model_match:
             family = f"cuadro {model_match.group(1)}"
     text_for_unit = normalized.replace(",", ".")
-    unit = "metro" if re.search(r"\b(?:metros?|mts?|m)\b", normalized) and "3.3" not in text_for_unit else "varilla"
+    length_match = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:mts?|metros?)\s*(?:de\s+)?(?:largo|longitud)?\b", normalized)
+    length_m = float(length_match.group(1).replace(",", ".")) if length_match else None
+    product_quantity = re.search(r"\b\d+(?:[.,]\d+)?\s*(?:varillas?|listones?|barrotes?|zocalos?|molduras?)\b", normalized)
+    if product_quantity or length_m:
+        unit = "varilla"
+    else:
+        unit = "metro" if re.search(r"\b(?:metros?|mts?|m)\b", normalized) and "3.3" not in text_for_unit else "varilla"
     return {
         "width_mm": width,
         "height_mm": height,
@@ -310,6 +326,7 @@ def _parse_moldura_query(message: str) -> dict[str, Any] | None:
         "family": family,
         "quantity": _parse_quantity(message),
         "unit": unit,
+        "length_m": length_m,
     }
 
 
@@ -456,7 +473,7 @@ def _try_direct_moldura_quote(message: str) -> tuple[str, MolduraQuoteItem] | No
     parsed = _parse_moldura_query(message)
     if parsed is None:
         return None
-    q = quote_price(**parsed, include_iva=True)
+    q = quote_price(**{k: v for k, v in parsed.items() if k != "length_m"}, include_iva=True)
     if q is None:
         reply = (
             "No encontre una referencia suficiente para estimar esa moldura. Pasame material, medida en mm "
@@ -473,7 +490,23 @@ def _try_direct_moldura_quote(message: str) -> tuple[str, MolduraQuoteItem] | No
             unit=str(parsed.get("unit") or "varilla"),
             note=reply,
         )
-    return _format_moldura_quote_reply(q), _moldura_session_quote(q, parsed)
+    moldura_quote = _moldura_session_quote(q, parsed)
+    length_m = parsed.get("length_m")
+    if length_m and abs(float(length_m) - 3.3) > 0.001:
+        item = q.item
+        iva_label = "IVA inc." if q.iva_included else "sin IVA"
+        qty = int(q.quantity) if float(q.quantity).is_integer() else q.quantity
+        reply = "\n".join([
+            f"{qty} x {item.family} {item.description} {item.width_mm:g}x{item.height_mm:g}mm ({item.code})",
+            f"Largo solicitado: {float(length_m):g} m. Base listado: 3,3 m.",
+            f"Unitario proporcional sin recargo 20%: {_format_uyu(moldura_quote.unit_price)} {iva_label}",
+            f"Total: {_format_uyu(moldura_quote.total)} {iva_label}",
+            "No asumo recargo 20% por cambio de largo/corte; confirmame si queres aplicarlo.",
+        ])
+        if q.scale_hint:
+            reply += "\nComo son mas de 20 varillas, te conviene revisar opcion de cotizar a escala."
+        return reply, moldura_quote
+    return _format_moldura_quote_reply(q), moldura_quote
 
 
 def _try_direct_moldura_reply(message: str) -> str | None:
@@ -492,7 +525,9 @@ def _format_state(session: QuotationSession) -> str:
     if session.additional_services.painting:
         services.append("pintura")
     if session.additional_services.varnishing:
-        services.append("barnizado/lustrado")
+        services.append("barniz")
+    if session.additional_services.polishing:
+        services.append("lustre")
     body = [
         f"**Sesión** id `{session.id}`",
         f"Color por defecto: `{session.color_default or '—'}` | "
@@ -881,13 +916,15 @@ def set_additional_services(
     installation: bool = False,
     painting: bool = False,
     varnishing: bool = False,
+    polishing: bool = False,
 ) -> str:
-    """Setea servicios adicionales de la cotizacion: rectificacion de medidas, colocacion, pintura y barnizado/lustrado."""
+    """Setea servicios adicionales de la cotizacion: rectificacion de medidas, colocacion, pintura, barniz y lustre."""
     s = _ensure_session(ctx)
     s.additional_services.rectification = bool(rectification)
     s.additional_services.installation = bool(installation)
     s.additional_services.painting = bool(painting)
     s.additional_services.varnishing = bool(varnishing)
+    s.additional_services.polishing = bool(polishing)
     save_session(s)
     selected = []
     if s.additional_services.rectification:
@@ -897,7 +934,9 @@ def set_additional_services(
     if s.additional_services.painting:
         selected.append("pintura")
     if s.additional_services.varnishing:
-        selected.append("barnizado/lustrado")
+        selected.append("barniz")
+    if s.additional_services.polishing:
+        selected.append("lustre")
     return "Servicios adicionales: " + (", ".join(selected) if selected else "sin adicionales")
 
 

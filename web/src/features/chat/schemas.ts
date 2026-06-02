@@ -123,12 +123,14 @@ export const SessionSchema = z.object({
       installation: z.boolean().default(false),
       painting: z.boolean().default(false),
       varnishing: z.boolean().default(false),
+      polishing: z.boolean().default(false),
     })
     .default({
       rectification: false,
       installation: false,
       painting: false,
       varnishing: false,
+      polishing: false,
     }),
   general_specs: z
     .object({

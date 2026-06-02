@@ -74,7 +74,8 @@ ADDITIONAL_SERVICE_LABELS = {
     "rectification": "Rectificacion de medidas",
     "installation": "Colocacion",
     "painting": "Pintura",
-    "varnishing": "Barnizado/Lustrado",
+    "varnishing": "Barniz",
+    "polishing": "Lustre",
 }
 
 
@@ -929,10 +930,10 @@ def handle_export_molduras_excel(data: dict) -> dict:
     general_specs = data.get("general_specs") or {}
     additional_services = _additional_services_from_data(data)
     payment_days = _effective_payment_days(
-        commercial.get("payment_days"),
+        commercial.get("payment_days", data.get("payment_days")),
         str(general_specs.get("payment_terms") or ""),
     )
-    destination = _effective_destination(str(commercial.get("destination") or general_specs.get("delivery_location") or ""))
+    destination = _effective_destination(str(commercial.get("destination") or data.get("destination") or general_specs.get("delivery_location") or ""))
     delivery_days = general_specs.get("delivery_days")
     guarantee_text = str(general_specs.get("performance_guarantee") or "")
     guarantee_pct = _guarantee_percent(guarantee_text)
@@ -1283,7 +1284,9 @@ def handle_export_molduras_excel(data: dict) -> dict:
 
         thick_cm = min(item.width_mm, item.height_mm) / 10
         wide_cm = max(item.width_mm, item.height_mm) / 10
-        surcharge = float(breakdown.get("recargo_modelo_no_listado") or (ESTIMATED_MOLDURA_SURCHARGE - 1 if q.estimated else 0))
+        requested_length_m = float(raw.get("length_m") or raw.get("requested_length_m") or VARILLA_LENGTH_M)
+        setup_average = max(SCALE_THRESHOLD_VARILLAS, float(q.quantity or 1))
+        surcharge = float(breakdown.get("recargo_modelo_no_listado") or (ESTIMATED_MOLDURA_SURCHARGE - 1)) if q.estimated else 0.0
 
         sheet.cell(row=1, column=1, value=f"Conversor molduras - {item.family}").font = title_font
         sheet.cell(row=2, column=1, value="Esta hoja queda editable: podes tocar los campos amarillos y Excel recalcula el precio.").font = small_font
@@ -1296,7 +1299,7 @@ def handle_export_molduras_excel(data: dict) -> dict:
         for row, label, value in (
             (5, "Espesor / alto cm", thick_cm),
             (6, "Ancho cm", wide_cm),
-            (7, "Largo varilla m", VARILLA_LENGTH_M),
+            (7, "Largo varilla m", requested_length_m),
             (8, "Cantidad pedida", q.quantity),
             (9, "Unidad pedida", q.unit),
             (10, "Fuente del precio", q.source),
@@ -1346,22 +1349,36 @@ def handle_export_molduras_excel(data: dict) -> dict:
 
         sheet.cell(row=17, column=1, value="PARAMETROS").font = hf
         sheet.cell(row=17, column=1).fill = section_fill
+        finish_coats = {
+            "painting": 1 if additional_services.get("painting") else 0,
+            "varnishing": 3 if additional_services.get("varnishing") else 0,
+            "polishing": 5 if additional_services.get("polishing") else 0,
+        }
         params = [
             ("Costo dia MO", 2300),
             ("Horas por dia", 8),
             ("Costo hora MO", "=B18/B19"),
-            ("Seteos promedio", 20),
+            ("Seteos promedio", setup_average),
             ("Maquinaria", 0.10),
             ("IVA", IVA_RATE - 1),
             ("Recargo modelo no listado", surcharge),
             ("Umbral escala varillas", SCALE_THRESHOLD_VARILLAS),
+            ("Recargo corte/metro especial", 0),
+            ("Manos pintura", finish_coats["painting"]),
+            ("Manos barniz", finish_coats["varnishing"]),
+            ("Manos lustre", finish_coats["polishing"]),
+            ("Minutos por m2 por mano", 15),
+            ("Rinde litro m2", 8),
+            ("Precio terminacion litro UYU", 0),
         ]
         for offset, (label, value) in enumerate(params, 18):
             box(sheet, offset, 1, label)
             cell = box(sheet, offset, 2, value, input_fill if not isinstance(value, str) else None)
-            if label in {"Maquinaria", "IVA", "Recargo modelo no listado"}:
+            if label in {"Maquinaria", "IVA", "Recargo modelo no listado", "Recargo corte/metro especial"}:
                 cell.number_format = "0%"
             if label.startswith("Costo"):
+                cell.number_format = money
+            if label == "Precio terminacion litro UYU":
                 cell.number_format = money
 
         sheet.cell(row=17, column=4, value="COSTOS POR TIPO").font = hf
@@ -1375,13 +1392,15 @@ def handle_export_molduras_excel(data: dict) -> dict:
                 if col == 7:
                     cell.number_format = "0%"
 
-        product_row = 29
+        product_row = 37
         sheet.cell(row=product_row - 2, column=1, value="PRODUCTO").font = hf
         sheet.cell(row=product_row - 2, column=1).fill = section_fill
         hdr(sheet, product_row - 1, [
             "Producto", "Tipo", "MP x varilla", "MO min", "MO x varilla", "Seteo x varilla",
-            "Maquinaria", "Costo total", "% Ganancia", "Ganancia", "Precio total + IVA",
-            "Precio metro +20%", "Unitario modelo", "Unitario cotizado", "Total cotizado",
+            "Maquinaria", "Costo total", "% Ganancia", "Ganancia", "Precio sin IVA",
+            "Manos terminacion", "Area 1 mano m2", "Area total m2", "Litros terminacion",
+            "MO terminacion", "Insumos terminacion", "Unitario sin IVA", "IVA unitario",
+            "Unitario + IVA", "Total sin IVA", "IVA total", "Total + IVA",
         ])
         product_name = f"{item.family} {item.width_mm:g}x{item.height_mm:g} mm"
         values = [
@@ -1395,56 +1414,115 @@ def handle_export_molduras_excel(data: dict) -> dict:
             f"=C{product_row}+E{product_row}+F{product_row}+G{product_row}",
             f'=VLOOKUP(B{product_row},$D$19:$G$21,4,FALSE)',
             f"=H{product_row}*I{product_row}",
-            f"=(H{product_row}+J{product_row})*(1+$B$23)*(1+$B$24)",
-            f"=K{product_row}/$B$7*1.2",
-            f'=IF($B$9="metro",L{product_row},K{product_row})',
-            q.unit_price,
-            f"=N{product_row}*$B$8",
+            f"=(H{product_row}+J{product_row})*(1+$B$24)*($B$7/{VARILLA_LENGTH_M})",
+            "=$B$27+$B$28+$B$29",
+            f"=2*($B$5+$B$6)/100*$B$7",
+            f"=L{product_row}*M{product_row}",
+            f"=N{product_row}/$B$31",
+            f"=N{product_row}*$B$30/60*$B$20",
+            f"=O{product_row}*$B$32",
+            f'=IF($B$9="metro",K{product_row}/$B$7*(1+$B$26),K{product_row}*(1+$B$26))+P{product_row}+Q{product_row}',
+            f"=R{product_row}*$B$23",
+            f"=R{product_row}+S{product_row}",
+            f"=R{product_row}*$B$8",
+            f"=S{product_row}*$B$8",
+            f"=T{product_row}*$B$8",
         ]
         for col, value in enumerate(values, 1):
             cell = box(sheet, product_row, col, value)
-            if col in (3, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15):
+            if col in (3, 5, 6, 7, 8, 10, 11, 16, 17, 18, 19, 20, 21, 22, 23):
                 cell.number_format = money
-            if col == 9:
+            if col in (9,):
                 cell.number_format = "0%"
-        sheet.cell(row=product_row, column=14).fill = total_fill
-        sheet.cell(row=product_row, column=15).fill = total_fill
-        sheet.cell(row=product_row, column=14).font = hf
-        sheet.cell(row=product_row, column=15).font = hf
+            if col in (13, 14, 15):
+                cell.number_format = "0.00"
+        for col in (18, 19, 20, 21, 22, 23):
+            sheet.cell(row=product_row, column=col).fill = total_fill
+            sheet.cell(row=product_row, column=col).font = hf
 
         sheet.cell(row=product_row + 3, column=1, value="NOTAS").font = hf
         notes = [
-            "Unitario cotizado es el precio efectivamente usado en la cotizacion.",
             "Unitario modelo muestra el precio que surge del conversor para controlar el razonamiento.",
-            "Venta directa/listado: precio final con IVA incluido.",
-            "Para muebles/proyectos: usar sin IVA y sumar IVA al final del mueble.",
-            "Precio por metro suma 20%, salvo que se consuma casi la varilla completa.",
+            "El total usa el unitario modelo; no hay columna de precio cotizado duplicada.",
+            "El IVA se calcula al final: unitario sin IVA, IVA unitario, unitario + IVA y totales separados.",
+            "No se aplica recargo 20% por defecto por cambios de largo o cortes; consultar y completar B26 si corresponde.",
+            "Pintura suma 1 mano; barniz suma 3 manos; lustre suma 5 manos.",
+            "El insumo de terminacion se calcula por area: 1 litro cada 8 m2. La mano de obra usa 15 min por m2 por mano.",
+            f"El largo solicitado ({requested_length_m:g} m) se calcula proporcional al precio/listado base de {VARILLA_LENGTH_M:g} m.",
             "Si supera 20 varillas, revisar opcion de escala.",
         ]
         if q.estimated:
             notes.insert(0, "No disponemos de esa moldura en stock/listado; este es precio estimativo con conversor.")
         else:
-            notes.insert(0, "Producto encontrado en listado: el precio cotizado se toma del listado y el conversor queda como respaldo editable.")
+            notes.insert(0, "Producto encontrado en listado: se usa como referencia; el total se arma con el modelo/conversor editable.")
         for offset, note in enumerate(notes, product_row + 4):
             sheet.cell(row=offset, column=1, value=note)
             sheet.merge_cells(start_row=offset, start_column=1, end_row=offset, end_column=8)
 
-        for col in range(1, 16):
+        state_row = product_row + len(notes) + 7
+        sheet.cell(row=state_row, column=1, value="CONDICIONES LICITACION ESTATAL / SERVICIOS").font = hf
+        sheet.cell(row=state_row, column=1).fill = section_fill
+        shipping_unit = _default_shipping_unit(destination, int(float(q.quantity or 1)))
+        state_lines = [
+            ("Lugar de entrega", destination),
+            ("Plazo de entrega", f"{delivery_days} dias" if delivery_days else "A confirmar en pliego"),
+            ("Plazo de pago", f"{payment_days} dias"),
+            ("% recargo financiero", payment_pct),
+            ("Garantia fiel cumplimiento", guarantee_text or "No indicada"),
+            ("% garantia aplicado", guarantee_pct),
+            ("Flete/descarga unitario", shipping_unit),
+            ("Rectificacion de medidas", "Incluida" if additional_services.get("rectification") else "No incluida"),
+            ("Colocacion", "Incluida" if additional_services.get("installation") else "No incluida"),
+            ("Servicios terminacion", _additional_services_text(additional_services)),
+            ("Mantenimiento oferta", f"{general_specs.get('offer_maintenance_days')} dias" if general_specs.get("offer_maintenance_days") else ""),
+            ("Otras condiciones", general_specs.get("other_conditions") or ""),
+        ]
+        for offset, (label, value) in enumerate(state_lines, state_row + 1):
+            box(sheet, offset, 1, label)
+            cell = box(sheet, offset, 2, value, input_fill if label.startswith("%") or "Flete" in label else None)
+            if label.startswith("%"):
+                cell.number_format = "0%"
+            if "Flete" in label:
+                cell.number_format = money
+        extras_row = state_row + len(state_lines) + 3
+        extras = [
+            ("Total productos + IVA", f"=W{product_row}"),
+            ("Recargo financiero", f"=W{product_row}*B{state_row + 4}"),
+            ("Garantia fiel cumplimiento", f"=W{product_row}*B{state_row + 6}"),
+            ("Flete/descarga total", f"=B{state_row + 7}*$B$8"),
+            ("TOTAL LICITACION", f"=B{extras_row}+B{extras_row+1}+B{extras_row+2}+B{extras_row+3}"),
+        ]
+        for offset, (label, value) in enumerate(extras, extras_row):
+            box(sheet, offset, 1, label, total_fill if "TOTAL" in label else None, bold=True)
+            cell = box(sheet, offset, 2, value, total_fill if "TOTAL" in label else None, bold=True)
+            cell.number_format = money
+
+        for col in range(1, 24):
             letter = openpyxl.utils.get_column_letter(col)
             sheet.column_dimensions[letter].width = 18
         sheet.column_dimensions["A"].width = 28
         sheet.column_dimensions["D"].width = 22
-        sheet.freeze_panes = "A28"
+        sheet.freeze_panes = "A36"
 
         return {
-            "unit_cell": f"N{product_row}",
-            "total_cell": f"O{product_row}",
+            "unit_without_iva_cell": f"R{product_row}",
+            "unit_iva_cell": f"S{product_row}",
+            "unit_cell": f"T{product_row}",
+            "total_without_iva_cell": f"U{product_row}",
+            "total_iva_cell": f"V{product_row}",
+            "total_cell": f"W{product_row}",
         }
 
     ws.cell(row=1, column=1, value="Cotizacion de molduras").font = title_font
-    ws.cell(row=2, column=1, value="Resumen de licitacion/venta. Cada hoja Conversor PN/EUCA muestra el armado editable del precio.").font = small_font
-    hdr(ws, 4, ["Codigo", "Tipo", "Descripcion", "Medida", "Material", "Cant.", "Unidad", "Unitario", "Total", "Hoja", "Nota"])
+    ws.cell(row=2, column=1, value="Resumen de items. Las condiciones y el armado editable quedan en la segunda solapa/conversor.").font = small_font
+    hdr(ws, 4, [
+        "Codigo", "Tipo", "Descripcion", "Medida", "Material", "Cant.", "Unidad",
+        "Unitario sin IVA", "IVA unitario", "Unitario + IVA",
+        "Total sin IVA", "IVA total", "Total + IVA", "Hoja", "Nota",
+    ])
 
+    total_without_iva_refs = []
+    total_iva_refs = []
     total_refs = []
     for idx, raw in enumerate(requests, 1):
         q = quote_price(
@@ -1472,74 +1550,59 @@ def handle_export_molduras_excel(data: dict) -> dict:
             note_parts.append("No stock/listado: precio estimativo")
         if q.scale_hint:
             note_parts.append("Revisar escala")
-        total_refs.append(f"I{r}")
+        total_without_iva_refs.append(f"K{r}")
+        total_iva_refs.append(f"L{r}")
+        total_refs.append(f"M{r}")
+        unit_without_iva_expr = f"{quoted_sheet(conv.title)}!{refs['unit_without_iva_cell']}"
+        unit_iva_expr = f"{quoted_sheet(conv.title)}!{refs['unit_iva_cell']}"
         unit_expr = f"{quoted_sheet(conv.title)}!{refs['unit_cell']}"
+        total_without_iva_expr = f"{quoted_sheet(conv.title)}!{refs['total_without_iva_cell']}"
+        total_iva_expr = f"{quoted_sheet(conv.title)}!{refs['total_iva_cell']}"
         total_expr = f"{quoted_sheet(conv.title)}!{refs['total_cell']}"
         length_m = float(raw.get("length_m") or raw.get("requested_length_m") or VARILLA_LENGTH_M)
         if abs(length_m - VARILLA_LENGTH_M) > 0.001:
-            unit_expr = f"{unit_expr}*{length_m / VARILLA_LENGTH_M:.8f}"
-            total_expr = f"{unit_expr}*F{r}"
             note_parts.append(f"Largo solicitado {length_m:g} m")
+            note_parts.append("Sin recargo 20% automatico")
+        unit_without_iva_ref = f"={unit_without_iva_expr}"
+        unit_iva_ref = f"={unit_iva_expr}"
         unit_ref = f"={unit_expr}"
+        total_without_iva_ref = f"={total_without_iva_expr}"
+        total_iva_ref = f"={total_iva_expr}"
         total_ref = f"={total_expr}"
         note = " | ".join(note_parts)
         values = [
             item.code, item.family, item.description, measure,
-            raw.get("material") or "", q.quantity, q.unit, unit_ref, total_ref, conv.title, note,
+            raw.get("material") or "", q.quantity, q.unit,
+            unit_without_iva_ref, unit_iva_ref, unit_ref,
+            total_without_iva_ref, total_iva_ref, total_ref,
+            conv.title, note,
         ]
         for col, value in enumerate(values, 1):
             cell = ws.cell(row=r, column=col, value=value)
             cell.border = bdr
-            if col in (8, 9):
+            if col in (8, 9, 10, 11, 12, 13):
                 cell.number_format = money
-            if note and col == 11:
+            if note and col == 15:
                 cell.fill = warn_fill
 
     total_row = len(requests) + 6
-    ws.cell(row=total_row, column=8, value="Subtotal productos").font = hf
-    ws.cell(row=total_row, column=9, value=f"=SUM({','.join(total_refs)})" if total_refs else 0).font = hf
-    ws.cell(row=total_row, column=9).number_format = money
+    ws.cell(row=total_row, column=10, value="Total sin IVA").font = hf
+    ws.cell(row=total_row, column=11, value=f"=SUM({','.join(total_without_iva_refs)})" if total_without_iva_refs else 0).font = hf
+    ws.cell(row=total_row, column=11).number_format = money
+    ws.cell(row=total_row + 1, column=10, value="IVA").font = hf
+    ws.cell(row=total_row + 1, column=11, value=f"=SUM({','.join(total_iva_refs)})" if total_iva_refs else 0).font = hf
+    ws.cell(row=total_row + 1, column=11).number_format = money
+    ws.cell(row=total_row + 2, column=10, value="Total + IVA").font = hf
+    ws.cell(row=total_row + 2, column=11, value=f"=SUM({','.join(total_refs)})" if total_refs else 0).font = hf
+    ws.cell(row=total_row + 2, column=11).number_format = money
+    ws.cell(row=total_row + 2, column=10).fill = total_fill
+    ws.cell(row=total_row + 2, column=11).fill = total_fill
 
-    state_row = total_row + 2
-    ws.cell(row=state_row, column=1, value="CONDICIONES LICITACION ESTATAL").font = hf
-    ws.cell(row=state_row, column=1).fill = section_fill
-    state_lines = [
-        ("Lugar de entrega", destination),
-        ("Plazo de entrega", f"{delivery_days} dias" if delivery_days else "A confirmar en pliego"),
-        ("Plazo de pago", f"{payment_days} dias"),
-        ("% recargo financiero", payment_pct),
-        ("Garantia fiel cumplimiento", guarantee_text or "No indicada"),
-        ("% garantia aplicado", guarantee_pct),
-        ("Flete/descarga unitario", _default_shipping_unit(destination, sum(int(float(r.get("quantity") or 1)) for r in requests))),
-        ("Servicios adicionales", _additional_services_text(additional_services)),
-        ("Mantenimiento oferta", f"{general_specs.get('offer_maintenance_days')} dias" if general_specs.get("offer_maintenance_days") else ""),
-        ("Otras condiciones", general_specs.get("other_conditions") or ""),
-    ]
-    for offset, (label, value) in enumerate(state_lines, state_row + 1):
-        box(ws, offset, 1, label)
-        cell = box(ws, offset, 2, value, input_fill if label.startswith("%") or "Flete" in label else None)
-        if label.startswith("%"):
-            cell.number_format = "0%"
-        if "Flete" in label:
-            cell.number_format = money
-
-    final_row = state_row + len(state_lines) + 2
-    final_lines = [
-        ("Recargo financiero", f"=I{total_row}*B{state_row + 4}"),
-        ("Garantia fiel cumplimiento", f"=I{total_row}*B{state_row + 6}"),
-        ("Flete/descarga total", f"=B{state_row + 7}*SUM(F5:F{len(requests)+4})"),
-        ("TOTAL LICITACION", f"=I{total_row}+B{final_row}+B{final_row+1}+B{final_row+2}"),
-    ]
-    for offset, (label, value) in enumerate(final_lines, final_row):
-        box(ws, offset, 1, label, total_fill if "TOTAL" in label else None, bold=True)
-        cell = box(ws, offset, 2, value, total_fill if "TOTAL" in label else None, bold=True)
-        cell.number_format = money
-
-    for col in range(1, 12):
+    for col in range(1, 16):
         ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 16
     ws.column_dimensions["C"].width = 42
-    ws.column_dimensions["J"].width = 18
-    ws.column_dimensions["K"].width = 36
+    ws.column_dimensions["N"].width = 18
+    ws.column_dimensions["O"].width = 36
 
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="cotizacion_molduras_")
     os.close(fd)
