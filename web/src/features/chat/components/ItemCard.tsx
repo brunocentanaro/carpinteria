@@ -221,6 +221,8 @@ function inferVisualModel(item: QuotationItem) {
   const hasDrawerPlural = mentioned(text, ["cajones"]);
   const hasShelfMention = mentioned(text, ["estante", "estantes", "repisa", "repisas"]) || labels.some((p) => p.normalizedLabel.includes("estante"));
   const hasShelfPlural = mentioned(text, ["estantes", "repisas"]);
+  const hasLowerDoors = /puertas?.{0,24}inferior|inferior.{0,24}puertas?/.test(text) || labels.some((p) => /puerta.*inferior|inferior.*puerta/.test(p.normalizedLabel));
+  const hasHorizontalDivider = /divisor horizontal|division horizontal|estante divisor/.test(text) || labels.some((p) => /divisor horizontal|division horizontal|estante divisor/.test(p.normalizedLabel));
   const hasHanger =
     mentioned(text, ["perchero", "percheros", "barral", "barrales", "colgado", "colgar"]) ||
     labels.some((p) => /perchero|barral|colgado|colgar/.test(p.normalizedLabel));
@@ -256,10 +258,11 @@ function inferVisualModel(item: QuotationItem) {
       ? "stacked"
       : "columns";
   const upperOpenCubbies =
-    doorCount > 0 &&
-    /abajo/.test(text) &&
-    /arriba/.test(text) &&
-    (/sin puerta/.test(text) || /abierto/.test(text) || /estantes?/.test(text));
+    (doorCount > 0 &&
+      /abajo/.test(text) &&
+      /arriba/.test(text) &&
+      (/sin puert?a/.test(text) || /sin purta/.test(text) || /abierto|abierta/.test(text) || /estantes?/.test(text))) ||
+    (hasLowerDoors && hasHorizontalDivider);
   return { doorCount, drawerCount, shelfCount, drawerPosition, drawerLayout, hasHanger, hasWheels, hasLock, upperOpenCubbies };
 }
 
