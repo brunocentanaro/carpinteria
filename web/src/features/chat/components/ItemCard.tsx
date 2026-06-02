@@ -223,6 +223,11 @@ function inferVisualModel(item: QuotationItem) {
   const hasShelfPlural = mentioned(text, ["estantes", "repisas"]);
   const hasLowerDoors = /puertas?.{0,24}inferior|inferior.{0,24}puertas?/.test(text) || labels.some((p) => /puerta.*inferior|inferior.*puerta/.test(p.normalizedLabel));
   const hasHorizontalDivider = /divisor horizontal|division horizontal|estante divisor/.test(text) || labels.some((p) => /divisor horizontal|division horizontal|estante divisor/.test(p.normalizedLabel));
+  const headboardShelf =
+    /respaldo/.test(text) &&
+    /cama/.test(text) &&
+    (/estante/.test(text) || labels.some((p) => p.normalizedLabel.includes("estante"))) &&
+    (/sin (tapa|costado|lateral).{0,24}costados?|costados?.{0,40}abiert|entras? al estante/.test(text) || /pared frontal.*trasera|frontal.*trasera/.test(text));
   const hasHanger =
     mentioned(text, ["perchero", "percheros", "barral", "barrales", "colgado", "colgar"]) ||
     labels.some((p) => /perchero|barral|colgado|colgar/.test(p.normalizedLabel));
@@ -263,7 +268,7 @@ function inferVisualModel(item: QuotationItem) {
       /arriba/.test(text) &&
       (/sin puert?a/.test(text) || /sin purta/.test(text) || /abierto|abierta/.test(text) || /estantes?/.test(text))) ||
     (hasLowerDoors && hasHorizontalDivider);
-  return { doorCount, drawerCount, shelfCount, drawerPosition, drawerLayout, hasHanger, hasWheels, hasLock, upperOpenCubbies };
+  return { doorCount, drawerCount, shelfCount, drawerPosition, drawerLayout, hasHanger, hasWheels, hasLock, upperOpenCubbies, headboardShelf };
 }
 
 function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: string }) {
@@ -331,21 +336,21 @@ function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: st
             <div className="text-[11px] font-semibold text-center mb-1">
               {displayDoorCount > 0 ? "Frente cerrado" : "Frente"}
             </div>
-            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} upperOpenCubbies={visualModel.upperOpenCubbies} mode="closed" />
+            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} upperOpenCubbies={visualModel.upperOpenCubbies} headboardShelf={visualModel.headboardShelf} mode="closed" />
           </div>
           {displayDoorCount > 0 && (
             <div className="border rounded bg-slate-50 p-2">
               <div className="text-[11px] font-semibold text-center mb-1">Frente abierto</div>
-              <FrontView itemCode={`${item.code}-open`} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} upperOpenCubbies={visualModel.upperOpenCubbies} mode="open" />
+              <FrontView itemCode={`${item.code}-open`} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} upperOpenCubbies={visualModel.upperOpenCubbies} headboardShelf={visualModel.headboardShelf} mode="open" />
             </div>
           )}
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Costado</div>
-            <SideView dims={dims} shelves={displayShelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} upperOpenCubbies={visualModel.upperOpenCubbies} />
+            <SideView dims={dims} shelves={displayShelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} upperOpenCubbies={visualModel.upperOpenCubbies} headboardShelf={visualModel.headboardShelf} />
           </div>
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Planta</div>
-            <TopView dims={dims} columns={visualModel.upperOpenCubbies ? displayDoorCount : 2} />
+            <TopView dims={dims} columns={visualModel.upperOpenCubbies ? displayDoorCount : 2} headboardShelf={visualModel.headboardShelf} />
           </div>
           </div>
 
@@ -743,9 +748,9 @@ function PlanEditorDialog({
               <div className="grid place-items-center overflow-auto rounded bg-white p-6" style={{ height: `calc(${editorHeight}vh - 150px)` }}>
                 <div style={{ width: `${canvasZoom}%`, minWidth: "100%", maxWidth: `${Math.max(820, canvasZoom * 8)}px` }}>
                   {activePlanView === "side" ? (
-                    <SideView dims={dims} shelves={visualModel.shelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} upperOpenCubbies={visualModel.upperOpenCubbies} />
+                    <SideView dims={dims} shelves={visualModel.shelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} upperOpenCubbies={visualModel.upperOpenCubbies} headboardShelf={visualModel.headboardShelf} />
                   ) : (
-                    <TopView dims={dims} columns={visualModel.upperOpenCubbies ? visualModel.doorCount : 2} />
+                    <TopView dims={dims} columns={visualModel.upperOpenCubbies ? visualModel.doorCount : 2} headboardShelf={visualModel.headboardShelf} />
                   )}
                 </div>
               </div>
@@ -922,6 +927,7 @@ function FrontView({
   hasWheels,
   hasLock,
   upperOpenCubbies,
+  headboardShelf,
   mode = "closed",
 }: {
   itemCode: string;
@@ -935,6 +941,7 @@ function FrontView({
   hasWheels: boolean;
   hasLock: boolean;
   upperOpenCubbies: boolean;
+  headboardShelf: boolean;
   mode?: "closed" | "open";
 }) {
   const bodyX = 38;
@@ -959,6 +966,25 @@ function FrontView({
   const closetW = hasInterior && shelves > 0 ? bodyW * 0.62 : bodyW;
   const shelfX = bodyX + closetW;
   const stackedDrawers = drawerLayout === "stacked";
+
+  if (headboardShelf) {
+    const lipY = bodyY - 6;
+    return (
+      <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista frontal de respaldo con estante">
+        <defs>
+          <pattern id={`grain-front-${itemCode}`} width="12" height="12" patternUnits="userSpaceOnUse">
+            <path d="M0 8 C4 2, 8 14, 12 6" fill="none" stroke="#d4a373" strokeWidth="0.8" opacity="0.55" />
+          </pattern>
+        </defs>
+        <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
+        <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} fill={`url(#grain-front-${itemCode})`} opacity="0.5" />
+        <rect x={bodyX} y={lipY} width={bodyW} height="7" fill="#fed7aa" stroke="#92400e" strokeWidth="1.2" />
+        <line x1={bodyX + 4} y1={splitY} x2={bodyX + bodyW - 4} y2={splitY} stroke="#92400e" strokeWidth="1.4" opacity="0.85" />
+        <DimensionLine x1={bodyX} y1={bodyY + bodyH + 18} x2={bodyX + bodyW} y2={bodyY + bodyH + 18} label={mm(dims.width)} />
+        <DimensionLine x1={bodyX - 18} y1={bodyY} x2={bodyX - 18} y2={bodyY + bodyH} label={mm(dims.height)} vertical />
+      </svg>
+    );
+  }
 
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista frontal esquemática">
@@ -1103,14 +1129,31 @@ function SideView({
   hasHanger,
   hasWheels,
   upperOpenCubbies,
+  headboardShelf,
 }: {
   dims: ReturnType<typeof inferOverallDimensions>;
   shelves: number;
   hasHanger: boolean;
   hasWheels: boolean;
   upperOpenCubbies: boolean;
+  headboardShelf: boolean;
 }) {
   const shelfLines = upperOpenCubbies ? 1 : Math.min(shelves, 3);
+  if (headboardShelf) {
+    return (
+      <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista lateral de respaldo con estante abierto">
+        <path d="M72 30 L88 44 L88 148 L72 134 Z" fill="#fed7aa" stroke="#92400e" strokeWidth="1.4" />
+        <path d="M148 20 L166 34 L166 138 L148 124 Z" fill="#fed7aa" stroke="#92400e" strokeWidth="1.4" />
+        <line x1="88" y1="91" x2="148" y2="77" stroke="#92400e" strokeWidth="2" />
+        <line x1="72" y1="82" x2="88" y2="91" stroke="#92400e" strokeWidth="1.2" opacity="0.75" />
+        <line x1="148" y1="77" x2="166" y2="86" stroke="#92400e" strokeWidth="1.2" opacity="0.75" />
+        <line x1="88" y1="44" x2="148" y2="30" stroke="#92400e" strokeWidth="1" opacity="0.55" />
+        <line x1="88" y1="148" x2="148" y2="124" stroke="#92400e" strokeWidth="1" opacity="0.55" />
+        <DimensionLine x1={72} y1={160} x2={166} y2={160} label={mm(dims.depth)} />
+        <DimensionLine x1={54} y1={30} x2={54} y2={134} label={mm(dims.height)} vertical />
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista lateral esquemática">
       <rect x="62" y="20" width="96" height="118" rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
@@ -1143,8 +1186,22 @@ function SideView({
   );
 }
 
-function TopView({ dims, columns }: { dims: ReturnType<typeof inferOverallDimensions>; columns: number }) {
+function TopView({ dims, columns, headboardShelf }: { dims: ReturnType<typeof inferOverallDimensions>; columns: number; headboardShelf: boolean }) {
   const safeColumns = Math.max(1, columns);
+  if (headboardShelf) {
+    return (
+      <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista superior de respaldo con laterales abiertos">
+        <rect x="38" y="48" width="152" height="84" rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
+        <rect x="42" y="52" width="148" height="12" fill="#fed7aa" stroke="#92400e" strokeWidth="1.1" />
+        <rect x="42" y="116" width="148" height="12" fill="#fed7aa" stroke="#92400e" strokeWidth="1.1" />
+        <rect x="46" y="70" width="136" height="40" fill="#fed7aa" stroke="#92400e" strokeWidth="1" opacity="0.45" />
+        <line x1="38" y1="48" x2="38" y2="132" stroke="#f8fafc" strokeWidth="5" opacity="0.9" />
+        <line x1="190" y1="48" x2="190" y2="132" stroke="#f8fafc" strokeWidth="5" opacity="0.9" />
+        <DimensionLine x1={38} y1={154} x2={190} y2={154} label={mm(dims.width)} />
+        <DimensionLine x1={22} y1={48} x2={22} y2={132} label={mm(dims.depth)} vertical />
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista superior esquemática">
       <rect x="38" y="44" width="152" height="84" rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
