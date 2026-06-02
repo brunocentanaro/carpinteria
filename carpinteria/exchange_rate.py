@@ -14,6 +14,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 BCU_URL = "https://cotizaciones.bcu.gub.uy/wscotizaciones/servlet/awsbcucotizaciones"
 USD_CODE = "2225"
 FALLBACK_USD_UYU = 40.0
+USD_UYU_COVERAGE = 2.0
 CACHE_PATH = Path(__file__).resolve().parents[1] / ".cache" / "bcu_usd.json"
 
 
@@ -40,23 +41,27 @@ def _write_cached_usd(tc: float, fecha: str) -> None:
         pass
 
 
+def _with_coverage(tc: float, source: str) -> tuple[float, str]:
+    return round(tc + USD_UYU_COVERAGE, 4), f"{source} + cobertura UYU {USD_UYU_COVERAGE:g}"
+
+
 def _fallback_usd(reason: Exception | None = None) -> tuple[float, str]:
     cached = _read_cached_usd()
     if cached:
         tc, fecha = cached
-        return tc, f"cache {fecha}"
+        return _with_coverage(tc, f"cache {fecha}")
 
     env_tc = os.getenv("USD_UYU_FALLBACK") or os.getenv("FALLBACK_USD_UYU")
     try:
         if env_tc:
             tc = float(env_tc.replace(",", "."))
             if tc > 0:
-                return tc, "fallback env"
+                return _with_coverage(tc, "fallback env")
     except ValueError:
         pass
 
     suffix = f" ({type(reason).__name__})" if reason else ""
-    return FALLBACK_USD_UYU, f"fallback{suffix}"
+    return _with_coverage(FALLBACK_USD_UYU, f"fallback{suffix}")
 
 
 def fetch_bcu_usd(strict: bool = False) -> tuple[float, str]:
@@ -109,4 +114,4 @@ def fetch_bcu_usd(strict: bool = False) -> tuple[float, str]:
     fecha = last.group(1)
     tc = float(last.group(2))
     _write_cached_usd(tc, fecha)
-    return tc, fecha
+    return _with_coverage(tc, fecha)
