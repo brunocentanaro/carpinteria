@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 
-import { Check, FileSpreadsheet, FileText } from "lucide-react";
+import { Check, FileSpreadsheet, FileText, MessageSquareText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,6 +49,69 @@ function fmtUYU(n: number): string {
 
 function fmtDim(n: number): string {
   return Number.isInteger(n) ? String(n) : n.toFixed(1).replace(/\.0$/, "");
+}
+
+function fmtMeasureMm(n: number | undefined): string {
+  if (!n || n <= 0) return "";
+  if (n >= 1000) return `${fmtDim(n / 1000)} m`;
+  return `${fmtDim(n)} mm`;
+}
+
+function itemClientLabel(item: QuotationItem): string {
+  const dims = item.dimensions || {};
+  const measures = [
+    fmtMeasureMm(dims.width_mm),
+    fmtMeasureMm(dims.height_mm),
+    fmtMeasureMm(dims.depth_mm),
+  ].filter(Boolean);
+  const material = [item.material, item.color, item.thickness_mm ? `${fmtDim(item.thickness_mm)} mm` : ""]
+    .filter(Boolean)
+    .join(" ");
+  return [
+    item.quantity > 1 ? `${item.quantity} unidades de ${item.name || "mueble"}` : item.name || "mueble",
+    measures.length ? `medidas ${measures.join(" x ")}` : "",
+    material ? `en ${material}` : "",
+  ].filter(Boolean).join(", ");
+}
+
+function buildClientMessage(session: Session, grand: number): string {
+  const itemLines = session.items.map((item) => `- ${itemClientLabel(item)}`);
+  const molduraLines = (session.moldura_quotes ?? []).map((quote) => {
+    const qty = quote.quantity > 1 ? `${fmtDim(quote.quantity)} ${quote.unit}` : quote.unit;
+    return `- ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}`;
+  });
+  const firstItem = session.items[0];
+  const materialHint = firstItem
+    ? [firstItem.material, firstItem.color, firstItem.thickness_mm ? `${fmtDim(firstItem.thickness_mm)} mm` : ""].filter(Boolean).join(" ")
+    : "";
+  const services = session.additional_services;
+  const finish = services.painting
+    ? "pintura"
+    : services.varnishing
+      ? "barnizado"
+      : services.polishing
+        ? "lustrado"
+        : "";
+  const extras = [
+    services.rectification ? "rectificacion de medidas incluida" : "",
+    finish ? `terminacion con ${finish}` : "",
+    services.installation ? "colocacion incluida" : "",
+    session.destination ? `envio a ${session.destination}` : "",
+  ].filter(Boolean);
+
+  const product = [...itemLines, ...molduraLines].join("\n");
+  const technicalLine = session.items.length
+    ? `La fabricacion se plantea a medida, con despiece segun las dimensiones solicitadas, material ${materialHint || "definido para el trabajo"}, cortes, armado y terminaciones de taller. La idea es entregarlo listo para usar, cuidando que quede firme, prolijo y bien resuelto en los detalles visibles.`
+    : "La cotizacion contempla el material solicitado, preparacion, cortes y terminacion necesaria para entregar el trabajo prolijo y listo para usar.";
+
+  return [
+    "Hola, como estas? Te paso la cotizacion por el trabajo:",
+    product,
+    technicalLine,
+    extras.length ? `Tambien queda contemplado: ${extras.join(", ")}.` : "",
+    `El valor final estimado es de UYU ${fmtUYU(grand)}.`,
+    "Cualquier ajuste de medida, terminacion o forma de entrega lo revisamos y te lo dejo cerrado.",
+  ].filter(Boolean).join("\n\n");
 }
 
 function compactAge(value: string | null | undefined) {
@@ -1005,6 +1068,7 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       return total > 0 && pending === 0;
     });
   const [busy, setBusy] = useState<"excel" | "docx" | null>(null);
+  const [copiedMessage, setCopiedMessage] = useState(false);
 
   async function downloadExport(kind: "excel" | "docx") {
     if (busy) return;
@@ -1034,6 +1098,17 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
     }
   }
 
+  async function copyClientMessage() {
+    const message = buildClientMessage(session, grand);
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopiedMessage(true);
+      window.setTimeout(() => setCopiedMessage(false), 1800);
+    } catch {
+      window.prompt("Copiar mensaje para cliente", message);
+    }
+  }
+
   return (
     <>
       <Separator />
@@ -1052,6 +1127,14 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
           )}
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={copyClientMessage}
+            disabled={!hasItems && !hasMolduras}
+          >
+            <MessageSquareText className="h-4 w-4 mr-1" />
+            {copiedMessage ? "Copiado" : "Mensaje cliente"}
+          </Button>
           <Button
             variant={allOk ? "default" : "outline"}
             onClick={() => downloadExport("excel")}
