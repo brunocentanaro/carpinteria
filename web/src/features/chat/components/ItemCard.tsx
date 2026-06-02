@@ -255,7 +255,12 @@ function inferVisualModel(item: QuotationItem) {
     isDrawerCabinet || (drawerCount > 1 && doorCount === 0 && shelfCount === 0 && !hasHanger)
       ? "stacked"
       : "columns";
-  return { doorCount, drawerCount, shelfCount, drawerPosition, drawerLayout, hasHanger, hasWheels, hasLock };
+  const upperOpenCubbies =
+    doorCount > 0 &&
+    /abajo/.test(text) &&
+    /arriba/.test(text) &&
+    (/sin puerta/.test(text) || /abierto/.test(text) || /estantes?/.test(text));
+  return { doorCount, drawerCount, shelfCount, drawerPosition, drawerLayout, hasHanger, hasWheels, hasLock, upperOpenCubbies };
 }
 
 function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: string }) {
@@ -323,21 +328,21 @@ function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: st
             <div className="text-[11px] font-semibold text-center mb-1">
               {displayDoorCount > 0 ? "Frente cerrado" : "Frente"}
             </div>
-            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} mode="closed" />
+            <FrontView itemCode={item.code} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} upperOpenCubbies={visualModel.upperOpenCubbies} mode="closed" />
           </div>
           {displayDoorCount > 0 && (
             <div className="border rounded bg-slate-50 p-2">
               <div className="text-[11px] font-semibold text-center mb-1">Frente abierto</div>
-              <FrontView itemCode={`${item.code}-open`} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} mode="open" />
+              <FrontView itemCode={`${item.code}-open`} dims={dims} shelves={displayShelfCount} doorCount={displayDoorCount} drawerCount={displayDrawerCount} drawerPosition={visualModel.drawerPosition} drawerLayout={visualModel.drawerLayout} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} hasLock={visualModel.hasLock} upperOpenCubbies={visualModel.upperOpenCubbies} mode="open" />
             </div>
           )}
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Costado</div>
-            <SideView dims={dims} shelves={displayShelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} />
+            <SideView dims={dims} shelves={displayShelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} upperOpenCubbies={visualModel.upperOpenCubbies} />
           </div>
           <div className="border rounded bg-slate-50 p-2">
             <div className="text-[11px] font-semibold text-center mb-1">Planta</div>
-            <TopView dims={dims} />
+            <TopView dims={dims} columns={visualModel.upperOpenCubbies ? displayDoorCount : 2} />
           </div>
           </div>
 
@@ -735,9 +740,9 @@ function PlanEditorDialog({
               <div className="grid place-items-center overflow-auto rounded bg-white p-6" style={{ height: `calc(${editorHeight}vh - 150px)` }}>
                 <div style={{ width: `${canvasZoom}%`, minWidth: "100%", maxWidth: `${Math.max(820, canvasZoom * 8)}px` }}>
                   {activePlanView === "side" ? (
-                    <SideView dims={dims} shelves={visualModel.shelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} />
+                    <SideView dims={dims} shelves={visualModel.shelfCount} hasHanger={visualModel.hasHanger} hasWheels={visualModel.hasWheels} upperOpenCubbies={visualModel.upperOpenCubbies} />
                   ) : (
-                    <TopView dims={dims} />
+                    <TopView dims={dims} columns={visualModel.upperOpenCubbies ? visualModel.doorCount : 2} />
                   )}
                 </div>
               </div>
@@ -913,6 +918,7 @@ function FrontView({
   hasHanger,
   hasWheels,
   hasLock,
+  upperOpenCubbies,
   mode = "closed",
 }: {
   itemCode: string;
@@ -925,6 +931,7 @@ function FrontView({
   hasHanger: boolean;
   hasWheels: boolean;
   hasLock: boolean;
+  upperOpenCubbies: boolean;
   mode?: "closed" | "open";
 }) {
   const bodyX = 38;
@@ -945,6 +952,7 @@ function FrontView({
   const hasInterior = shelves > 0 || hasHanger;
   const showInterior = mode === "open" || doorCount === 0;
   const showDoorLeaves = mode === "closed" && doorCount > 0;
+  const splitY = bodyY + bodyH / 2;
   const closetW = hasInterior && shelves > 0 ? bodyW * 0.62 : bodyW;
   const shelfX = bodyX + closetW;
   const stackedDrawers = drawerLayout === "stacked";
@@ -958,7 +966,16 @@ function FrontView({
       </defs>
       <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
       <rect x={bodyX} y={bodyY} width={bodyW} height={bodyH} fill={`url(#grain-front-${itemCode})`} opacity="0.5" />
-      {showInterior && doorCount > 1 && (
+      {upperOpenCubbies && doorCount > 0 && (
+        <>
+          <line x1={bodyX} y1={splitY} x2={bodyX + bodyW} y2={splitY} stroke="#92400e" strokeWidth="1.4" opacity="0.9" />
+          {Array.from({ length: doorCols - 1 }).map((_, i) => {
+            const x = bodyX + (bodyW / doorCols) * (i + 1);
+            return <line key={`upper-bay-${i}`} x1={x} y1={bodyY} x2={x} y2={bodyY + bodyH} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />;
+          })}
+        </>
+      )}
+      {showInterior && doorCount > 1 && !upperOpenCubbies && (
         <>
           {Array.from({ length: doorCols - 1 }).map((_, i) => {
             const x = bodyX + (bodyW / doorCols) * (i + 1);
@@ -966,7 +983,7 @@ function FrontView({
           })}
         </>
       )}
-      {showInterior && hasInterior && shelves > 0 && (
+      {showInterior && hasInterior && shelves > 0 && !upperOpenCubbies && (
         <line x1={shelfX} y1={lowerY} x2={shelfX} y2={lowerBottom} stroke="#92400e" strokeWidth="1.2" opacity="0.75" />
       )}
       {showInterior && hasHanger && (
@@ -975,7 +992,7 @@ function FrontView({
           <path d={`M${bodyX + 26} ${lowerY + 28} q10 8 20 0 M${bodyX + 58} ${lowerY + 28} q10 8 20 0`} fill="none" stroke="#64748b" strokeWidth="1" opacity="0.8" />
         </g>
       )}
-      {showInterior && shelves > 0 && (
+      {showInterior && shelves > 0 && !upperOpenCubbies && (
         <>
           {Array.from({ length: Math.min(shelves, 4) }).map((_, i) => {
             const y = lowerY + lowerH * ((i + 1) / (Math.min(shelves, 4) + 1));
@@ -1029,7 +1046,7 @@ function FrontView({
           )}
         </>
       )}
-      {showDoorLeaves && (
+      {showDoorLeaves && !upperOpenCubbies && (
         <>
           {Array.from({ length: doorCols - 1 }).map((_, i) => {
             const x = bodyX + (bodyW / doorCols) * (i + 1);
@@ -1044,6 +1061,21 @@ function FrontView({
       )}
       {doorCount === 0 && drawerCount === 0 && (
         <line x1={bodyX + bodyW / 2} y1={bodyY} x2={bodyX + bodyW / 2} y2={bodyY + bodyH} stroke="#92400e" strokeWidth="1.2" opacity="0.85" />
+      )}
+      {upperOpenCubbies && doorCount > 0 && (
+        <>
+          {Array.from({ length: doorCols }).map((_, i) => {
+            const x = bodyX + (bodyW / doorCols) * i;
+            const w = bodyW / doorCols;
+            const knobX = x + w - 9;
+            return (
+              <g key={`lower-door-${i}`}>
+                <rect x={x + 1} y={splitY} width={w - 2} height={bodyY + bodyH - splitY} fill="#fff7ed" stroke="#92400e" strokeWidth="1" opacity="0.75" />
+                <circle cx={knobX} cy={splitY + (bodyY + bodyH - splitY) / 2} r="1.7" fill="#92400e" />
+              </g>
+            );
+          })}
+        </>
       )}
       {hasWheels && (
         <g>
@@ -1067,19 +1099,22 @@ function SideView({
   shelves,
   hasHanger,
   hasWheels,
+  upperOpenCubbies,
 }: {
   dims: ReturnType<typeof inferOverallDimensions>;
   shelves: number;
   hasHanger: boolean;
   hasWheels: boolean;
+  upperOpenCubbies: boolean;
 }) {
+  const shelfLines = upperOpenCubbies ? 1 : Math.min(shelves, 3);
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista lateral esquemática">
       <rect x="62" y="20" width="96" height="118" rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
       <path d="M158 20 L180 36 L180 154 L158 138 Z" fill="#fed7aa" stroke="#92400e" strokeWidth="1.4" />
       <path d="M62 20 L84 36 L180 36 M62 138 L84 154 L180 154" fill="none" stroke="#92400e" strokeWidth="1" opacity="0.7" />
-      {Array.from({ length: Math.min(shelves, 3) }).map((_, i) => {
-        const y = 52 + i * 28;
+      {Array.from({ length: shelfLines }).map((_, i) => {
+        const y = upperOpenCubbies ? 79 : 52 + i * 28;
         return <line key={i} x1="66" y1={y} x2="155" y2={y} stroke="#92400e" strokeWidth="1" opacity="0.6" />;
       })}
       {hasHanger && <line x1="72" y1="48" x2="150" y2="48" stroke="#334155" strokeWidth="2" strokeLinecap="round" />}
@@ -1105,12 +1140,16 @@ function SideView({
   );
 }
 
-function TopView({ dims }: { dims: ReturnType<typeof inferOverallDimensions> }) {
+function TopView({ dims, columns }: { dims: ReturnType<typeof inferOverallDimensions>; columns: number }) {
+  const safeColumns = Math.max(1, columns);
   return (
     <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista superior esquemática">
       <rect x="38" y="44" width="152" height="84" rx="2" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
       <rect x="48" y="54" width="132" height="64" fill="#fed7aa" stroke="#92400e" strokeWidth="1" opacity="0.55" />
-      <line x1="114" y1="44" x2="114" y2="128" stroke="#92400e" strokeWidth="1" opacity="0.65" />
+      {Array.from({ length: safeColumns - 1 }).map((_, i) => {
+        const x = 38 + 152 * ((i + 1) / safeColumns);
+        return <line key={i} x1={x} y1="44" x2={x} y2="128" stroke="#92400e" strokeWidth="1" opacity="0.65" />;
+      })}
       <DimensionLine x1={38} y1={150} x2={190} y2={150} label={mm(dims.width)} />
       <DimensionLine x1={22} y1={44} x2={22} y2={128} label={mm(dims.depth)} vertical />
     </svg>

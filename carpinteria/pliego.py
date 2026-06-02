@@ -137,6 +137,12 @@ def _drawer_height_from_text(text: str) -> float | None:
 
 
 def _door_count_from_text(text: str) -> int:
+    numeric = re.search(r"\b(\d+)\s+puertas?\b", text)
+    if numeric:
+        return int(numeric.group(1))
+    for word, value in NUMBER_WORDS.items():
+        if re.search(rf"\b{word}\s+puertas?\b", text):
+            return value
     count = _count_from_text(text, "puerta")
     if count:
         return count
@@ -145,6 +151,29 @@ def _door_count_from_text(text: str) -> int:
     if "puerta" in text or "frente cerrado" in text or "frente con puerta" in text:
         return 1
     return 0
+
+
+def _lower_door_height_from_text(text: str) -> float | None:
+    patterns = (
+        r"puertas?.{0,80}?altura\s+de\s+(\d+(?:[.,]\d+)?)\s*cm",
+        r"puertas?.{0,80}?alto\s+de\s+(\d+(?:[.,]\d+)?)\s*cm",
+        r"hasta\s+la\s+altura\s+de\s+(\d+(?:[.,]\d+)?)\s*cm",
+        r"abajo.{0,80}?(\d+(?:[.,]\d+)?)\s*cm",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return float(match.group(1).replace(",", ".")) * 10
+    return None
+
+
+def _is_lower_doors_upper_open_pattern(text: str) -> bool:
+    return (
+        "puerta" in text
+        and "abajo" in text
+        and "arriba" in text
+        and ("sin puerta" in text or "abierto" in text or "estante" in text)
+    )
 
 
 def _drawers_are_stacked(text: str) -> bool:
@@ -241,6 +270,51 @@ def _normalize_piece_dimensions(out: dict, item: dict) -> None:
             "label": "trasera",
             "edge_sides": [],
         })
+
+    if _is_lower_doors_upper_open_pattern(desc_text):
+        door_count = _door_count_from_text(desc_text) or 4
+        lower_h = _lower_door_height_from_text(desc_text) or height / 2
+        upper_h = max(height - lower_h, 0)
+        door_w = max(width / door_count, 0)
+
+        # This pattern is a low closed row of doors and an upper row of open
+        # cubbies. "4 estantes arriba" means four open bays, not four horizontal
+        # shelves.
+        pieces = [
+            p for p in pieces
+            if "puerta" not in _norm(p.get("label", ""))
+            and "estante" not in _norm(p.get("label", ""))
+            and "repisa" not in _norm(p.get("label", ""))
+            and "division" not in _norm(p.get("label", ""))
+            and "divisor" not in _norm(p.get("label", ""))
+        ]
+        pieces.append({
+            "width_mm": width,
+            "height_mm": depth,
+            "quantity": 1,
+            "label": f"estante divisor horizontal a {lower_h:.0f}mm",
+            "edge_sides": ["top"],
+        })
+        if door_count > 1:
+            pieces.append({
+                "width_mm": height,
+                "height_mm": depth,
+                "quantity": door_count - 1,
+                "label": "division vertical modulo completo",
+                "edge_sides": ["left"],
+            })
+        pieces.append({
+            "width_mm": door_w,
+            "height_mm": lower_h,
+            "quantity": door_count,
+            "label": "puerta inferior",
+            "edge_sides": ["top", "bottom", "left", "right"],
+        })
+        out["notes"] = (
+            (out.get("notes") or "") +
+            f" Mueble interpretado como {door_count} modulos: puertas inferiores de {lower_h:.0f}mm "
+            f"y nichos abiertos superiores de {upper_h:.0f}mm."
+        ).strip()
 
     out["pieces"] = pieces
     _complete_front_doors(out, item, width=width, height=height, thickness=thickness)
