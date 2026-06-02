@@ -1142,15 +1142,14 @@ function SideView({
   if (headboardShelf) {
     return (
       <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Vista lateral de respaldo con estante abierto">
-        <path d="M72 30 L88 44 L88 148 L72 134 Z" fill="#fed7aa" stroke="#92400e" strokeWidth="1.4" />
-        <path d="M148 20 L166 34 L166 138 L148 124 Z" fill="#fed7aa" stroke="#92400e" strokeWidth="1.4" />
-        <line x1="88" y1="91" x2="148" y2="77" stroke="#92400e" strokeWidth="2" />
-        <line x1="72" y1="82" x2="88" y2="91" stroke="#92400e" strokeWidth="1.2" opacity="0.75" />
-        <line x1="148" y1="77" x2="166" y2="86" stroke="#92400e" strokeWidth="1.2" opacity="0.75" />
-        <line x1="88" y1="44" x2="148" y2="30" stroke="#92400e" strokeWidth="1" opacity="0.55" />
-        <line x1="88" y1="148" x2="148" y2="124" stroke="#92400e" strokeWidth="1" opacity="0.55" />
-        <DimensionLine x1={72} y1={160} x2={166} y2={160} label={mm(dims.depth)} />
-        <DimensionLine x1={54} y1={30} x2={54} y2={134} label={mm(dims.height)} vertical />
+        <rect x="74" y="24" width="92" height="118" rx="1.5" fill="#fff7ed" stroke="#92400e" strokeWidth="2" />
+        <rect x="74" y="24" width="12" height="118" fill="#fed7aa" stroke="#92400e" strokeWidth="1.2" />
+        <rect x="154" y="24" width="12" height="118" fill="#fed7aa" stroke="#92400e" strokeWidth="1.2" />
+        <rect x="86" y="82" width="68" height="8" fill="#fed7aa" stroke="#92400e" strokeWidth="1.2" />
+        <line x1="86" y1="24" x2="154" y2="24" stroke="#92400e" strokeWidth="1" opacity="0.45" />
+        <line x1="86" y1="142" x2="154" y2="142" stroke="#92400e" strokeWidth="1" opacity="0.45" />
+        <DimensionLine x1={74} y1={160} x2={166} y2={160} label={mm(dims.depth)} />
+        <DimensionLine x1={56} y1={24} x2={56} y2={142} label={mm(dims.height)} vertical />
       </svg>
     );
   }
