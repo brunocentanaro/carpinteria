@@ -69,6 +69,11 @@ def _query_words(q: str) -> list[str]:
     return [w for w in _norm_text(q).split() if len(w) > 2]
 
 
+def _is_non_white_color(q: str) -> bool:
+    qn = _norm_text(q)
+    return bool(qn) and "blanco" not in qn
+
+
 @dataclass
 class PlacaMatch:
     producto: Producto
@@ -147,7 +152,7 @@ class ProductCatalog:
 
         # Exact thickness first.
         exact = [p for p in scoped if p.espesor_mm and abs(p.espesor_mm - espesor_mm) < 0.01]
-        match = self._best_by_words(exact, words)
+        match = self._best_by_words(exact, words, non_white_color=_is_non_white_color(color_query))
         if match:
             return PlacaMatch(match, espesor_mm, is_approx=False)
 
@@ -157,7 +162,7 @@ class ProductCatalog:
             closest = min(thicknesses, key=lambda t: abs(t - espesor_mm))
             if abs(closest - espesor_mm) > 0.01:
                 approx = [p for p in scoped if p.espesor_mm == closest]
-                match = self._best_by_words(approx, words)
+                match = self._best_by_words(approx, words, non_white_color=_is_non_white_color(color_query))
                 if match:
                     return PlacaMatch(match, espesor_mm, is_approx=True)
 
@@ -189,15 +194,22 @@ class ProductCatalog:
 
     # ----- internals -----
 
-    def _best_by_words(self, candidates: list[Producto], words: list[str]) -> Producto | None:
+    def _best_by_words(self, candidates: list[Producto], words: list[str], *, non_white_color: bool = False) -> Producto | None:
         if not candidates:
             return None
         if not words:
             return candidates[0]
-        scored = [
-            (_score_text(f"{p.descripcion_normalizada} {p.material} {p.familia}", words), p)
-            for p in candidates
-        ]
+        scored = []
+        for p in candidates:
+            haystack = f"{p.descripcion_normalizada} {p.material} {p.familia}"
+            score = _score_text(haystack, words)
+            hn = _norm_text(haystack)
+            if non_white_color:
+                if "blanco" in hn:
+                    score -= 5
+                if any(token in hn for token in ("basicos", "medio", "premium")):
+                    score += 2
+            scored.append((score, p))
         scored.sort(key=lambda x: (x[0], -((x[1].espesor_mm or 0) * 100 + (x[1].ancho_mm or 0))), reverse=True)
         best_score, best = scored[0]
         if best_score <= 0:

@@ -17,6 +17,25 @@ BOARD_TERMS = (
     "multiplaca",
 )
 
+DIRECT_BOARD_TERMS = (
+    "placa completa",
+    "placas completas",
+    "hoja",
+    "hojas",
+    "solo placa",
+    "solo placas",
+    "venta de placa",
+    "venta de placas",
+    "comprar placa",
+    "comprar placas",
+    "pide placa",
+    "piden placa",
+    "piden directamente la placa",
+    "pasamano",
+    "sin cantear",
+    "sin canto",
+)
+
 WOOD_FORBIDDEN_TERMS = (
     "placa",
     "melaminico",
@@ -62,6 +81,8 @@ def classify_quote_type(text: str, *, material: str | None = None) -> QuoteRoute
             "madera",
             "tabla",
             "tablas",
+            "tablon",
+            "tablones",
             "encol",
             "cepill",
             "pata",
@@ -71,6 +92,7 @@ def classify_quote_type(text: str, *, material: str | None = None) -> QuoteRoute
         ),
     )
     mentions_board = _has_any(haystack, BOARD_TERMS)
+    mentions_direct_board = _has_any(haystack, DIRECT_BOARD_TERMS)
     mentions_molding = _has_any(
         haystack,
         ("moldura", "zocalo", "contramarco", "tapajunta", "varilla", "barrote", "liston"),
@@ -86,7 +108,7 @@ def classify_quote_type(text: str, *, material: str | None = None) -> QuoteRoute
             reason="El pedido menciona molduras, varillas, barrotes o perfiles.",
         )
 
-    if (mentions_wood and mentions_solid) or "madera maciza" in haystack:
+    if (mentions_wood and mentions_solid) or "madera maciza" in haystack or ("tablon" in haystack and not mentions_board):
         return QuoteRoute(
             quote_type="madera_maciza",
             subtype="tablas_encoladas",
@@ -94,6 +116,16 @@ def classify_quote_type(text: str, *, material: str | None = None) -> QuoteRoute
             allowed_sources=("Datos Maderas",),
             forbidden_terms=WOOD_FORBIDDEN_TERMS,
             reason="El pedido menciona madera maciza/especie y requiere cotizar por tablas encoladas.",
+        )
+
+    if mentions_board and mentions_direct_board:
+        return QuoteRoute(
+            quote_type="placa_directa",
+            subtype="pasamano",
+            confidence=0.94,
+            allowed_sources=("Datos", "Placas"),
+            forbidden_terms=("canto abs", "mano de obra", "maquinaria", "merma", "cortes"),
+            reason="El pedido menciona venta directa de placa/hoja completa sin fabricacion ni canteado.",
         )
 
     if mentions_board:
