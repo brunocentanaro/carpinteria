@@ -6,7 +6,7 @@ wheels/
 *.egg-info
 .venv
 .env
-secrets/**/*.json
+secrets/
 .claude/worktrees/
 web/.next/
 web/node_modules/

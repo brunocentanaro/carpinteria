@@ -223,15 +223,29 @@ cd web && npm run dev   # http://localhost:3000
 
 `.env` en la raíz (NO en `web/`): variables consumidas por el subprocess.
 Mínimo:
-- `MONGO_URL` y `MONGO_DB` (Mongo Atlas).
+- `MONGO_URL` (Mongo Atlas; `MONGO_DB` opcional, default `carpinteria`).
 - `OPENAI_API_KEY` (modelos de OpenAI hardcodeados en `settings.py`).
-- `GOOGLE_SHEETS_SPREADSHEET_ID` (catálogo Activa).
+- `AUTH_SESSION_SECRET` (firma de sesiones de login).
 - Credenciales Google: `GOOGLE_SERVICE_ACCOUNT_FILE` (path local) o
-  `GOOGLE_SERVICE_ACCOUNT_JSON` (contenido inline para producción).
+  `GOOGLE_SERVICE_ACCOUNT_JSON` (inline o base64 para producción).
   La lógica vive en `carpinteria/google_creds.py:load_credentials`.
 
-El TC USD/UYU se obtiene en vivo del BCU (`exchange_rate.fetch_bcu_usd`),
-no hay variable para hardcodearlo.
+La hoja del catálogo Activa se elige con `PRICES_SHEET_ID` (default en
+`lista_precios_sheets.py`), NO con `GOOGLE_SHEETS_SPREADSHEET_ID` (esa variable
+no la lee nadie). Login de bootstrap: `CASA_AUTH_PASSWORD` /
+`PIRONE_AUTH_PASSWORD` — si faltan, caen a `casa2026`/`pirone2026`
+(hardcodeado, inseguro en prod).
+
+El TC USD/UYU se obtiene en vivo del BCU (`exchange_rate.fetch_bcu_usd`); si se
+cae y no hay cache, usa `USD_UYU_FALLBACK`.
+
+Listados de **madera maciza** (`wood_calculator.py`) y **molduras**
+(`molduras_prices.py`) viven en Excel locales (Windows del dueño). Para que
+funcionen cross-platform/Railway, se aplanan a CSV commiteados en
+`carpinteria/data/` (`wood_datos.csv`, `molduras_catalog.csv`) vía
+`scripts/flatten_price_sheets.py`. Prioridad de lectura: Excel local → CSV
+commiteado → fallback hardcodeado. Para actualizar precios: editar el Excel,
+correr el script, commitear los CSV. Ver `carpinteria/data/README.md`.
 
 ### Producción (Railway)
 

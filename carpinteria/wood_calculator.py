@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import math
 import re
 from dataclasses import dataclass
@@ -24,11 +25,15 @@ except Exception:
     WASTE_PERCENT = 15
 
 
+# Excel maestro del dueño (solo existe en su Windows). En Mac/Railway no existe,
+# así que se cae al CSV commiteado (fuente de verdad cross-platform), que se
+# regenera con scripts/flatten_price_sheets.py.
 WOOD_PRICE_PATHS = (
     Path(r"C:\Users\Peluca\Documents\La casa del Carpintero\Cotizador_Madera_V2_Corregido.xlsx"),
     Path(r"C:\Users\Peluca\Downloads\Cotizador_Madera_V2_Corregido (2).xlsx"),
     Path(r"C:\Users\Peluca\Downloads\Cotizador_Madera_V2_Corregido.xlsx"),
 )
+WOOD_DATA_CSV = Path(__file__).resolve().parent / "data" / "wood_datos.csv"
 
 
 @dataclass(frozen=True)
@@ -69,34 +74,74 @@ def _num(value: object) -> float:
         return 0.0
 
 
-def load_wood_materials() -> list[WoodMaterial]:
-    path = next((p for p in WOOD_PRICE_PATHS if p.exists()), None)
-    if path is None:
-        return list(FALLBACK_WOOD_MATERIALS)
+def _build_material(
+    *, id: object, species: object, features: object,
+    thickness: object, length: object, width: object, price: object, supplier: object,
+) -> WoodMaterial | None:
+    """Construye un WoodMaterial validando especie y campos. Devuelve None si no aplica."""
+    if norm_text(str(species or "")) not in {norm_text(s) for s in WOOD_SPECIES}:
+        return None
+    material = WoodMaterial(
+        id=str(id or "").strip(),
+        species=str(species or "").strip(),
+        features=str(features or "").strip(),
+        thickness_in=_num(thickness),
+        length_m=_num(length),
+        width_in=_num(width),
+        price_uyu=_num(price),
+        supplier=str(supplier or "").strip(),
+    )
+    if material.id and material.thickness_in and material.length_m and material.width_in and material.price_uyu:
+        return material
+    return None
 
+
+def _materials_from_xlsx(path: Path) -> list[WoodMaterial]:
     wb = load_workbook(path, data_only=True, read_only=True)
     if "Datos" not in wb.sheetnames:
-        return list(FALLBACK_WOOD_MATERIALS)
+        return []
     ws = wb["Datos"]
     out: list[WoodMaterial] = []
-    accepted = {norm_text(s) for s in WOOD_SPECIES}
     for row in ws.iter_rows(min_row=4, values_only=True):
-        species = norm_text(row[1] if len(row) > 1 else "")
-        if species not in accepted:
-            continue
-        material = WoodMaterial(
-            id=str(row[0] or "").strip(),
-            species=str(row[1] or "").strip(),
-            features=str(row[2] or "").strip(),
-            thickness_in=_num(row[3]),
-            length_m=_num(row[5]),
-            width_in=_num(row[7]),
-            price_uyu=_num(row[9]),
-            supplier=str(row[11] or "").strip() if len(row) > 11 else "",
+        def col(i: int) -> object:
+            return row[i] if len(row) > i else ""
+        material = _build_material(
+            id=col(0), species=col(1), features=col(2),
+            thickness=col(3), length=col(5), width=col(7), price=col(9), supplier=col(11),
         )
-        if material.id and material.thickness_in and material.length_m and material.width_in and material.price_uyu:
+        if material:
             out.append(material)
-    return out or list(FALLBACK_WOOD_MATERIALS)
+    return out
+
+
+def _materials_from_csv(path: Path) -> list[WoodMaterial]:
+    if not path.exists():
+        return []
+    out: list[WoodMaterial] = []
+    with path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            material = _build_material(
+                id=row.get("id"), species=row.get("species"), features=row.get("features"),
+                thickness=row.get("thickness_in"), length=row.get("length_m"),
+                width=row.get("width_in"), price=row.get("price_uyu"), supplier=row.get("supplier"),
+            )
+            if material:
+                out.append(material)
+    return out
+
+
+def load_wood_materials() -> list[WoodMaterial]:
+    """Precios de madera maciza. Prioridad: Excel maestro local (Windows del dueño)
+    -> CSV commiteado (Mac/Railway) -> fallback hardcodeado."""
+    path = next((p for p in WOOD_PRICE_PATHS if p.exists()), None)
+    if path is not None:
+        materials = _materials_from_xlsx(path)
+        if materials:
+            return materials
+    materials = _materials_from_csv(WOOD_DATA_CSV)
+    if materials:
+        return materials
+    return list(FALLBACK_WOOD_MATERIALS)
 
 
 def _extract_species(text: str, material: str | None = None) -> str:

@@ -6,6 +6,7 @@ ranges, so this module streams only the catalog columns we need.
 """
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from functools import lru_cache
 import os
@@ -21,11 +22,17 @@ VARILLA_LENGTH_M = 3.3
 SCALE_THRESHOLD_VARILLAS = 20
 ESTIMATED_MOLDURA_SURCHARGE = 1.15
 
+# Excel maestros del dueño (solo existen en su Windows). En Mac/Railway no
+# existen, así que se cae a los CSV commiteados (fuente de verdad cross-platform),
+# que se regeneran con scripts/flatten_price_sheets.py.
 DEFAULT_PRICE_FILES = [
     Path(r"C:\Users\Peluca\Documents\La casa del Carpintero\Licitaciones 2026\Listado de precios Molduras 26.5.26.xlsx"),
     Path(r"C:\Users\Peluca\Documents\La casa del Carpintero\Licitaciones 2026\Listado de precios Molduras 2026 - Mio util arreglado MANU.xlsx"),
     Path(r"C:\Users\Peluca\Downloads\Listado de precios Molduras 2026 - Mio util arreglado MANU.xlsx"),
 ]
+DATA_DIR = Path(__file__).resolve().parent / "data"
+MOLDURAS_CSV = DATA_DIR / "molduras_catalog.csv"
+WOOD_DATA_CSV = DATA_DIR / "wood_datos.csv"
 
 
 @dataclass(frozen=True)
@@ -206,13 +213,36 @@ def _candidate_paths() -> list[Path]:
     return paths
 
 
+def _read_catalog_csv(path: Path) -> list[MolduraPrice]:
+    """Lee el catálogo de molduras desde el CSV commiteado (fuente de verdad)."""
+    if not path.exists():
+        return []
+    items: list[MolduraPrice] = []
+    with path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            code = str(row.get("code", "")).strip()
+            family = str(row.get("family", "")).strip()
+            description = str(row.get("description", "")).strip()
+            width = _float(row.get("width_mm"))
+            height = _float(row.get("height_mm"))
+            meter = _float(row.get("price_meter_iva"))
+            varilla = _float(row.get("price_varilla_iva"))
+            if code and family and description and width and height and meter and varilla:
+                items.append(MolduraPrice(
+                    code=code, family=family, description=description,
+                    width_mm=width, height_mm=height,
+                    price_meter_iva=meter, price_varilla_iva=varilla,
+                    source_path=str(path), sheet_name="csv",
+                ))
+    return items
+
+
 @lru_cache(maxsize=4)
 def load_prices(path: str | None = None) -> tuple[MolduraPrice, ...]:
     paths = [Path(path)] if path else _candidate_paths()
     errors: list[str] = []
     for candidate in paths:
         if not candidate or not candidate.exists():
-            errors.append(f"{candidate}: no existe")
             continue
         try:
             with zipfile.ZipFile(candidate) as zf:
@@ -234,7 +264,12 @@ def load_prices(path: str | None = None) -> tuple[MolduraPrice, ...]:
                         return tuple(items)
         except Exception as exc:
             errors.append(f"{candidate}: {exc}")
-    raise RuntimeError("No pude leer el listado de molduras. " + " | ".join(errors))
+    # Sin Excel local utilizable (caso Mac/Railway): CSV commiteado.
+    csv_items = _read_catalog_csv(MOLDURAS_CSV)
+    if csv_items:
+        return tuple(csv_items)
+    detail = " | ".join(errors) if errors else f"{MOLDURAS_CSV}: no existe"
+    raise RuntimeError("No pude leer el listado de molduras. " + detail)
 
 
 def _material_score(code: str, material: str | None) -> int:
@@ -342,7 +377,32 @@ def load_wood_tables(path: str | None = None) -> tuple[WoodTable, ...]:
                     return tuple(rows)
         except Exception:
             continue
-    return ()
+    # Sin Excel local utilizable (Mac/Railway): CSV commiteado de la solapa Datos.
+    return _wood_tables_from_csv(WOOD_DATA_CSV)
+
+
+def _wood_tables_from_csv(path: Path) -> tuple[WoodTable, ...]:
+    if not path.exists():
+        return ()
+    rows: list[WoodTable] = []
+    with path.open(encoding="utf-8", newline="") as fh:
+        for row in csv.DictReader(fh):
+            material = str(row.get("species", "")).strip()
+            thickness = _float(row.get("thickness_in"))
+            length = _float(row.get("length_m"))
+            width = _float(row.get("width_in"))
+            price = _float(row.get("price_uyu"))
+            if material and thickness and width and length and price:
+                features = str(row.get("features", "")).strip()
+                rows.append(WoodTable(
+                    material=material,
+                    name=f"{material} {features}".strip(),
+                    thickness_in=thickness,
+                    width_in=width,
+                    length_m=length,
+                    price_uyu=price,
+                ))
+    return tuple(rows)
 
 
 def _select_wood_table(width_mm: float, height_mm: float, material: str | None) -> WoodTable | None:
