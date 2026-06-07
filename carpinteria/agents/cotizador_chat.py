@@ -109,6 +109,58 @@ def _recalculate_item(
         item.last_quote = base
         return base
 
+    if (item.last_quote or {}).get("metadata", {}).get("quote_type") == "placa_directa":
+        try:
+            if catalog is None:
+                catalog = ProductCatalog.from_activa()
+            if tc is None:
+                tc = _tc()
+        except Exception as exc:
+            msg = f"No pude acceder al listado de precios Activa. Detalle: {exc}"
+            item.last_quote = {
+                "error": msg,
+                "notes": msg,
+                "lines": [],
+                "total": 0,
+                "total_with_hardware": 0,
+                "pending_hardware_codes": [],
+                "metadata": {"quote_type": "placa_directa", "subtype": "pasamano"},
+            }
+            return item.last_quote
+
+        q = calculate_quotation(
+            pieces=[],
+            catalog=catalog,
+            tc=tc,
+            material=item.material or "melaminico",
+            thickness_mm=float(item.thickness_mm or 18),
+            color=item.color or session.color_default or "",
+            boards_needed=1,
+            machinery_percent=0,
+            waste_percent=0,
+            labor_percent=0,
+            labor_hours=0,
+            cuts_percent=0,
+            cuts_base_max=0,
+            payment_days=_effective_payment_days(session),
+            shipping_provider=default_shipping_provider() if _effective_destination(session) else None,
+            destination=_effective_destination(session),
+            placa_sku=item.placa_sku,
+            shipping_units=item.quantity,
+        )
+        base = q.model_dump()
+        base["hardware_lines"] = []
+        base["pending_hardware_codes"] = []
+        base["total_with_hardware"] = round(base.get("total", 0), 2)
+        base["tc"] = tc
+        base["metadata"] = {
+            **(base.get("metadata") or {}),
+            "quote_type": "placa_directa",
+            "subtype": "pasamano",
+        }
+        item.last_quote = base
+        return base
+
     if not item.pieces:
         item.last_quote = None
         return {"error": "El item no tiene piezas todavía"}
@@ -869,6 +921,39 @@ def add_custom_item(
         return "Necesito una descripción del mueble para poder cotizarlo."
 
     route = classify_quote_type(description, material=material)
+    if route.quote_type == "placa_directa":
+        item = QuotationItem(
+            code=(code or _next_manual_code(s)).strip().upper(),
+            name=name.strip() or "placa directa",
+            quantity=max(1, int(quantity or 1)),
+            description=description.strip(),
+            dimensions={
+                **({"width_mm": float(width_mm)} if width_mm else {"width_mm": 2600.0}),
+                **({"height_mm": float(height_mm)} if height_mm else {"height_mm": 1830.0}),
+            },
+            material=(material or "melaminico").strip(),
+            thickness_mm=float(thickness_mm or 18),
+            color=(color or "").strip(),
+            edge_banding="",
+            pieces=[
+                CutPiece(
+                    width_mm=float(width_mm or 2600),
+                    height_mm=float(height_mm or 1830),
+                    quantity=1,
+                    label="placa completa",
+                    edge_sides=[],
+                )
+            ],
+            last_quote={"metadata": {"quote_type": "placa_directa", "subtype": "pasamano"}},
+        )
+        s.items.append(item)
+        try:
+            _recalculate_item(item, s)
+        except Exception as e:
+            item.last_quote = {"error": str(e), "notes": str(e), "total_with_hardware": 0}
+        save_session(s)
+        return "Agregue la placa directa a la cotizacion.\n\n" + _format_item_summary(item)
+
     if route.quote_type == "madera_maciza":
         item = QuotationItem(
             code=(code or _next_manual_code(s)).strip().upper(),
@@ -1192,6 +1277,11 @@ Cómo trabajás:
 - Códigos de herrajes en MAYÚSCULAS_CON_GUION_BAJO (ej: BISAGRA_FRENO, GUIA_TELESC_400). Si dudás, llamá `list_hardware_catalog`.
 - No inventes precios de herrajes — si faltan, decile al usuario qué herrajes necesitan precio (la lista la sabés con `get_state`).
 - Cuando el usuario te corrige una cantidad, asumí que sabe lo que hace y aplicalo sin pedir confirmación.
+
+Reglas de ruteo de materiales:
+- Si el usuario/pliego pide directamente placas u hojas completas para comprar/vender ("placa completa", "hoja", "sin cantear", "solo placa", "pasamano"), usa `add_custom_item` pero describilo como venta directa de placa. No agregues canto, cortes, mano de obra, maquinaria ni merma; es compra/venta de la placa con ganancia, recargo financiero y flete si aplica.
+- Para melaminicos de color o textura madera (gris, roble kendal, etc.) usa las referencias de melaminico color/textura, no la placa blanca/laca blanca. Las referencias tipo BASICOS/MEDIO/PREMIUM corresponden a colores/texturas distintos al blanco.
+- Si el pedido dice tablones/tablas de madera, cotiza desde Datos/Maderas por madera/tablas, no como placas. Pedi especie si falta.
 
 Preguntas operativas obligatorias:
 - Despues de cotizar o corregir un mueble, si el usuario no lo indico explicitamente en ese pedido, cerra siempre preguntando:
