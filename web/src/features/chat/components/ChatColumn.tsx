@@ -4,11 +4,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Paperclip, Send } from "lucide-react";
+import { ClipboardList, ImagePlus, Paperclip, Send } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { createSession, qk, streamChat, uploadPliego } from "../api";
+import { createSession, qk, streamChat, uploadFurniturePhoto, uploadOrderPhoto, uploadPliego } from "../api";
 import type { ChatMessage, Session } from "../schemas";
 import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 
@@ -16,9 +16,11 @@ const TOOL_LABELS: Record<string, string> = {
   get_state: "leyendo el estado",
   ingest_pliego: "ingiriendo el pliego",
   quote_moldura_price: "buscando precio de moldura",
+  add_custom_item: "actualizando la cotizacion",
   set_color: "ajustando el color",
   set_payment_days: "ajustando los días de pago",
   set_destination: "ajustando el destino",
+  set_additional_services: "ajustando servicios adicionales",
   set_hardware_quantity: "ajustando cantidad de herraje",
   set_hardware_price: "guardando precio de herraje",
   list_hardware_catalog: "listando catálogo de herrajes",
@@ -33,6 +35,24 @@ const MARKDOWN_BUBBLE_CLASSES =
   "bg-muted text-foreground prose prose-sm max-w-none " +
   "prose-pre:my-2 prose-code:before:content-none prose-code:after:content-none " +
   "prose-headings:my-2";
+
+function clipboardImageFiles(clipboardData: DataTransfer): File[] {
+  const files = Array.from(clipboardData.files || []).filter((file) =>
+    file.type.startsWith("image/"),
+  );
+  if (files.length > 0) return files;
+  return Array.from(clipboardData.items || [])
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item, index) => {
+      const file = item.getAsFile();
+      if (!file) return null;
+      const extension = file.type.split("/")[1] || "png";
+      return new File([file], file.name || `orden-pegada-${index + 1}.${extension}`, {
+        type: file.type,
+      });
+    })
+    .filter((file): file is File => file !== null);
+}
 
 interface ChatColumnProps {
   session: Session | null;
@@ -51,8 +71,11 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
   const [uploadingFiles, setUploadingFiles] = useState<string[] | null>(null);
   const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [pasteMode, setPasteMode] = useState<"furniture" | "order">("furniture");
   const dragDepth = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const orderInputRef = useRef<HTMLInputElement | null>(null);
+  const furnitureInputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // Hydrate the message list when the active session changes (or clears).
@@ -60,7 +83,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
   // and don't refetch.
   useEffect(() => {
     setMessages(session?.messages ?? []);
-  }, [session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [session?.id, session?.messages?.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Create-on-first-action: if there's no active session yet, the first
   // message or upload spawns one. We share the in-flight promise so a
@@ -96,6 +119,32 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
       setUploadingFiles(null);
       setUploadStartedAt(null);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    },
+  });
+
+  const orderPhotoMutation = useMutation({
+    mutationFn: uploadOrderPhoto,
+    onMutate: (input) => {
+      setUploadingFiles(input.files.map((f) => f.name));
+      setUploadStartedAt(Date.now());
+    },
+    onSettled: () => {
+      setUploadingFiles(null);
+      setUploadStartedAt(null);
+      if (orderInputRef.current) orderInputRef.current.value = "";
+    },
+  });
+
+  const furniturePhotoMutation = useMutation({
+    mutationFn: uploadFurniturePhoto,
+    onMutate: (input) => {
+      setUploadingFiles(input.files.map((f) => f.name));
+      setUploadStartedAt(Date.now());
+    },
+    onSettled: () => {
+      setUploadingFiles(null);
+      setUploadStartedAt(null);
+      if (furnitureInputRef.current) furnitureInputRef.current.value = "";
     },
   });
 
@@ -196,6 +245,71 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
     [uploadMutation, queryClient], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
+  const handleOrderPhotos = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0 || orderPhotoMutation.isPending) return;
+      try {
+        const s = await ensureSession();
+        const newSession = await orderPhotoMutation.mutateAsync({
+          sessionId: s.id,
+          files,
+        });
+        if (newSession) {
+          queryClient.setQueryData(qk.session(s.id), newSession);
+          setMessages(newSession.messages ?? []);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: `❌ Error leyendo foto de orden: ${msg}` },
+        ]);
+      }
+    },
+    [orderPhotoMutation, queryClient], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  const handleFurniturePhotos = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0 || furniturePhotoMutation.isPending) return;
+      const context = input.trim();
+      try {
+        const s = await ensureSession();
+        const newSession = await furniturePhotoMutation.mutateAsync({
+          sessionId: s.id,
+          files,
+          message: context || undefined,
+        });
+        if (newSession) {
+          queryClient.setQueryData(qk.session(s.id), newSession);
+          setMessages(newSession.messages ?? []);
+          if (context) setInput("");
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: `âŒ Error interpretando foto del pedido: ${msg}` },
+        ]);
+      }
+    },
+    [furniturePhotoMutation, input, queryClient], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const files = clipboardImageFiles(e.clipboardData);
+      if (files.length === 0) return;
+      e.preventDefault();
+      if (pasteMode === "order") {
+        handleOrderPhotos(files);
+      } else {
+        handleFurniturePhotos(files);
+      }
+    },
+    [handleFurniturePhotos, handleOrderPhotos, pasteMode],
+  );
+
   // ---- Drag-and-drop (depth counter avoids the child-flicker issue) ----
   function handleDragEnter(e: React.DragEvent) {
     if (uploadMutation.isPending) return;
@@ -228,6 +342,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
+      onPaste={handlePaste}
     >
       <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-background">
         {messages.length === 0 && (
@@ -235,12 +350,12 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
             {session ? (
               <>
                 Sesión <code className="text-xs">{session.id}</code>. Arrastrá
-                un pliego (PDF / XLSX / imagen) acá, o tipeá para empezar.
+                un pliego acá, pegá una foto de mueble u orden, o tipeá para empezar.
               </>
             ) : (
               <>
-                Nueva conversación. Arrastrá un pliego acá o escribí algo — la
-                sesión se crea cuando mandes el primer mensaje.
+                Nueva conversación. Arrastrá un pliego, pegá una foto de mueble u orden
+                o escribí algo — la sesión se crea con la primera acción.
               </>
             )}
           </div>
@@ -276,6 +391,22 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
           multiple
           className="hidden"
         />
+        <input
+          type="file"
+          ref={orderInputRef}
+          onChange={(e) => handleOrderPhotos(Array.from(e.target.files || []))}
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          className="hidden"
+        />
+        <input
+          type="file"
+          ref={furnitureInputRef}
+          onChange={(e) => handleFurniturePhotos(Array.from(e.target.files || []))}
+          accept="image/png,image/jpeg,image/webp"
+          multiple
+          className="hidden"
+        />
         <div className="flex gap-2 items-end">
           <Button
             type="button"
@@ -287,9 +418,52 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
           >
             <Paperclip className="h-4 w-4" />
           </Button>
+          <div className="flex h-10 rounded-md border bg-background p-1">
+            <Button
+              type="button"
+              variant={pasteMode === "furniture" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => setPasteMode("furniture")}
+              title="Pegar fotos como pedido/mueble para cotizar"
+            >
+              Mueble
+            </Button>
+            <Button
+              type="button"
+              variant={pasteMode === "order" ? "secondary" : "ghost"}
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => setPasteMode("order")}
+              title="Pegar fotos como papel de orden"
+            >
+              Orden
+            </Button>
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={() => furnitureInputRef.current?.click()}
+            disabled={furniturePhotoMutation.isPending}
+            title="Cotizar foto de mueble"
+          >
+            <ImagePlus className="h-4 w-4" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            onClick={() => orderInputRef.current?.click()}
+            disabled={orderPhotoMutation.isPending}
+            title="Leer foto de orden"
+          >
+            <ClipboardList className="h-4 w-4" />
+          </Button>
           <Textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={handlePaste}
             onKeyDown={(e) => {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -377,7 +551,7 @@ function ProcessingBubble({
   return (
     <div className="flex justify-start">
       <div className="bg-primary/10 border border-primary/20 text-foreground text-sm px-3 py-2 rounded-lg max-w-[80%]">
-        <div className="font-semibold mb-1">📎 Procesando pliego</div>
+        <div className="font-semibold mb-1">Procesando adjunto</div>
         <ul className="text-xs text-foreground/80 list-disc pl-5 mb-1">
           {files.map((f, i) => (
             <li key={i} className="break-all">
@@ -386,7 +560,7 @@ function ProcessingBubble({
           ))}
         </ul>
         <div className="text-xs text-foreground/80">
-          analizando con IA y descomponiendo muebles…{" "}
+          analizando con IA…{" "}
           <span className="tabular-nums">({elapsed}s)</span>
         </div>
         <div className="text-[10px] text-primary mt-1">

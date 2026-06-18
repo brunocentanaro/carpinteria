@@ -154,10 +154,10 @@ def _extract_species(text: str, material: str | None = None) -> str:
 
 def _extract_inches(text: str, default: float = 1.0) -> float:
     normalized = norm_text(text)
+    if "pulgada y media" in normalized or "una pulgada y media" in normalized or "1.5" in normalized or "1,5" in normalized:
+        return 1.5
     if "una pulgada" in normalized or "1 pulgada" in normalized or "1'" in normalized:
         return 1.0
-    if "pulgada y media" in normalized or "1.5" in normalized or "1,5" in normalized:
-        return 1.5
     match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:pulgadas?|')", normalized)
     if match:
         return float(match.group(1).replace(",", "."))
@@ -174,8 +174,60 @@ def _extract_leg_section(text: str) -> tuple[float, float] | None:
     return float(match.group(1).replace(",", ".")), float(match.group(2).replace(",", "."))
 
 
+def _extract_quantity(text: str, default: int = 1) -> int:
+    normalized = norm_text(text)
+    match = re.search(
+        r"\b(\d{1,4})\s*(?:cortes?|discos?|redondos?|redondas?|piezas?|tablas?)\b",
+        normalized,
+    )
+    if match:
+        return max(1, int(match.group(1)))
+    return max(1, int(default or 1))
+
+
+def _extract_round_cut_diameter_mm(text: str, width_mm: float | None = None, depth_mm: float | None = None) -> float | None:
+    normalized = norm_text(text).replace(",", ".")
+    if not any(token in normalized for token in ("redondo", "redonda", "circulo", "circular", "disco")):
+        return None
+    explicit = re.search(
+        r"(?:diametro|diam|redond[oa]s?\s+de|discos?\s+de)\s*(\d+(?:\.\d+)?)\s*(mm|cm|mts?|metros?)?\b",
+        normalized,
+    )
+    if explicit:
+        value = float(explicit.group(1))
+        unit = explicit.group(2) or "mm"
+        if unit.startswith("cm"):
+            return value * 10
+        if unit.startswith("m"):
+            return value * 1000
+        return value
+    pair = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*(mm|cm|mts?|metros?)?\b",
+        normalized,
+    )
+    if pair:
+        a = float(pair.group(1))
+        b = float(pair.group(2))
+        unit = pair.group(3) or "mm"
+        value = max(a, b)
+        if unit.startswith("cm"):
+            return value * 10
+        if unit.startswith("m"):
+            return value * 1000
+        return value
+    if width_mm and depth_mm and abs(float(width_mm) - float(depth_mm)) <= max(float(width_mm), float(depth_mm)) * 0.08:
+        return max(float(width_mm), float(depth_mm))
+    return None
+
+
 def _dimensions_from_text(text: str) -> tuple[float | None, float | None, float | None]:
     normalized = norm_text(text).replace(",", ".")
+    cm_match = re.search(
+        r"\b(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*cm\b",
+        normalized,
+    )
+    if cm_match:
+        return float(cm_match.group(1)) * 10, float(cm_match.group(3)) * 10, float(cm_match.group(2)) * 10
     nums = [float(n) for n in re.findall(r"\b\d+(?:\.\d+)?\b", normalized)]
     meters = [n for n in nums if 0.1 <= n <= 5]
     if len(meters) >= 3:
@@ -201,6 +253,24 @@ def _match_material(
     exact = [m for m in scoped if abs(m.thickness_in - thickness_in) < 0.01]
     if exact:
         return sorted(exact, key=lambda m: abs((width_in or m.width_in) - m.width_in))[0]
+    thinner = [m for m in scoped if m.thickness_in < thickness_in]
+    thicker = [m for m in scoped if m.thickness_in > thickness_in]
+    if thinner and thicker:
+        low = max(thinner, key=lambda m: m.thickness_in)
+        high = min(thicker, key=lambda m: m.thickness_in)
+        span = high.thickness_in - low.thickness_in
+        ratio = (thickness_in - low.thickness_in) / span if span else 0
+        price = low.price_uyu + (high.price_uyu - low.price_uyu) * ratio
+        return WoodMaterial(
+            id=f"{low.species or species} estimado {thickness_in:g}'",
+            species=low.species or species,
+            features="Estimado por interpolacion",
+            thickness_in=thickness_in,
+            length_m=low.length_m or high.length_m,
+            width_in=width_in or low.width_in or high.width_in,
+            price_uyu=round(price, 2),
+            supplier="estimado",
+        )
     return min(scoped, key=lambda m: abs(m.thickness_in - thickness_in))
 
 
@@ -219,6 +289,21 @@ def quote_solid_wood_table(
     profit_percent: float = PROFIT_PERCENT,
     labor_day_price_uyu: float = LABOR_DAY_PRICE_UYU,
 ) -> Quotation:
+    round_diameter_mm = _extract_round_cut_diameter_mm(description, width_mm=width_mm, depth_mm=depth_mm)
+    if round_diameter_mm:
+        return quote_round_wood_cuts(
+            description=description,
+            name=name,
+            quantity=_extract_quantity(description, quantity),
+            diameter_mm=round_diameter_mm,
+            material=material,
+            thickness_mm=thickness_mm,
+            waste_percent=max(waste_percent, 20),
+            machinery_percent=machinery_percent,
+            profit_percent=profit_percent,
+            labor_day_price_uyu=labor_day_price_uyu,
+        )
+
     if not (width_mm and height_mm and depth_mm):
         parsed_w, parsed_h, parsed_d = _dimensions_from_text(description)
         width_mm = width_mm or parsed_w
@@ -331,5 +416,83 @@ def quote_solid_wood_table(
             "board_count_for_width": board_count,
             "base_linear_m_top": base_linear_m,
             "top_total_linear_m": top_total_linear_m,
+        },
+    )
+
+
+def quote_round_wood_cuts(
+    *,
+    description: str,
+    name: str,
+    quantity: int = 1,
+    diameter_mm: float,
+    material: str | None = None,
+    thickness_mm: float | None = None,
+    waste_percent: float = 20,
+    machinery_percent: float = MACHINERY_PERCENT,
+    profit_percent: float = PROFIT_PERCENT,
+    labor_day_price_uyu: float = LABOR_DAY_PRICE_UYU,
+) -> Quotation:
+    species = _extract_species(description, material)
+    thickness_in = _extract_inches(description, (thickness_mm or 38.1) / 25.4 if thickness_mm else 1.5)
+    materials = load_wood_materials()
+    board = _match_material(materials, species=species, thickness_in=thickness_in)
+
+    units = _extract_quantity(description, quantity)
+    diameter_m = diameter_mm / 1000
+    diameter_cm = diameter_mm / 10
+    strips_per_disk = max(1, math.ceil(diameter_cm / board.width_cm_for_quote))
+    base_linear_m = strips_per_disk * diameter_m * units
+    total_linear_m = base_linear_m * (1 + waste_percent / 100)
+    material_amount = round(total_linear_m * board.price_per_meter_uyu, 2)
+    cut_labor_days = max(0.25, 0.025 * units)
+    cut_labor = round(cut_labor_days * labor_day_price_uyu, 2)
+    machinery_amount = round((material_amount + cut_labor) * machinery_percent / 100, 2)
+
+    lines = [
+        QuotationLine(
+            concept=f"{board.id} - madera para {units} cortes redondos de {diameter_cm:.1f}cm ({strips_per_disk} tiras por corte + {waste_percent:.0f}% merma)",
+            quantity=round(total_linear_m, 2),
+            unit="metro",
+            unit_price=round(board.price_per_meter_uyu, 2),
+            subtotal=material_amount,
+        ),
+        QuotationLine(
+            concept=f"Corte redondo / calado ({units} unidades)",
+            quantity=units,
+            unit="unidad",
+            unit_price=round(cut_labor / units, 2),
+            subtotal=cut_labor,
+        ),
+        QuotationLine(
+            concept=f"Maquinaria / cargos fabriles ({machinery_percent:.0f}%)",
+            quantity=1,
+            unit="recargo",
+            unit_price=machinery_amount,
+            subtotal=machinery_amount,
+        ),
+    ]
+    subtotal = round(sum(line.subtotal for line in lines), 2)
+    profit = round(subtotal * profit_percent / 100, 2)
+    total = round(subtotal + profit, 2)
+    return Quotation(
+        lines=lines,
+        subtotal=subtotal,
+        margin_percent=profit_percent,
+        margin_amount=profit,
+        total=total,
+        notes=(
+            "Cotizacion por cortes redondos de madera maciza. "
+            "Se calcula como piezas armadas desde tiras/tablas por ancho util; no usa placas ni cantos."
+        ),
+        metadata={
+            "quote_type": "madera_maciza",
+            "subtype": "cortes_redondos",
+            "wood_material": board.__dict__,
+            "units": units,
+            "diameter_mm": diameter_mm,
+            "strips_per_disk": strips_per_disk,
+            "base_linear_m": base_linear_m,
+            "total_linear_m": total_linear_m,
         },
     )

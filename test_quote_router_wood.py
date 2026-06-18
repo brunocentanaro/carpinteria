@@ -63,6 +63,29 @@ def test_tablones_route_to_solid_wood_not_panels():
     assert route.allowed_sources == ("Datos Maderas",)
 
 
+def test_round_pine_cuts_quote_without_height():
+    route = classify_quote_type(
+        "me das 20 cortes de tablas redonda de madera de 33x33cm en pino nacional, espesor una pulgada y media"
+    )
+    quote = quote_solid_wood_table(
+        description=(
+            "me das 20 cortes de tablas redonda de madera de 33x33cm en pino nacional, "
+            "espesor una pulgada y media"
+        ),
+        name="cortes redondos",
+        quantity=1,
+        material="pino nacional",
+        thickness_mm=38.1,
+    )
+    concepts = [line.concept for line in quote.lines]
+    assert route.quote_type == "madera_maciza"
+    assert quote.metadata["subtype"] == "cortes_redondos"
+    assert quote.metadata["diameter_mm"] == 330
+    assert any("20 cortes redondos" in concept for concept in concepts)
+    ok, forbidden = validate_quote_lines(route, concepts)
+    assert ok, forbidden
+
+
 def test_non_white_melamine_prefers_color_texture_reference():
     def placa(sku: str, nombre: str, precio: float) -> Producto:
         return Producto(

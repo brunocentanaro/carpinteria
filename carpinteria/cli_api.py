@@ -424,13 +424,17 @@ def handle_quote_item(data: dict) -> dict:
     if not canto:
         warnings.append(f"No se encontro canto para '{eb_name or color}'. Se cotiza sin canto.")
 
-    destination = _effective_destination(data.get("destination", ""))
+    general_specs = data.get("general_specs") or {}
+    explicit_destination = bool(data.get("destination") or general_specs.get("delivery_location"))
+    destination = _effective_destination(str(data.get("destination") or general_specs.get("delivery_location") or ""))
     shipping = default_shipping_provider() if destination else None
 
     payment_days = data.get("payment_days")
     if isinstance(payment_days, int) and payment_days <= 0:
         payment_days = None
-    payment_days = _effective_payment_days(payment_days, str((data.get("general_specs") or {}).get("payment_terms", "")))
+    payment_terms = str(general_specs.get("payment_terms", "") or "")
+    explicit_payment_terms = bool(payment_days or payment_terms)
+    payment_days = _effective_payment_days(payment_days, payment_terms)
 
     # Hardware: agent already chose curated codes; we just attach the
     # user-provided price (if any). Hardware is part of inputs before profit,
@@ -499,6 +503,10 @@ def handle_quote_item(data: dict) -> dict:
     result["_tc"] = tc
     result["_tc_source"] = f"BCU {tc_fecha}"
     result["_payment_days"] = payment_days or 0
+    result["_payment_terms"] = payment_terms
+    result["_destination"] = destination
+    result["_has_explicit_payment_terms"] = explicit_payment_terms
+    result["_has_explicit_destination"] = explicit_destination
     result["item_code"] = item.get("code", "")
     result["item_name"] = item.get("name", "")
     result["item_quantity"] = int(item.get("quantity", 1))
@@ -542,6 +550,112 @@ def handle_export_excel(data: dict) -> dict:
             c.font = hfw
             c.fill = hfill
             c.border = bdr
+
+    def write_wood_quote_sheet(ws, q: dict) -> None:
+        metadata = q.get("metadata") or {}
+        wood = metadata.get("wood_material") or metadata.get("top_material") or {}
+        lines = list(q.get("lines") or [])
+        dims = q.get("dimensions") or {}
+        subtype = str(metadata.get("subtype") or "")
+
+        ws.cell(row=1, column=1, value=f"{q.get('item_code', '?')} - {q.get('item_name', '')}").font = Font(bold=True, size=14)
+        ws.cell(row=2, column=1, value="TOTAL UNITARIO ->").font = Font(bold=True, size=13)
+        ws.cell(row=2, column=2, value=float(q.get("total_with_hardware") or q.get("total") or 0))
+        ws.cell(row=2, column=2).font = Font(bold=True, size=13)
+        ws.cell(row=2, column=2).number_format = money
+        ws.cell(row=3, column=2, value="=B2")
+        ws.cell(row=3, column=2).number_format = money
+
+        ws.cell(row=5, column=1, value="LECTURA DEL PEDIDO").font = hf
+        ws.cell(row=5, column=1).fill = pfill
+        specs = [
+            ("Tipo", "Madera maciza - cortes circulares" if subtype == "cortes_redondos" else "Madera maciza"),
+            ("Descripcion", q.get("description") or q.get("item_name") or ""),
+            ("Cantidad item", q.get("item_quantity", 1)),
+            ("Material solicitado", q.get("material") or ""),
+            ("Espesor solicitado mm", q.get("thickness_mm") or ""),
+            ("Ancho mm", dims.get("width_mm") or q.get("width_mm") or ""),
+            ("Alto mm", dims.get("height_mm") or q.get("height_mm") or ""),
+            ("Profundidad mm", dims.get("depth_mm") or q.get("depth_mm") or ""),
+        ]
+        if subtype == "cortes_redondos":
+            specs.extend([
+                ("Cantidad de cortes", metadata.get("units") or ""),
+                ("Diametro disco mm", metadata.get("diameter_mm") or ""),
+                ("Tiras por disco", metadata.get("strips_per_disk") or ""),
+                ("Metros base", metadata.get("base_linear_m") or ""),
+                ("Metros con merma", metadata.get("total_linear_m") or ""),
+            ])
+        for offset, (label, value) in enumerate(specs, 6):
+            ws.cell(row=offset, column=1, value=label).font = hf
+            ws.cell(row=offset, column=2, value=value).border = bdr
+
+        material_row = 6 + len(specs) + 2
+        ws.cell(row=material_row, column=1, value="MADERA USADA PARA COTIZAR").font = hf
+        ws.cell(row=material_row, column=1).fill = pfill
+        wood_specs = [
+            ("Referencia", wood.get("id") or ""),
+            ("Especie", wood.get("species") or q.get("material") or ""),
+            ("Caracteristica", wood.get("features") or ""),
+            ("Espesor pulgadas", wood.get("thickness_in") or ""),
+            ("Ancho pulgadas", wood.get("width_in") or ""),
+            ("Largo tabla m", wood.get("length_m") or ""),
+            ("Precio tabla UYU", wood.get("price_uyu") or ""),
+            ("Fuente", wood.get("supplier") or ""),
+        ]
+        for offset, (label, value) in enumerate(wood_specs, material_row + 1):
+            ws.cell(row=offset, column=1, value=label).font = hf
+            ws.cell(row=offset, column=2, value=value).border = bdr
+            if "Precio" in label:
+                ws.cell(row=offset, column=2).number_format = money
+
+        detail_row = material_row + len(wood_specs) + 3
+        ws.cell(row=detail_row, column=1, value="DESGLOSE DEL PRESUPUESTO").font = hf
+        ws.cell(row=detail_row, column=1).fill = pfill
+        detail_row += 1
+        hdr(ws, detail_row, ["Concepto", "Cantidad", "Unidad", "Precio unit. UYU", "Subtotal UYU"])
+        detail_row += 1
+        detail_start = detail_row
+        for line in lines:
+            ws.cell(row=detail_row, column=1, value=line.get("concept", "")).border = bdr
+            ws.cell(row=detail_row, column=2, value=float(line.get("quantity", 0) or 0)).border = bdr
+            ws.cell(row=detail_row, column=3, value=line.get("unit", "")).border = bdr
+            ws.cell(row=detail_row, column=4, value=float(line.get("unit_price", 0) or 0)).border = bdr
+            ws.cell(row=detail_row, column=4).number_format = money
+            ws.cell(row=detail_row, column=5, value=float(line.get("subtotal", 0) or 0)).border = bdr
+            ws.cell(row=detail_row, column=5).number_format = money
+            detail_row += 1
+        detail_end = detail_row - 1
+
+        totals_row = detail_row + 1
+        ws.cell(row=totals_row, column=4, value="SUBTOTAL").font = hf
+        ws.cell(row=totals_row, column=5, value=f"=SUM(E{detail_start}:E{detail_end})")
+        ws.cell(row=totals_row, column=5).number_format = money
+        subtotal_cell = f"E{totals_row}"
+        totals_row += 1
+        margin_percent = float(q.get("margin_percent", 0) or 0) / 100
+        ws.cell(row=totals_row, column=4, value=f"GANANCIA ({float(q.get('margin_percent', 0) or 0):.0f}%)").font = hf
+        ws.cell(row=totals_row, column=5, value=f"={subtotal_cell}*{margin_percent}")
+        ws.cell(row=totals_row, column=5).number_format = money
+        margin_cell = f"E{totals_row}"
+        totals_row += 1
+        ws.cell(row=totals_row, column=4, value="TOTAL UNITARIO").font = Font(bold=True, size=13)
+        ws.cell(row=totals_row, column=5, value=f"={subtotal_cell}+{margin_cell}")
+        ws.cell(row=totals_row, column=5).font = Font(bold=True, size=13)
+        ws.cell(row=totals_row, column=5).number_format = money
+        ws["B2"] = f"=E{totals_row}"
+        ws["B3"] = f"=E{totals_row}"
+
+        note_row = totals_row + 2
+        ws.cell(row=note_row, column=1, value="NOTA").font = hf
+        ws.cell(row=note_row, column=2, value=q.get("notes") or "Cotizacion en madera maciza. No usa placas ni cantos.").border = bdr
+        ws.merge_cells(start_row=note_row, start_column=2, end_row=note_row, end_column=5)
+
+        ws.column_dimensions["A"].width = 58
+        ws.column_dimensions["B"].width = 18
+        ws.column_dimensions["C"].width = 14
+        ws.column_dimensions["D"].width = 18
+        ws.column_dimensions["E"].width = 18
 
     ws_r = wb.active
     ws_r.title = "Resumen"
@@ -611,6 +725,10 @@ def handle_export_excel(data: dict) -> dict:
         # A1: titulo, B1: label parametros
         ws.cell(row=1, column=1, value=f"{code} - {q.get('item_name', '')}").font = Font(bold=True, size=14)
 
+        if (q.get("metadata") or {}).get("quote_type") == "madera_maciza":
+            write_wood_quote_sheet(ws, q)
+            continue
+
         # Row 2: parametros editables
         ws.cell(row=2, column=1, value="TOTAL UNITARIO →").font = Font(bold=True, size=13)
         # B3 will hold the final total formula, set later
@@ -626,10 +744,20 @@ def handle_export_excel(data: dict) -> dict:
             ("A11", "% Ganancia"), ("A12", "% Recargo financiero"),
             ("A13", "Flete base UYU"), ("A14", "Empleados descarga"), ("A15", "Horas descarga"),
             ("A16", "Jornal descarga UYU"), ("A17", "Cantidad entrega"),
+            ("A18", "Base / ancho mueble mm"), ("A19", "Alto mueble mm"), ("A20", "Profundidad / fondo mm"),
+            ("A21", "Incluir recargo financiero (0/1)"), ("A22", "Incluir flete / descarga (0/1)"),
+            ("A23", "Incluir colocacion (0/1)"), ("A24", "Incluir pintura (0/1)"),
+            ("A25", "Incluir barniz (0/1)"), ("A26", "Incluir lustre (0/1)"),
+            ("A27", "Colocacion unitario UYU"), ("A28", "Pintura unitario UYU"),
+            ("A29", "Barniz unitario UYU"), ("A30", "Lustre unitario UYU"),
         ]
         decomp = q.get("decomposition", {})
         pieces = [p for p in decomp.get("pieces", []) if not _is_drawer_base_piece(p)]
         n_cuts = sum(p.get("quantity", 1) * 2 for p in pieces)
+        dims = q.get("dimensions") or {}
+        base_width_mm = float(dims.get("width_mm") or q.get("width_mm") or 0)
+        base_height_mm = float(dims.get("height_mm") or q.get("height_mm") or 0)
+        base_depth_mm = float(dims.get("depth_mm") or q.get("depth_mm") or 0)
 
         try:
             for anchor, image_path in _make_plan_images(q, image_tmp):
@@ -669,6 +797,13 @@ def handle_export_excel(data: dict) -> dict:
         else:
             rec_fin_pct = 0.13
 
+        include_financial = 1 if q.get("_has_explicit_payment_terms") else 0
+        include_shipping = 1 if q.get("_has_explicit_destination") else 0
+        include_installation = 1 if additional_services.get("installation") else 0
+        include_painting = 1 if additional_services.get("painting") else 0
+        include_varnishing = 1 if additional_services.get("varnishing") else 0
+        include_polishing = 1 if additional_services.get("polishing") else 0
+
         param_vals = {
             "B5": q.get("_tc", 40),
             "B6": CUTS_PERCENT / 100,
@@ -683,6 +818,19 @@ def handle_export_excel(data: dict) -> dict:
             "B15": SHIPPING_UNLOAD_HOURS,
             "B16": SHIPPING_UNLOAD_DAY_PRICE_UYU,
             "B17": int(q.get("item_quantity", 1) or 1),
+            "B18": base_width_mm,
+            "B19": base_height_mm,
+            "B20": base_depth_mm,
+            "B21": include_financial,
+            "B22": include_shipping,
+            "B23": include_installation,
+            "B24": include_painting,
+            "B25": include_varnishing,
+            "B26": include_polishing,
+            "B27": SHIPPING_UNLOAD_DAY_PRICE_UYU,
+            "B28": 0,
+            "B29": 0,
+            "B30": 0,
         }
         destination_for_flete = str(q.get("_destination", "") or "")
         from carpinteria.shipping import DEFAULT_SHIPPING_RATES
@@ -702,11 +850,24 @@ def handle_export_excel(data: dict) -> dict:
             ws[cell_ref].border = bdr
             if "%" in (dict(param_labels).get("A" + cell_ref[1:], "")):
                 ws[cell_ref].number_format = pct_fmt
-            elif cell_ref in ("B13", "B16"):
+            elif cell_ref in ("B13", "B16", "B27", "B28", "B29", "B30"):
                 ws[cell_ref].number_format = money
 
-        # Row 19: Piezas de placa
-        r = 19
+        def _base_dim_formula(value: object) -> object:
+            try:
+                n = float(value or 0)
+            except Exception:
+                return value
+            if base_width_mm and abs(n - base_width_mm) < 0.01:
+                return "=$B$18"
+            if base_height_mm and abs(n - base_height_mm) < 0.01:
+                return "=$B$19"
+            if base_depth_mm and abs(n - base_depth_mm) < 0.01:
+                return "=$B$20"
+            return n
+
+        # Row 32: Piezas de placa
+        r = 32
         ws.cell(row=r, column=1, value="PIEZAS DE PLACA").font = Font(bold=True, size=11)
         ws.cell(row=r, column=1).fill = pfill
         r += 1
@@ -719,13 +880,28 @@ def handle_export_excel(data: dict) -> dict:
             qty = p.get("quantity", 1)
             edges = p.get("edge_sides", [])
             ws.cell(row=r, column=1, value=p.get("label", "")).border = bdr
-            ws.cell(row=r, column=2, value=w).border = bdr
-            ws.cell(row=r, column=3, value=h).border = bdr
+            ws.cell(row=r, column=2, value=_base_dim_formula(w)).border = bdr
+            ws.cell(row=r, column=3, value=_base_dim_formula(h)).border = bdr
             ws.cell(row=r, column=4, value=qty).border = bdr
             ws.cell(row=r, column=5, value=", ".join(edges) if edges else "sin canto").border = bdr
             ws.cell(row=r, column=6, value=f"=B{r}*C{r}*D{r}/1000000").border = bdr
             ws.cell(row=r, column=6).number_format = '0.0000'
-            ws.cell(row=r, column=7, value=f"=2*(B{r}+C{r})*D{r}/1000").border = bdr
+            edge_formula_parts = []
+            edge_set = {str(edge).strip().lower() for edge in edges}
+            if "top" in edge_set:
+                edge_formula_parts.append(f"B{r}")
+            if "bottom" in edge_set:
+                edge_formula_parts.append(f"B{r}")
+            if "front" in edge_set:
+                edge_formula_parts.append(f"C{r}" if any(token in str(p.get("label", "")).lower() for token in ("lateral", "costado")) else f"B{r}")
+            if "back" in edge_set:
+                edge_formula_parts.append(f"C{r}" if any(token in str(p.get("label", "")).lower() for token in ("lateral", "costado")) else f"B{r}")
+            if "left" in edge_set:
+                edge_formula_parts.append(f"C{r}")
+            if "right" in edge_set:
+                edge_formula_parts.append(f"C{r}")
+            edge_formula = "+".join(edge_formula_parts) if edge_formula_parts else "0"
+            ws.cell(row=r, column=7, value=f"=({edge_formula})*D{r}/1000").border = bdr
             ws.cell(row=r, column=7).number_format = '0.00'
             r += 1
         piece_end = r - 1
@@ -740,6 +916,41 @@ def handle_export_excel(data: dict) -> dict:
         ws.cell(row=r, column=7).number_format = '0.00'
         canto_total_cell = f"G{r}"
         r += 2
+
+        board_meta = ((q.get("metadata") or {}).get("selected_placa") or {})
+        if board_meta:
+            ws.cell(row=5, column=9, value="BASE CALCULO PLACA").font = hf
+            ws.cell(row=5, column=9).fill = pfill
+            board_area = float(board_meta.get("area_m2") or 0)
+            board_price = float(board_meta.get("unit_price_uyu") or 0)
+            board_price_usd = board_price / float(param_vals.get("B5") or 1)
+            contingency_pct = float(board_meta.get("partial_contingency_percent") or 0) / 100
+            board_calc_rows = [
+                ("Placa elegida", board_meta.get("nombre") or ""),
+                ("Medida placa", f"{board_meta.get('largo_mm') or '-'} x {board_meta.get('ancho_mm') or '-'} mm"),
+                ("Area placa m2", board_area),
+                ("Precio placa USD", board_price_usd),
+                ("Precio placa UYU", board_price),
+                ("Area usada m2", f"={area_total_cell}"),
+                ("% area usada", f"=J11/J8" if board_area else 0),
+                ("Margen placa parcial", contingency_pct),
+                ("Precio proporcional UYU", f"=MIN(J10,J11/J8*J10*(1+J13))" if board_area else 0),
+            ]
+            for idx, (label, value) in enumerate(board_calc_rows, 6):
+                ws.cell(row=idx, column=9, value=label).font = hf
+                ws.cell(row=idx, column=10, value=value).border = bdr
+                if idx in (9, 10, 14):
+                    ws.cell(row=idx, column=10).number_format = money
+                elif idx in (8, 11):
+                    ws.cell(row=idx, column=10).number_format = "0.0000"
+                elif idx in (12, 13):
+                    ws.cell(row=idx, column=10).number_format = pct_fmt
+            ws.cell(row=16, column=9, value="Nota").font = hf
+            ws.cell(
+                row=16,
+                column=10,
+                value="La placa parcial se calcula por area usada / area de placa, con margen de placa parcial.",
+            ).border = bdr
 
         # Insumos: placas
         ws.cell(row=r, column=1, value="INSUMOS").font = Font(bold=True, size=11)
@@ -761,7 +972,6 @@ def handle_export_excel(data: dict) -> dict:
                 ws.cell(row=r, column=5, value=f"=D{r}*B5").border = bdr
                 ws.cell(row=r, column=5).number_format = money
                 if "placa" in concept:
-                    board_meta = ((q.get("metadata") or {}).get("selected_placa") or {})
                     board_area = float(board_meta.get("area_m2") or 0)
                     contingency = float(board_meta.get("partial_contingency_percent") or 7.5) / 100
                     if board_area > 0:
@@ -858,25 +1068,66 @@ def handle_export_excel(data: dict) -> dict:
         total_base_cell = f"F{r}"
         r += 1
 
-        ws.cell(row=r, column=5, value="REC. FINANCIERO")
+        ws.cell(row=r, column=5, value="OPCIONALES").font = hf
+        ws.cell(row=r, column=6, value="Valor unitario").font = hf
+        ws.cell(row=r, column=7, value="Aplicado al total").font = hf
+        r += 1
+
+        ws.cell(row=r, column=5, value="REC. FINANCIERO (unitario)")
         ws.cell(row=r, column=6, value=f"={total_base_cell}*B12")
         ws.cell(row=r, column=6).number_format = money
-        fin_cell = f"F{r}"
+        ws.cell(row=r, column=7, value=f"=F{r}*B21")
+        ws.cell(row=r, column=7).number_format = money
+        fin_cell = f"G{r}"
         r += 1
 
-        ws.cell(row=r, column=5, value="FLETE")
+        ws.cell(row=r, column=5, value="FLETE / DESCARGA (unitario)")
         ws.cell(row=r, column=6, value=f"=(B13+(B14*B15/{LABOR_DAY_HOURS}*B16))/MAX(1,B17)")
         ws.cell(row=r, column=6).number_format = money
-        flete_cell = f"F{r}"
+        ws.cell(row=r, column=7, value=f"=F{r}*B22")
+        ws.cell(row=r, column=7).number_format = money
+        flete_cell = f"G{r}"
         r += 1
 
-        ws.cell(row=r, column=5, value="SERVICIOS ADICIONALES")
+        ws.cell(row=r, column=5, value="COLOCACION (unitario)")
+        ws.cell(row=r, column=6, value="=B27")
+        ws.cell(row=r, column=6).number_format = money
+        ws.cell(row=r, column=7, value=f"=F{r}*B23")
+        ws.cell(row=r, column=7).number_format = money
+        colocacion_cell = f"G{r}"
+        r += 1
+
+        ws.cell(row=r, column=5, value="PINTURA (unitario)")
+        ws.cell(row=r, column=6, value="=B28")
+        ws.cell(row=r, column=6).number_format = money
+        ws.cell(row=r, column=7, value=f"=F{r}*B24")
+        ws.cell(row=r, column=7).number_format = money
+        pintura_cell = f"G{r}"
+        r += 1
+
+        ws.cell(row=r, column=5, value="BARNIZ (unitario)")
+        ws.cell(row=r, column=6, value="=B29")
+        ws.cell(row=r, column=6).number_format = money
+        ws.cell(row=r, column=7, value=f"=F{r}*B25")
+        ws.cell(row=r, column=7).number_format = money
+        barniz_cell = f"G{r}"
+        r += 1
+
+        ws.cell(row=r, column=5, value="LUSTRE (unitario)")
+        ws.cell(row=r, column=6, value="=B30")
+        ws.cell(row=r, column=6).number_format = money
+        ws.cell(row=r, column=7, value=f"=F{r}*B26")
+        ws.cell(row=r, column=7).number_format = money
+        lustre_cell = f"G{r}"
+        r += 1
+
+        ws.cell(row=r, column=5, value="SERVICIOS ACTIVADOS")
         ws.cell(row=r, column=6, value=_additional_services_text(additional_services))
         ws.cell(row=r, column=6).border = bdr
         r += 1
 
         ws.cell(row=r, column=5, value="TOTAL UNITARIO").font = Font(bold=True, size=14)
-        ws.cell(row=r, column=6, value=f"={total_base_cell}+{fin_cell}+{flete_cell}")
+        ws.cell(row=r, column=6, value=f"={total_base_cell}+{fin_cell}+{flete_cell}+{colocacion_cell}+{pintura_cell}+{barniz_cell}+{lustre_cell}")
         ws.cell(row=r, column=6).font = Font(bold=True, size=14)
         ws.cell(row=r, column=6).number_format = money
         total_cell = f"F{r}"
@@ -1790,6 +2041,7 @@ def handle_session_archive(data: dict) -> dict:
         brand_id=data.get("brand_id") if data.get("brand_id") else None,
         area=data.get("area") if data.get("area") else None,
         year=int(data.get("year") or 2026),
+        limit=int(data.get("limit") or 1000),
     )
     return {"months": months}
 
@@ -1812,6 +2064,164 @@ def handle_session_ingest_pliego(data: dict) -> dict:
     return {"summary": summary, "session": s.model_dump(mode="json") if s else None}
 
 
+def _money_or_none(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        amount = float(str(value).replace(".", "").replace(",", "."))
+    except (TypeError, ValueError):
+        return None
+    return amount if amount >= 0 else None
+
+
+def handle_session_ingest_order_photo(data: dict) -> dict:
+    from carpinteria.order_photo import analyze_order_photo
+    from carpinteria.quotation_session import append_message, get_session, save_session
+
+    sid = str(data.get("session_id") or "")
+    file_paths = list(data.get("file_paths") or [])
+    if not sid or not file_paths:
+        return {"error": "missing session_id or file_paths"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+
+    extracted = analyze_order_photo(file_paths)
+    if extracted.get("order_number"):
+        s.order_number = extracted["order_number"]
+        if s.order_created_at is None:
+            from datetime import datetime, timezone
+            s.order_created_at = datetime.now(timezone.utc)
+    if extracted.get("client_name"):
+        s.client_name = extracted["client_name"]
+    if extracted.get("client_phone"):
+        s.client_phone = extracted["client_phone"]
+    if extracted.get("order_summary"):
+        s.order_summary = extracted["order_summary"]
+    if extracted.get("payment_status"):
+        s.payment_status = extracted["payment_status"]
+    if extracted.get("payment_notes"):
+        s.payment_notes = extracted["payment_notes"]
+
+    deposit = _money_or_none(extracted.get("deposit_amount"))
+    final_payment = _money_or_none(extracted.get("final_payment_amount"))
+    if deposit is not None:
+        s.deposit_amount = deposit
+        s.client_accepted = "yes"
+    if final_payment is not None:
+        s.final_payment_amount = final_payment
+        s.payment_status = "paid"
+    if s.payment_status == "deposit" and s.client_accepted == "pending":
+        s.client_accepted = "yes"
+
+    save_session(s)
+    lines = ["Leí la foto de la orden y actualicé estos datos:"]
+    labels = [
+        ("Nro. orden", s.order_number),
+        ("Cliente", s.client_name),
+        ("Teléfono", s.client_phone),
+        ("Pedido", s.order_summary),
+        ("Pago", _payment_status_label(s.payment_status)),
+        ("Seña", f"UYU {s.deposit_amount:,.2f}" if s.deposit_amount else ""),
+        ("Pago final", f"UYU {s.final_payment_amount:,.2f}" if s.final_payment_amount else ""),
+    ]
+    for label, value in labels:
+        if value:
+            lines.append(f"- {label}: {value}")
+    if s.payment_notes:
+        lines.append(f"- Nota de pago: {s.payment_notes}")
+    summary = "\n".join(lines)
+    append_message(s.id, "assistant", summary)
+    fresh = get_session(s.id) or s
+    return {
+        "extracted": extracted,
+        "summary": summary,
+        "session": fresh.model_dump(mode="json"),
+    }
+
+
+def handle_session_ingest_furniture_photo(data: dict) -> dict:
+    from carpinteria.agents.cotizador_chat import (
+        _format_item_summary,
+        _item_from_description,
+        _recalculate_item,
+        _upsert_similar_item,
+    )
+    from carpinteria.furniture_photo import analyze_furniture_photo
+    from carpinteria.quotation_session import append_message, get_session, save_session
+
+    sid = str(data.get("session_id") or "")
+    file_paths = list(data.get("file_paths") or [])
+    context = str(data.get("message") or "")
+    if not sid or not file_paths:
+        return {"error": "missing session_id or file_paths"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+
+    extracted = analyze_furniture_photo(file_paths, context=context)
+    missing = list(extracted.get("missing_inputs") or [])
+    if extracted.get("needs_clarification"):
+        lines = ["Vi la foto, pero necesito confirmar algunos datos antes de cotizar:"]
+        for item in missing:
+            lines.append(f"- {item}")
+        notes = str(extracted.get("notes") or "").strip()
+        if notes:
+            lines.append(f"\nLo que pude leer: {notes}")
+        summary = "\n".join(lines)
+        append_message(s.id, "assistant", summary)
+        fresh = get_session(s.id) or s
+        return {
+            "extracted": extracted,
+            "summary": summary,
+            "session": fresh.model_dump(mode="json"),
+        }
+
+    dims = extracted.get("dimensions") or {}
+    description_parts = [
+        str(extracted.get("description") or ""),
+        str(extracted.get("notes") or ""),
+        context,
+    ]
+    description = "\n".join(part.strip() for part in description_parts if part.strip())
+    item = _item_from_description(
+        session=s,
+        code=None,
+        name=str(extracted.get("name") or "mueble a medida"),
+        description=description,
+        quantity=int(extracted.get("quantity") or 1),
+        width_mm=dims.get("width_mm"),
+        height_mm=dims.get("height_mm"),
+        depth_mm=dims.get("depth_mm"),
+        material=str(extracted.get("material") or ""),
+        thickness_mm=extracted.get("thickness_mm"),
+        color=str(extracted.get("color") or ""),
+        edge_banding=str(extracted.get("edge_banding") or ""),
+    )
+    item, replaced_code = _upsert_similar_item(s, item)
+    _recalculate_item(item, s)
+    save_session(s)
+
+    prefix = "Interpreté la foto del mueble y actualicé la cotización:" if replaced_code else "Interpreté la foto del mueble y lo coticé:"
+    summary = f"{prefix}\n\n{_format_item_summary(item)}"
+    append_message(s.id, "assistant", summary)
+    fresh = get_session(s.id) or s
+    return {
+        "extracted": extracted,
+        "summary": summary,
+        "session": fresh.model_dump(mode="json"),
+    }
+
+
+def _payment_status_label(status: str) -> str:
+    return {
+        "none": "No pago nada aun",
+        "deposit": "Seño",
+        "paid": "Pago",
+        "unknown": "A confirmar",
+    }.get(status, "A confirmar")
+
+
 def _recalc_all_items(session) -> None:
     """Reuse one catalog/TC/hw_prices fetch across every item recalculation.
 
@@ -1828,6 +2238,15 @@ def _recalc_all_items(session) -> None:
             _recalculate_item(it, session, catalog=catalog, tc=tc, hw_prices=hw_prices)
         except Exception:
             pass
+
+
+def _save_with_chat_note(session, note: str):
+    from carpinteria.quotation_session import append_message, get_session, save_session
+    save_session(session)
+    clean = str(note or "").strip()
+    if clean:
+        append_message(session.id, "assistant", clean)
+    return get_session(session.id) or session
 
 
 def handle_session_update(data: dict) -> dict:
@@ -1860,7 +2279,22 @@ def handle_session_update(data: dict) -> dict:
         s.additional_services = type(s.additional_services)(**current)
 
     _recalc_all_items(s)
-    save_session(s)
+    chat_note = str(data.get("chat_note") or "").strip()
+    changed = []
+    if "color_default" in data:
+        changed.append(f"color por defecto: {s.color_default or '-'}")
+    if "payment_days" in data:
+        changed.append(f"dias de pago: {s.payment_days or '-'}")
+    if "destination" in data:
+        changed.append(f"destino: {s.destination or '-'}")
+    if "additional_services" in data:
+        changed.append("servicios adicionales")
+    if "title" in data:
+        changed.append(f"titulo: {s.title or '-'}")
+    note = chat_note
+    if not note and changed:
+        note = "Actualice los datos globales de la cotizacion desde el panel: " + ", ".join(changed) + "."
+    s = _save_with_chat_note(s, note)
     return {"session": s.model_dump(mode="json")}
 
 
@@ -1910,7 +2344,7 @@ def handle_session_approval(data: dict) -> dict:
 
 def handle_set_item_placa(data: dict) -> dict:
     """Pin (or unpin) a specific catalog placa SKU on a quotation item."""
-    from carpinteria.quotation_session import find_item, get_session, save_session
+    from carpinteria.quotation_session import find_item, get_session
     sid = str(data.get("session_id") or "")
     code = str(data.get("item_code") or "")
     sku = data.get("placa_sku")  # None to clear
@@ -1924,9 +2358,12 @@ def handle_set_item_placa(data: dict) -> dict:
         return {"error": f"item {code} not found"}
     it.placa_sku = (str(sku) if sku else None)
 
-    from carpinteria.agents.cotizador_chat import _recalculate_item
+    from carpinteria.agents.cotizador_chat import _format_item_summary, _recalculate_item
     _recalculate_item(it, s)
-    save_session(s)
+    s = _save_with_chat_note(
+        s,
+        f"Actualice la placa asignada a {it.code} desde el panel.\n\n{_format_item_summary(it)}",
+    )
     return {"session": s.model_dump(mode="json")}
 
 
@@ -1937,8 +2374,8 @@ def handle_item_update(data: dict) -> dict:
     edge_banding. Other fields (pieces, hardware, last_quote) have dedicated
     handlers because they need stricter typing.
     """
-    from carpinteria.agents.cotizador_chat import _recalculate_item
-    from carpinteria.quotation_session import find_item, get_session, save_session
+    from carpinteria.agents.cotizador_chat import _format_item_summary, _recalculate_item
+    from carpinteria.quotation_session import find_item, get_session
 
     sid = str(data.get("session_id") or "")
     code = str(data.get("item_code") or "")
@@ -1976,12 +2413,15 @@ def handle_item_update(data: dict) -> dict:
         it.notes = str(fields["notes"] or "")
 
     _recalculate_item(it, s)
-    save_session(s)
+    s = _save_with_chat_note(
+        s,
+        f"Actualice {it.code} desde el panel.\n\n{_format_item_summary(it)}",
+    )
     return {"session": s.model_dump(mode="json")}
 
 
 def handle_item_delete(data: dict) -> dict:
-    from carpinteria.quotation_session import get_session, save_session
+    from carpinteria.quotation_session import get_session
 
     sid = str(data.get("session_id") or "")
     code = str(data.get("item_code") or "")
@@ -1994,14 +2434,14 @@ def handle_item_delete(data: dict) -> dict:
     s.items = [it for it in s.items if it.code.lower() != code.lower()]
     if len(s.items) == before:
         return {"error": f"item {code} not found"}
-    save_session(s)
+    s = _save_with_chat_note(s, f"Elimine el item {code} de la cotizacion desde el panel.")
     return {"session": s.model_dump(mode="json")}
 
 
 def handle_piece_set_quantity(data: dict) -> dict:
     """Update one piece's quantity inside an item (matched by label)."""
-    from carpinteria.agents.cotizador_chat import _recalculate_item
-    from carpinteria.quotation_session import find_item, get_session, save_session
+    from carpinteria.agents.cotizador_chat import _format_item_summary, _recalculate_item
+    from carpinteria.quotation_session import find_item, get_session
 
     sid = str(data.get("session_id") or "")
     code = str(data.get("item_code") or "")
@@ -2028,14 +2468,18 @@ def handle_piece_set_quantity(data: dict) -> dict:
     else:
         target.quantity = qty
     _recalculate_item(it, s)
-    save_session(s)
+    action = "Quite" if qty == 0 else "Actualice"
+    s = _save_with_chat_note(
+        s,
+        f"{action} la pieza '{label}' en {it.code} desde el panel.\n\n{_format_item_summary(it)}",
+    )
     return {"session": s.model_dump(mode="json")}
 
 
 def handle_piece_upsert(data: dict) -> dict:
     """Create or replace a cut piece by label, then recalc."""
-    from carpinteria.agents.cotizador_chat import _recalculate_item
-    from carpinteria.quotation_session import CutPiece, find_item, get_session, save_session
+    from carpinteria.agents.cotizador_chat import _format_item_summary, _recalculate_item
+    from carpinteria.quotation_session import CutPiece, find_item, get_session
 
     sid = str(data.get("session_id") or "")
     code = str(data.get("item_code") or "")
@@ -2066,19 +2510,22 @@ def handle_piece_upsert(data: dict) -> dict:
     else:
         it.pieces[idx] = piece
     _recalculate_item(it, s)
-    save_session(s)
+    action = "Agregue" if idx is None else "Actualice"
+    s = _save_with_chat_note(
+        s,
+        f"{action} la pieza '{piece.label}' en {it.code} desde el panel.\n\n{_format_item_summary(it)}",
+    )
     return {"session": s.model_dump(mode="json")}
 
 
 def handle_hardware_set_quantity(data: dict) -> dict:
     """Update one hardware row's quantity inside an item. qty=0 removes it."""
-    from carpinteria.agents.cotizador_chat import _recalculate_item
+    from carpinteria.agents.cotizador_chat import _format_item_summary, _recalculate_item
     from carpinteria.hardware_catalog import get_by_code
     from carpinteria.quotation_session import (
         HardwareUsage,
         find_item,
         get_session,
-        save_session,
     )
 
     sid = str(data.get("session_id") or "")
@@ -2117,7 +2564,11 @@ def handle_hardware_set_quantity(data: dict) -> dict:
     else:
         existing.quantity = qty
     _recalculate_item(it, s)
-    save_session(s)
+    action = "Quite" if qty == 0 else "Actualice"
+    s = _save_with_chat_note(
+        s,
+        f"{action} el herraje {spec.code} en {it.code} desde el panel.\n\n{_format_item_summary(it)}",
+    )
     return {"session": s.model_dump(mode="json")}
 
 
@@ -2157,6 +2608,7 @@ def _session_to_quotes_payload(session) -> list[dict]:
             "item_code": it.code,
             "item_name": it.name,
             "item_quantity": it.quantity,
+            "description": it.description,
             "dimensions": dict(it.dimensions),
             "has_error": has_error,
             "missing_inputs": missing,
@@ -2180,6 +2632,8 @@ def _session_to_quotes_payload(session) -> list[dict]:
             "_payment_days": _effective_payment_days(session.payment_days, session.general_specs.payment_terms),
             "_payment_terms": session.general_specs.payment_terms,
             "_destination": _effective_destination(session.destination or session.general_specs.delivery_location),
+            "_has_explicit_payment_terms": bool(session.payment_days or session.general_specs.payment_terms),
+            "_has_explicit_destination": bool(session.destination or session.general_specs.delivery_location),
             "metadata": dict(last.get("metadata") or {}),
         })
     return quotes
@@ -2435,6 +2889,10 @@ def main() -> None:
             result = handle_session_archive(data)
         elif action == "session_ingest_pliego":
             result = handle_session_ingest_pliego(data)
+        elif action == "session_ingest_order_photo":
+            result = handle_session_ingest_order_photo(data)
+        elif action == "session_ingest_furniture_photo":
+            result = handle_session_ingest_furniture_photo(data)
         elif action == "chat":
             result = handle_chat(data)
         elif action == "memory_list":

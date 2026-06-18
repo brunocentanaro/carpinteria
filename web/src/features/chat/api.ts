@@ -93,6 +93,11 @@ export async function patchSession(
     };
     title: string;
     approval_status: "pending" | "approved";
+    client_name: string;
+    client_phone: string;
+    order_summary: string;
+    payment_status: "unknown" | "none" | "deposit" | "paid";
+    payment_notes: string;
     client_sent: boolean;
     client_accepted: "pending" | "yes" | "no";
     deposit_amount: number | null;
@@ -100,6 +105,7 @@ export async function patchSession(
     ready_to_deliver: boolean;
     delivered: boolean;
     final_payment_amount: number | null;
+    chat_note: string;
   }>,
 ) {
   return api(
@@ -193,6 +199,42 @@ export async function uploadPliego(input: {
   const fd = new FormData();
   for (const f of input.files) fd.append("files", f);
   const res = await fetch(`/api/sessions/${input.sessionId}/upload-pliego`, {
+    method: "POST",
+    body: fd,
+  });
+  const data = await res.json();
+  if (!res.ok || data?.error) {
+    throw new Error(data?.error || `HTTP ${res.status}`);
+  }
+  return data?.session ? SessionSchema.parse(data.session) : null;
+}
+
+export async function uploadOrderPhoto(input: {
+  sessionId: string;
+  files: File[];
+}): Promise<Session | null> {
+  const fd = new FormData();
+  for (const f of input.files) fd.append("files", f);
+  const res = await fetch(`/api/sessions/${input.sessionId}/upload-order-photo`, {
+    method: "POST",
+    body: fd,
+  });
+  const data = await res.json();
+  if (!res.ok || data?.error) {
+    throw new Error(data?.error || `HTTP ${res.status}`);
+  }
+  return data?.session ? SessionSchema.parse(data.session) : null;
+}
+
+export async function uploadFurniturePhoto(input: {
+  sessionId: string;
+  files: File[];
+  message?: string;
+}): Promise<Session | null> {
+  const fd = new FormData();
+  for (const f of input.files) fd.append("files", f);
+  if (input.message) fd.append("message", input.message);
+  const res = await fetch(`/api/sessions/${input.sessionId}/upload-furniture-photo`, {
     method: "POST",
     body: fd,
   });

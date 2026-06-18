@@ -144,6 +144,11 @@ class QuotationSession(BaseModel):
     brand_id: str = "casa"
     requested_by: str = "anonymous"
     request_area: str = "personal"
+    client_name: str = ""
+    client_phone: str = ""
+    order_summary: str = ""
+    payment_status: str = "unknown"  # unknown | none | deposit | paid
+    payment_notes: str = ""
     approval_status: str = "pending"  # pending | approved
     client_sent: bool = False
     client_accepted: str = "pending"  # pending | yes | no
@@ -265,6 +270,11 @@ def _session_row(doc: dict) -> dict:
         "brand_id": doc.get("brand_id") or "casa",
         "requested_by": doc.get("requested_by") or doc.get("user_id") or "anonymous",
         "request_area": doc.get("request_area") or "personal",
+        "client_name": doc.get("client_name") or "",
+        "client_phone": doc.get("client_phone") or "",
+        "order_summary": doc.get("order_summary") or "",
+        "payment_status": doc.get("payment_status") or "unknown",
+        "payment_notes": doc.get("payment_notes") or "",
         "factory_order": bool(doc.get("order_number")),
         "approval_status": doc.get("approval_status") or "pending",
         "client_sent": bool(doc.get("client_sent") or False),
@@ -377,8 +387,9 @@ def list_session_archive(
     brand_id: str | None = None,
     area: str | None = None,
     year: int = 2026,
+    limit: int = 1000,
 ) -> list[dict]:
-    rows = list_sessions(user_id=user_id, brand_id=brand_id, area=area, limit=500, year=year)
+    rows = list_sessions(user_id=user_id, brand_id=brand_id, area=area, limit=limit, year=year)
     groups: dict[tuple[int, int], list[dict]] = {}
     for row in rows:
         groups.setdefault((int(row["year"]), int(row["month"])), []).append(row)
@@ -407,6 +418,11 @@ def set_approval_status(session_id: str, status: str) -> QuotationSession | None
 def update_commercial_status(session_id: str, fields: dict[str, Any]) -> QuotationSession | None:
     allowed = {
         "approval_status",
+        "client_name",
+        "client_phone",
+        "order_summary",
+        "payment_status",
+        "payment_notes",
         "client_sent",
         "client_accepted",
         "deposit_amount",
@@ -424,6 +440,13 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
             if value not in {"pending", "approved"}:
                 raise ValueError("invalid approval status")
             update[key] = value
+        elif key in {"client_name", "client_phone", "order_summary", "payment_notes"}:
+            update[key] = str(value or "").strip()
+        elif key == "payment_status":
+            status = str(value or "unknown").strip()
+            if status not in {"unknown", "none", "deposit", "paid"}:
+                raise ValueError("invalid payment status")
+            update[key] = status
         elif key == "client_accepted":
             if value not in {"pending", "yes", "no"}:
                 raise ValueError("invalid client accepted status")

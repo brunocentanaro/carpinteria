@@ -88,12 +88,35 @@ def payment_surcharge(payment_days: int) -> tuple[float, str]:
 def total_edge_banding_meters(pieces: list[CutPiece]) -> float:
     total_mm = 0.0
     for piece in pieces:
-        total_mm += (piece.width_mm + piece.height_mm) * 2 * piece.quantity
+        sides = {str(side).strip().lower() for side in piece.edge_sides}
+        if not sides:
+            continue
+        label = (piece.label or "").lower()
+        front_back_len = piece.height_mm if ("lateral" in label or "costado" in label) else piece.width_mm
+        if "top" in sides:
+            total_mm += piece.width_mm * piece.quantity
+        if "bottom" in sides:
+            total_mm += piece.width_mm * piece.quantity
+        if "left" in sides:
+            total_mm += piece.height_mm * piece.quantity
+        if "right" in sides:
+            total_mm += piece.height_mm * piece.quantity
+        if "front" in sides:
+            total_mm += front_back_len * piece.quantity
+        if "back" in sides:
+            total_mm += front_back_len * piece.quantity
     return total_mm / 1000.0
 
 
 def total_cuts(pieces: list[CutPiece]) -> int:
     return sum(p.quantity * 2 for p in pieces)
+
+
+def _is_raw_mdf_request(material: str, color: str, edge_banding_name: str | None) -> bool:
+    text = f"{material or ''} {color or ''} {edge_banding_name or ''}".lower()
+    mentions_mdf = "mdf" in text or "fibrofacil" in text or "fibrofácil" in text
+    mentions_melamine = "melam" in text or "melamina" in text or "melaminico" in text or "melamínico" in text
+    return mentions_mdf and not mentions_melamine
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +245,7 @@ def calculate_quotation(
 
     # Cantos
     canto_total_uyu = 0.0
-    if pieces:
+    if pieces and not _is_raw_mdf_request(material, color, edge_banding_name):
         canto_query = edge_banding_name or color
         canto = catalog.find_canto(canto_query)
         meters = total_edge_banding_meters(pieces)
@@ -244,6 +267,8 @@ def calculate_quotation(
                 unit_price=0.0,
                 subtotal=0.0,
             ))
+    elif pieces and _is_raw_mdf_request(material, color, edge_banding_name):
+        notes_parts.append("MDF crudo/no melaminico: no se cotiza canto ABS por defecto.")
 
     # Recargos sobre material (placa + canto)
     material_subtotal = round(placa_total_uyu + canto_total_uyu, 2)

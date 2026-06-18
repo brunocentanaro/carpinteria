@@ -272,6 +272,10 @@ function inferVisualModel(item: QuotationItem) {
 }
 
 function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: string }) {
+  if (item.last_quote?.metadata?.subtype === "cortes_redondos") {
+    return <RoundCutsPreview item={item} />;
+  }
+
   const dims = inferOverallDimensions(item);
   const totalPieces = item.pieces.reduce((sum, p) => sum + p.quantity, 0);
   const groups = item.pieces.reduce<Record<string, typeof item.pieces>>(
@@ -382,6 +386,92 @@ function DesignPreview({ item, sessionId }: { item: QuotationItem; sessionId: st
           dims={dims}
           visualModel={visualModel}
         />
+      </div>
+    </section>
+  );
+}
+
+function RoundCutsPreview({ item }: { item: QuotationItem }) {
+  const metadata = item.last_quote?.metadata ?? {};
+  const diameter = Number(metadata.diameter_mm || item.dimensions?.width_mm || item.dimensions?.height_mm || 0);
+  const material = metadata.wood_material as
+    | { id?: string; species?: string; thickness_in?: number; supplier?: string }
+    | undefined;
+  const lines = (item.last_quote?.lines ?? []) as Array<{ concept?: string; quantity?: number; unit?: string; subtotal?: number }>;
+  const totalPiecesMatch = lines
+    .map((line) => String(line.concept || "").match(/(\d+)\s+cortes redondos/))
+    .find((match) => match);
+  const quantity = Number(metadata.units || 0) || (totalPiecesMatch ? Number(totalPiecesMatch[1]) : item.quantity);
+  const strips = Number(metadata.strips_per_disk || 0);
+  const linearMeters = Number(metadata.total_linear_m || 0);
+
+  return (
+    <section className="rounded-md border bg-card overflow-hidden">
+      <div className="flex items-center justify-between gap-3 border-b px-3 py-2">
+        <div className="flex items-center gap-2">
+          <Ruler className="h-4 w-4 text-muted-foreground" />
+          <div>
+            <div className="text-xs uppercase font-semibold text-muted-foreground">
+              Cortes circulares interpretados
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {quantity} discos · {mm(diameter)} diámetro · {material?.id || item.material}
+            </div>
+          </div>
+        </div>
+        <div className="flex gap-1.5 flex-wrap justify-end">
+          <Badge variant="secondary">{quantity} cortes</Badge>
+          {material?.thickness_in && <Badge variant="secondary">{material.thickness_in}" espesor</Badge>}
+          {material?.supplier === "estimado" && <Badge variant="secondary">madera estimada</Badge>}
+        </div>
+      </div>
+
+      <div className="grid gap-3 p-3 md:grid-cols-[320px_1fr]">
+        <div className="rounded border bg-slate-50 p-3">
+          <div className="text-[11px] font-semibold text-center mb-2">Disco</div>
+          <svg viewBox="0 0 220 190" className="w-full h-auto" role="img" aria-label="Corte circular de madera">
+            <defs>
+              <pattern id={`round-grain-${item.code}`} width="16" height="10" patternUnits="userSpaceOnUse">
+                <path d="M0 5 C4 1, 9 9, 16 4" fill="none" stroke="#d8a15f" strokeWidth="1" opacity="0.45" />
+              </pattern>
+            </defs>
+            <circle cx="110" cy="88" r="58" fill={`url(#round-grain-${item.code})`} stroke="#92400e" strokeWidth="4" />
+            <circle cx="110" cy="88" r="42" fill="none" stroke="#b45309" strokeWidth="1.5" opacity="0.35" />
+            <circle cx="110" cy="88" r="23" fill="none" stroke="#b45309" strokeWidth="1.2" opacity="0.28" />
+            <line x1="52" y1="160" x2="168" y2="160" stroke="#334155" strokeWidth="1.5" />
+            <line x1="52" y1="153" x2="52" y2="167" stroke="#334155" strokeWidth="1.5" />
+            <line x1="168" y1="153" x2="168" y2="167" stroke="#334155" strokeWidth="1.5" />
+            <text x="110" y="180" textAnchor="middle" fontSize="12" fill="#334155">{mm(diameter)}</text>
+            <text x="110" y="92" textAnchor="middle" fontSize="15" fontWeight="700" fill="#78350f">x{quantity}</text>
+          </svg>
+        </div>
+
+        <div className="rounded border bg-muted/20 p-3">
+          <div className="text-xs font-semibold mb-2">Lectura del pedido</div>
+          <div className="grid gap-2 text-sm sm:grid-cols-2">
+            <div>
+              <div className="text-xs text-muted-foreground">Producto</div>
+              <div className="font-medium">Tablas circulares / discos de madera</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Madera</div>
+              <div className="font-medium">{material?.id || item.material}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Armado</div>
+              <div className="font-medium">
+                {strips ? `${strips} tiras por disco` : "según ancho útil de tabla"}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Metros considerados</div>
+              <div className="font-medium">{linearMeters ? `${linearMeters.toFixed(2)} m` : "-"}</div>
+            </div>
+          </div>
+          <div className="mt-3 text-xs text-muted-foreground">
+            Este plano no representa un mueble: es una pieza circular repetida para corte/calado.
+          </div>
+        </div>
       </div>
     </section>
   );

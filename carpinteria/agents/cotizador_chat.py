@@ -9,13 +9,15 @@ History is owned by OpenAI's Responses API: we just remember the
 """
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
+from difflib import SequenceMatcher
 from typing import Any
 
 from agents import Agent, RunContextWrapper, Runner, function_tool
 
-from carpinteria.calculator import calculate_quotation
+from carpinteria.calculator import calculate_quotation, payment_surcharge
 from carpinteria.catalog import ProductCatalog
 from carpinteria.exchange_rate import fetch_bcu_usd
 from carpinteria.hardware_catalog import CURATED_HARDWARE, DEFAULT_HARDWARE_PRICES_UYU, get_by_code
@@ -25,7 +27,19 @@ from carpinteria.molduras_prices import quote_price
 from carpinteria.openai_errors import friendly_openai_error
 from carpinteria.pliego import analyze_pliego, decompose_furniture
 from carpinteria.quote_router import classify_quote_type, validate_quote_lines
-from carpinteria.settings import AGENT_MODEL, DEFAULT_BID_DESTINATION, DEFAULT_BID_PAYMENT_DAYS
+from carpinteria.settings import (
+    AGENT_MODEL,
+    DEFAULT_BID_DESTINATION,
+    DEFAULT_BID_PAYMENT_DAYS,
+    LABOR_DAY_HOURS,
+    LABOR_DAY_PRICE_UYU,
+    MACHINERY_PERCENT,
+    SHIPPING_UNLOAD_DAY_PRICE_UYU,
+    SHIPPING_UNLOAD_EMPLOYEES,
+    SHIPPING_UNLOAD_HOURS,
+    PROFIT_PERCENT,
+    WASTE_PERCENT,
+)
 from carpinteria.shipping import default_shipping_provider
 from carpinteria.wood_calculator import quote_solid_wood_table
 from carpinteria.quotation_session import (
@@ -79,6 +93,317 @@ def _effective_destination(session: QuotationSession) -> str:
     return session.destination or session.general_specs.delivery_location or DEFAULT_BID_DESTINATION
 
 
+DOOR_DEFAULT_WIDTH_MM = 800.0
+DOOR_DEFAULT_HEIGHT_MM = 2100.0
+DOOR_DEFAULT_THICKNESS_MM = 40.0
+DOOR_CORE_THICKNESS_MM = 5.0
+DOOR_CORE_WIDTH_MM = 50.0
+DOOR_CORE_SPACING_MM = 100.0
+DOOR_PU_COATS = 3
+DOOR_FINISH_COVERAGE_M2_PER_L = 8.0
+DOOR_FINISH_MINUTES_PER_M2_PER_COAT = 15.0
+DOOR_FINISH_LITER_PRICE_UYU = 150.0
+
+
+def _is_wood_door_item(item: QuotationItem) -> bool:
+    text = _norm_text(f"{item.name} {item.description} {item.material}")
+    if "puerta" not in text and "hoja" not in text:
+        return False
+    if any(term in text for term in ("metal", "aluminio", "vidrio", "blindex")):
+        return False
+    return any(term in text for term in ("madera", "enchap", "eucal", "pino", "marco", "tapajunta", "placa", "hoja"))
+
+
+def _wood_door_dimensions(item: QuotationItem) -> tuple[float, float, float]:
+    width = float(item.dimensions.get("width_mm") or DOOR_DEFAULT_WIDTH_MM)
+    height = float(item.dimensions.get("height_mm") or DOOR_DEFAULT_HEIGHT_MM)
+    thickness = float(
+        item.dimensions.get("depth_mm")
+        or item.dimensions.get("thickness_mm")
+        or item.thickness_mm
+        or DOOR_DEFAULT_THICKNESS_MM
+    )
+    if thickness < 30:
+        thickness = DOOR_DEFAULT_THICKNESS_MM
+    return width, height, thickness
+
+
+def _moldura_unit_without_iva(width_mm: float, height_mm: float, material: str, family: str, unit: str) -> tuple[float, str]:
+    quote = quote_price(
+        width_mm=width_mm,
+        height_mm=height_mm,
+        quantity=1,
+        material=material,
+        family=family,
+        unit=unit,
+        include_iva=False,
+    )
+    if quote is None:
+        return 0.0, "sin precio"
+    return round(float(quote.unit_price), 2), quote.source
+
+
+def _veneer_line(catalog: ProductCatalog, tc: float, area_m2: float) -> tuple[QuotationLine, str | None]:
+    matches = catalog.search("enchapado eucaliptus 4mm euca", tipo_producto="PLACA", limit=8)
+    if not matches:
+        matches = catalog.search("eucaliptus 4mm", tipo_producto="PLACA", limit=8)
+    product = None
+    for candidate in matches:
+        if candidate.espesor_mm and abs(candidate.espesor_mm - 4) <= 2:
+            product = candidate
+            break
+    if product is None and matches:
+        product = matches[0]
+    if product is None or not product.ancho_mm or not product.largo_mm:
+        return QuotationLine(
+            concept="Enchapado eucaliptus 4mm para 2 caras (precio pendiente)",
+            quantity=round(area_m2, 3),
+            unit="m2",
+            unit_price=0,
+            subtotal=0,
+        ), "Falta precio de enchapado eucaliptus 4mm en el listado"
+    product_area = product.ancho_mm * product.largo_mm / 1_000_000
+    unit_m2 = round(product.precio_usd_simp * tc / max(product_area, 0.01), 2)
+    return QuotationLine(
+        concept=f"Enchapado eucaliptus {product.espesor_mm or 4:g}mm para 2 caras ({product.nombre})",
+        quantity=round(area_m2, 3),
+        unit="m2",
+        unit_price=unit_m2,
+        subtotal=round(unit_m2 * area_m2, 2),
+    ), None
+
+
+def _quote_wood_door(
+    item: QuotationItem,
+    session: QuotationSession,
+    catalog: ProductCatalog,
+    tc: float,
+    hw_prices: dict[str, float],
+) -> dict[str, Any]:
+    width, height, thickness = _wood_door_dimensions(item)
+    door_area_m2 = width * height / 1_000_000
+    faces_area_m2 = door_area_m2 * 2
+    edge_area_m2 = (2 * (width + height) / 1000) * (thickness / 1000)
+    finish_area_one_coat = faces_area_m2 + edge_area_m2
+    finish_area_total = finish_area_one_coat * DOOR_PU_COATS
+    finish_liters = finish_area_total / DOOR_FINISH_COVERAGE_M2_PER_L
+    finish_hours = finish_area_total * DOOR_FINISH_MINUTES_PER_M2_PER_COAT / 60
+    assembly_hours = max(2.0, round(door_area_m2 * 1.1, 2))
+
+    vertical_count = max(3, math.ceil(width / DOOR_CORE_SPACING_MM) + 1)
+    horizontal_count = max(6, math.ceil(height / DOOR_CORE_SPACING_MM) + 1)
+    core_linear_m = ((vertical_count * height) + (horizontal_count * width)) / 1000
+    perimeter_m = 2 * (width + height) / 1000
+    frame_len_m = (2 * height + width) / 1000
+    tapajuntas_len_m = frame_len_m * 2
+
+    lines: list[QuotationLine] = []
+    pending: list[str] = []
+    notes: list[str] = []
+
+    veneer, veneer_note = _veneer_line(catalog, tc, faces_area_m2)
+    lines.append(veneer)
+    if veneer_note:
+        pending.append("ENCHAPADO_EUCALIPTUS_4MM")
+        notes.append(veneer_note)
+
+    core_unit, core_source = _moldura_unit_without_iva(DOOR_CORE_THICKNESS_MM, DOOR_CORE_WIDTH_MM, "pino", "liston", "metro")
+    lines.append(QuotationLine(
+        concept=f"Alma nido de abeja pino 5x50mm ({vertical_count} verticales + {horizontal_count} horizontales, {core_source})",
+        quantity=round(core_linear_m, 2),
+        unit="metro",
+        unit_price=core_unit,
+        subtotal=round(core_linear_m * core_unit, 2),
+    ))
+    if core_unit <= 0:
+        pending.append("LISTON_PINO_5X50")
+
+    edge_unit, edge_source = _moldura_unit_without_iva(max(5.0, thickness), 10.0, "euca", "liston", "metro")
+    lines.append(QuotationLine(
+        concept=f"Cubrecanto/tapacanto eucaliptus perimetral ({edge_source})",
+        quantity=round(perimeter_m, 2),
+        unit="metro",
+        unit_price=edge_unit,
+        subtotal=round(perimeter_m * edge_unit, 2),
+    ))
+    if edge_unit <= 0:
+        pending.append("CUBRECANTO_EUCALIPTUS")
+
+    frame_unit, frame_source = _moldura_unit_without_iva(45.0, max(30.0, thickness), "euca", "contramarco", "metro")
+    lines.append(QuotationLine(
+        concept=f"Marco eucaliptus para cierre de puerta ({frame_source})",
+        quantity=round(frame_len_m, 2),
+        unit="metro",
+        unit_price=frame_unit,
+        subtotal=round(frame_len_m * frame_unit, 2),
+    ))
+    if frame_unit <= 0:
+        pending.append("MARCO_EUCALIPTUS")
+
+    tapajunta_unit, tapajunta_source = _moldura_unit_without_iva(10.0, 45.0, "euca", "contramarco", "metro")
+    lines.append(QuotationLine(
+        concept=f"Tapajuntas eucaliptus ambos lados ({tapajunta_source})",
+        quantity=round(tapajuntas_len_m, 2),
+        unit="metro",
+        unit_price=tapajunta_unit,
+        subtotal=round(tapajuntas_len_m * tapajunta_unit, 2),
+    ))
+    if tapajunta_unit <= 0:
+        pending.append("TAPAJUNTAS_EUCALIPTUS")
+
+    hardware = list(item.hardware)
+    if not hardware:
+        hardware = []
+        for code, qty in (
+            ("BISAGRA_PUERTA_PASO", 4),
+            ("CERR_PUERTA_EMBUTIR", 1),
+            ("PESTILLO_PUERTA", 1),
+        ):
+            spec = get_by_code(code)
+            if spec:
+                hardware.append(HardwareUsage(
+                    code=spec.code,
+                    name=spec.name,
+                    category=spec.category,
+                    unit=spec.unit,
+                    quantity=qty,
+                ))
+    hw_lines: list[dict[str, Any]] = []
+    for hu in hardware:
+        spec = get_by_code(hu.code)
+        if spec is None:
+            continue
+        unit_price = round(float(hw_prices.get(hu.code, 0.0)), 2)
+        subtotal = round(hu.quantity * unit_price, 2)
+        lines.append(QuotationLine(
+            concept=f"Herraje: {spec.name}",
+            quantity=hu.quantity,
+            unit=hu.unit or spec.unit,
+            unit_price=unit_price,
+            subtotal=subtotal,
+        ))
+        hw_lines.append({
+            "code": hu.code,
+            "concept": f"Herraje: {spec.name}",
+            "category": spec.category,
+            "quantity": hu.quantity,
+            "unit": hu.unit or spec.unit,
+            "unit_price": unit_price,
+            "subtotal": subtotal,
+        })
+        if unit_price <= 0:
+            pending.append(hu.code)
+
+    finish_material = round(finish_liters * DOOR_FINISH_LITER_PRICE_UYU, 2)
+    finish_labor = round((finish_hours / LABOR_DAY_HOURS) * LABOR_DAY_PRICE_UYU, 2)
+    assembly_labor = round((assembly_hours / LABOR_DAY_HOURS) * LABOR_DAY_PRICE_UYU, 2)
+    lines.append(QuotationLine(
+        concept=f"Pintura PU {DOOR_PU_COATS} manos ({finish_area_total:.2f} m2 equivalentes / 8 m2/l)",
+        quantity=round(finish_liters, 2),
+        unit="litro",
+        unit_price=DOOR_FINISH_LITER_PRICE_UYU,
+        subtotal=finish_material,
+    ))
+    lines.append(QuotationLine(
+        concept=f"Mano de obra pintura PU ({finish_hours:.2f}h)",
+        quantity=1,
+        unit="recargo",
+        unit_price=finish_labor,
+        subtotal=finish_labor,
+    ))
+    lines.append(QuotationLine(
+        concept=f"Mano de obra armado/prensado puerta ({assembly_hours:.2f}h)",
+        quantity=1,
+        unit="recargo",
+        unit_price=assembly_labor,
+        subtotal=assembly_labor,
+    ))
+
+    materials_total = round(sum(line.subtotal for line in lines), 2)
+    machinery = round(materials_total * MACHINERY_PERCENT / 100, 2)
+    waste = round(materials_total * WASTE_PERCENT / 100, 2)
+    lines.append(QuotationLine(
+        concept=f"Maquinaria ({MACHINERY_PERCENT:.0f}%)",
+        quantity=1,
+        unit="recargo",
+        unit_price=machinery,
+        subtotal=machinery,
+    ))
+    lines.append(QuotationLine(
+        concept=f"Merma ({WASTE_PERCENT:.1f}%)",
+        quantity=1,
+        unit="recargo",
+        unit_price=waste,
+        subtotal=waste,
+    ))
+
+    subtotal = round(materials_total + machinery + waste, 2)
+    margin = round(subtotal * PROFIT_PERCENT / 100, 2)
+    total = round(subtotal + margin, 2)
+
+    payment_days = _effective_payment_days(session)
+    pay_pct, pay_label = payment_surcharge(payment_days)
+    if pay_pct >= 0:
+        pay_amount = round(total * pay_pct / 100, 2)
+        if pay_amount:
+            lines.append(QuotationLine(
+                concept=f"Recargo financiero ({pay_label} = {pay_pct:.1f}%)",
+                quantity=1,
+                unit="recargo",
+                unit_price=pay_amount,
+                subtotal=pay_amount,
+            ))
+            total = round(total + pay_amount, 2)
+    else:
+        notes.append(pay_label)
+
+    destination = _effective_destination(session)
+    sq = default_shipping_provider().get_quote(destination) if destination else None
+    if sq:
+        units = max(1, int(item.quantity or 1))
+        unload_total = 0.0
+        if "montevideo" in destination.lower() or "mvd" in destination.lower():
+            unload_total = SHIPPING_UNLOAD_EMPLOYEES * SHIPPING_UNLOAD_HOURS / max(LABOR_DAY_HOURS, 1) * SHIPPING_UNLOAD_DAY_PRICE_UYU
+        unit_shipping = round((sq.price + unload_total) / units, 2)
+        unload_label = ""
+        if unload_total:
+            unload_label = f" + descarga ({SHIPPING_UNLOAD_EMPLOYEES:g} emp x {SHIPPING_UNLOAD_HOURS:g}h)"
+        lines.append(QuotationLine(
+            concept=f"{sq.description}{unload_label} / {units} unidades",
+            quantity=1,
+            unit="flete",
+            unit_price=unit_shipping,
+            subtotal=unit_shipping,
+        ))
+        total = round(total + unit_shipping, 2)
+
+    base = {
+        "lines": [line.model_dump() for line in lines],
+        "subtotal": subtotal,
+        "margin_percent": PROFIT_PERCENT,
+        "margin_amount": margin,
+        "total": total,
+        "notes": "\n".join(notes),
+        "metadata": {
+            "quote_type": "wood_door",
+            "width_mm": width,
+            "height_mm": height,
+            "thickness_mm": thickness,
+            "door_area_m2": round(door_area_m2, 3),
+            "finish_coats": DOOR_PU_COATS,
+            "finish_liters": round(finish_liters, 3),
+            "core_vertical_count": vertical_count,
+            "core_horizontal_count": horizontal_count,
+        },
+        "hardware_lines": hw_lines,
+        "pending_hardware_codes": sorted(set(pending)),
+        "total_with_hardware": total,
+        "tc": tc,
+    }
+    item.last_quote = base
+    return base
+
+
 def _recalculate_item(
     item: QuotationItem,
     session: QuotationSession,
@@ -106,6 +431,8 @@ def _recalculate_item(
         base["hardware_lines"] = []
         base["pending_hardware_codes"] = []
         base["total_with_hardware"] = round(base.get("total", 0), 2)
+        if (base.get("metadata") or {}).get("subtype") == "cortes_redondos":
+            item.quantity = 1
         item.last_quote = base
         return base
 
@@ -160,6 +487,28 @@ def _recalculate_item(
         }
         item.last_quote = base
         return base
+
+    if _is_wood_door_item(item):
+        try:
+            if catalog is None:
+                catalog = ProductCatalog.from_activa()
+            if tc is None:
+                tc = _tc()
+            if hw_prices is None:
+                hw_prices = _hw_prices_map()
+        except Exception as exc:
+            msg = f"No pude acceder a precios para cotizar la puerta. Detalle: {exc}"
+            item.last_quote = {
+                "error": msg,
+                "notes": msg,
+                "lines": [],
+                "total": 0,
+                "total_with_hardware": 0,
+                "pending_hardware_codes": [],
+                "metadata": {"quote_type": "wood_door"},
+            }
+            return item.last_quote
+        return _quote_wood_door(item, session, catalog, tc, hw_prices)
 
     if not item.pieces:
         item.last_quote = None
@@ -308,6 +657,86 @@ def _norm_text(text: object) -> str:
     raw = str(text or "").strip().lower()
     raw = unicodedata.normalize("NFKD", raw)
     return "".join(ch for ch in raw if not unicodedata.combining(ch))
+
+
+def _dimension_similarity(a: dict[str, float], b: dict[str, float]) -> float:
+    keys = {"width_mm", "height_mm", "depth_mm"} & set(a) & set(b)
+    if not keys:
+        return 0.0
+    hits = 0
+    for key in keys:
+        av = float(a.get(key) or 0)
+        bv = float(b.get(key) or 0)
+        if av <= 0 or bv <= 0:
+            continue
+        if abs(av - bv) / max(av, bv) <= 0.18:
+            hits += 1
+    return hits / max(1, len(keys))
+
+
+def _item_text_similarity(a: QuotationItem, b: QuotationItem) -> float:
+    a_text = _norm_text(f"{a.name} {a.description}")
+    b_text = _norm_text(f"{b.name} {b.description}")
+    if not a_text or not b_text:
+        return 0.0
+    return SequenceMatcher(None, a_text, b_text).ratio()
+
+
+def _quote_type(item: QuotationItem) -> str:
+    metadata = (item.last_quote or {}).get("metadata") or {}
+    return str(metadata.get("quote_type") or "")
+
+
+def _find_replacement_item(
+    session: QuotationSession,
+    candidate: QuotationItem,
+    explicit_code: str | None = None,
+) -> QuotationItem | None:
+    if explicit_code:
+        found = find_item(session, explicit_code)
+        if found is not None:
+            return found
+
+    best: tuple[float, QuotationItem] | None = None
+    candidate_type = _quote_type(candidate)
+    for existing in session.items:
+        if candidate_type and _quote_type(existing) and candidate_type != _quote_type(existing):
+            continue
+        text_score = _item_text_similarity(existing, candidate)
+        dim_score = _dimension_similarity(existing.dimensions, candidate.dimensions)
+        same_name = _norm_text(existing.name) == _norm_text(candidate.name)
+        score = (text_score * 0.7) + (dim_score * 0.3)
+        if same_name:
+            score += 0.15
+        if best is None or score > best[0]:
+            best = (score, existing)
+
+    if best is None:
+        return None
+    score, existing = best
+    if score >= 0.72:
+        return existing
+    if len(session.items) == 1 and score >= 0.58:
+        return existing
+    return None
+
+
+def _upsert_similar_item(
+    session: QuotationSession,
+    item: QuotationItem,
+    explicit_code: str | None = None,
+) -> tuple[QuotationItem, str | None]:
+    target = _find_replacement_item(session, item, explicit_code=explicit_code)
+    if target is None:
+        session.items.append(item)
+        return item, None
+    old_code = target.code
+    item.code = target.code
+    for index, existing in enumerate(session.items):
+        if existing.code.lower() == target.code.lower():
+            session.items[index] = item
+            break
+    return item, old_code
 
 
 def _format_uyu(value: float) -> str:
@@ -676,10 +1105,18 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
                 mq.note = "Pliego estatal: cotizar con conversor/listado de molduras, no como mueble de placa."
                 s.moldura_quotes.append(mq)
             continue
-        try:
-            decomp = decompose_furniture(raw)
-        except Exception as e:
-            decomp = {"pieces": [], "hardware": [], "_error": str(e)}
+        missing_dimensions = list(raw.get("missing_dimensions") or [])
+        if missing_dimensions:
+            decomp = {
+                "pieces": [],
+                "hardware": [],
+                "_missing_dimensions": missing_dimensions,
+            }
+        else:
+            try:
+                decomp = decompose_furniture(raw)
+            except Exception as e:
+                decomp = {"pieces": [], "hardware": [], "_error": str(e)}
         pieces = [
             CutPiece(
                 width_mm=p.get("width_mm", 0),
@@ -716,7 +1153,22 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
             edge_banding=raw.get("edge_banding") or "",
             pieces=pieces,
             hardware=hardware,
+            notes=(
+                "Faltan medidas para cotizar: " + ", ".join(missing_dimensions) +
+                ". Consultar al usuario qué medidas utilizar."
+                if missing_dimensions else ""
+            ),
         )
+        if missing_dimensions:
+            item.last_quote = {
+                "error": "Faltan medidas para cotizar.",
+                "notes": item.notes,
+                "total_with_hardware": 0,
+                "metadata": {
+                    "awaiting_measure_clarification": True,
+                    "missing_dimensions": missing_dimensions,
+                },
+            }
         s.items.append(item)
 
     gs = pliego.get("general_specs") or {}
@@ -760,6 +1212,8 @@ def _ingest_pliego_into_session(session_id: str, file_paths: list[str]) -> str:
     tc = _tc()
     hw_prices = _hw_prices_map()
     for item in s.items:
+        if (item.last_quote or {}).get("metadata", {}).get("awaiting_measure_clarification"):
+            continue
         try:
             _recalculate_item(item, s, catalog=catalog, tc=tc, hw_prices=hw_prices)
         except Exception:
@@ -910,11 +1364,13 @@ def add_custom_item(
     edge_banding: str | None = None,
     code: str | None = None,
 ) -> str:
-    """Agrega a la sesión un mueble descrito por texto libre y lo cotiza.
+    """Agrega o corrige en la sesión un mueble descrito por texto libre y lo cotiza.
 
     Usala cuando el usuario describa un mueble sin subir pliego. Conviene pasar
     medidas en mm si aparecen en el texto; si vienen en metros o cm, convertilas
     a mm antes de llamar la tool.
+    Si el pedido corrige un item anterior o es casi igual, reemplaza ese item en
+    vez de acumular una version duplicada.
     """
     s = _ensure_session(ctx)
     if not description.strip():
@@ -946,13 +1402,14 @@ def add_custom_item(
             ],
             last_quote={"metadata": {"quote_type": "placa_directa", "subtype": "pasamano"}},
         )
-        s.items.append(item)
+        item, replaced_code = _upsert_similar_item(s, item, explicit_code=code)
         try:
             _recalculate_item(item, s)
         except Exception as e:
             item.last_quote = {"error": str(e), "notes": str(e), "total_with_hardware": 0}
         save_session(s)
-        return "Agregue la placa directa a la cotizacion.\n\n" + _format_item_summary(item)
+        verb = "Corregi" if replaced_code else "Agregue"
+        return f"{verb} la placa directa en la cotizacion.\n\n" + _format_item_summary(item)
 
     if route.quote_type == "madera_maciza":
         item = QuotationItem(
@@ -985,12 +1442,15 @@ def add_custom_item(
         item.last_quote["hardware_lines"] = []
         item.last_quote["pending_hardware_codes"] = []
         item.last_quote["total_with_hardware"] = round(item.last_quote.get("total", 0), 2)
+        if (item.last_quote.get("metadata") or {}).get("subtype") == "cortes_redondos":
+            item.quantity = 1
         ok, forbidden = validate_quote_lines(route, [line.get("concept", "") for line in item.last_quote.get("lines", [])])
         if not ok:
             return f"No puedo guardar esta cotizacion de madera: aparecieron conceptos prohibidos ({', '.join(forbidden)})."
-        s.items.append(item)
+        item, replaced_code = _upsert_similar_item(s, item, explicit_code=code)
         save_session(s)
-        return "Agregue el mueble en madera maciza a la cotizacion.\n\n" + _format_item_summary(item)
+        verb = "Corregi" if replaced_code else "Agregue"
+        return f"{verb} el mueble en madera maciza en la cotizacion.\n\n" + _format_item_summary(item)
 
     try:
         item = _item_from_description(
@@ -1013,13 +1473,14 @@ def add_custom_item(
     if not item.pieces:
         return "No pude extraer piezas de placa. Pasame ancho, alto, profundidad, material, espesor y cómo está compuesto."
 
-    s.items.append(item)
+    item, replaced_code = _upsert_similar_item(s, item, explicit_code=code)
     try:
         _recalculate_item(item, s)
     except Exception as e:
         item.last_quote = {"error": str(e), "notes": str(e), "total_with_hardware": 0}
     save_session(s)
-    return "Agregué el mueble a la cotización.\n\n" + _format_item_summary(item)
+    verb = "Corregi" if replaced_code else "Agregue"
+    return f"{verb} el mueble en la cotizacion.\n\n" + _format_item_summary(item)
 
 
 @function_tool
@@ -1268,6 +1729,7 @@ Cómo trabajás:
 - Si el usuario pide precio de venta de varillas/listones/barrotes/zócalos/molduras por medida (ej: "2 varillas de pino 10x10 de 3.3 m"), usá `quote_moldura_price`. No uses `add_custom_item` para eso y no armes pliego/diseño. Si la medida no existe en stock/listado, igual devolvé precio estimativo y aclaralo.
 - Si el usuario describe un mueble a medida en texto ("cotizame un bajo mesada...", "armame precio para...") sin subir pliego, usá `add_custom_item`.
   Convertí medidas a mm antes de llamar la tool. Si faltan medidas/material/espesor, pedí solo esos datos.
+- Si el usuario pide algo casi igual a un item ya cotizado en este chat, interpretalo como correccion del item anterior y usá `add_custom_item` con el `code` del item a corregir. Solo creá un item nuevo cuando sea claramente otro mueble.
 - Si el usuario corrige un plano/despiece diciendo que faltan puertas, cajones, estantes, perchero u otro componente, rehacé el item con `add_custom_item` usando la descripción completa corregida; no respondas solo con una disculpa.
 - Si te pide cambiar cantidades de herrajes ("3 bisagras en vez de 2"), usá `set_hardware_quantity`.
 - Si te pasa precios de herrajes, usá `set_hardware_price` (es global, se persiste para todas las sesiones).
@@ -1281,7 +1743,9 @@ Cómo trabajás:
 Reglas de ruteo de materiales:
 - Si el usuario/pliego pide directamente placas u hojas completas para comprar/vender ("placa completa", "hoja", "sin cantear", "solo placa", "pasamano"), usa `add_custom_item` pero describilo como venta directa de placa. No agregues canto, cortes, mano de obra, maquinaria ni merma; es compra/venta de la placa con ganancia, recargo financiero y flete si aplica.
 - Para melaminicos de color o textura madera (gris, roble kendal, etc.) usa las referencias de melaminico color/textura, no la placa blanca/laca blanca. Las referencias tipo BASICOS/MEDIO/PREMIUM corresponden a colores/texturas distintos al blanco.
+- Si el pedido dice MDF, MDF crudo, fibrofacil o "NO EN MELAMINICO", cotiza placa MDF cruda/fibrofacil y NO agregues canto ABS/blanco por defecto. Solo agregá canto si el usuario lo pide explicitamente.
 - Si el pedido dice tablones/tablas de madera, cotiza desde Datos/Maderas por madera/tablas, no como placas. Pedi especie si falta.
+- Si el pedido puede ser tanto en madera como en placa/melaminico y el usuario no lo aclara, preguntá antes de cotizar. No asumas placa por defecto en esos casos.
 
 Preguntas operativas obligatorias:
 - Despues de cotizar o corregir un mueble, si el usuario no lo indico explicitamente en ese pedido, cerra siempre preguntando:

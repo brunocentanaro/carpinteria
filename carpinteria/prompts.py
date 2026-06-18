@@ -68,11 +68,13 @@ Para cada mueble devolvé:
 - wood_only: clasificá si el mueble se puede fabricar en un taller de carpintería con placas de melamínico/MDF.
   SIEMPRE true para: armarios, cajoneras, lockers, estantes de melamínico, muebles de guardado, alacenas, bajo mesadas. Estos muebles usan herrajes comprados (bisagras, guías telescópicas, cerraduras, tiradores metálicos, ruedas) y eso está perfecto, son wood_only=true.
   SIEMPRE true para molduras de madera: barrotes, listones, montantes, zócalos, contravidrios, media cañas, molduras para cuadro y varillas. En esos casos NO los interpretes como muebles de placa: conservá tipo, material, medida de sección en mm, largo de varilla y cantidad para cotizar con el conversor/listado de molduras.
+  SIEMPRE true para puertas de madera/carpintería: hojas de puerta, puertas placa, puertas enchapadas, marcos, contramarcos y tapajuntas. Conservá medidas de hoja, material de caras/enchapado, canto/cubrecanto, marco, tapajuntas, terminación, herrajes y cantidad. Una puerta de madera NO se cotiza como mueble de melamínico genérico.
   SIEMPRE false para: mesas con patas de caño/hierro, escritorios con estructura metálica soldada, sillas, sillones, tarimas con estructura de caño, estanterías metálicas, lockers metálicos, cualquier cosa que necesite soldadura o fabricación de estructura de hierro.
 
 IMPORTANTE:
 - Extraé SOLO la información que está explícita en el texto
 - Las dimensiones pueden estar en metros (0.80 = 800mm) o centímetros (80 = 800mm)
+- En tablas estatales con columnas CODIGO SICE / ITEM / ARTICULO / ESPECIFICACIONES / CANTIDAD, no omitas items numerados porque tengan medidas incompletas. Incluilos igual con la descripcion disponible; si falta una medida necesaria para cotizar, dejala fuera de dimensions y aclara que hay que consultar al usuario; NO asumas medidas.
 - Si un mueble tiene variantes (A, B, C), reportá cada variante por separado
 - Incluí información sobre colores, terminaciones y especificaciones técnicas
 - En pliegos estatales, extraé también lugar de entrega, plazo de entrega, plazo de pago, mantenimiento de oferta, garantía de oferta, garantía de fiel cumplimiento, garantía del producto y condiciones de descarga/flete si aparecen.

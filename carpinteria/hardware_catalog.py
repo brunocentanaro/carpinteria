@@ -23,6 +23,7 @@ class HardwareSpec:
 
 CURATED_HARDWARE: list[HardwareSpec] = [
     # Bisagras
+    HardwareSpec("BISAGRA_PUERTA_PASO",    "Bisagra para puerta de paso",                  "BISAGRA"),
     HardwareSpec("BISAGRA_FRENO",          "Bisagra con freno",                            "BISAGRA"),
     HardwareSpec("BISAGRA_RECTA",          "Bisagra recta",                                "BISAGRA"),
     HardwareSpec("BISAGRA_SEMI_RECTA",     "Bisagra semi recta (codo medio)",              "BISAGRA"),
@@ -50,6 +51,7 @@ CURATED_HARDWARE: list[HardwareSpec] = [
     HardwareSpec("PERILLA",                "Perilla / pomo",                                "TIRADOR"),
 
     # Cerraduras
+    HardwareSpec("CERR_PUERTA_EMBUTIR",    "Cerradura de embutir para puerta",             "CERRADURA"),
     HardwareSpec("CERR_TAMBOR",            "Cerradura tambor",                             "CERRADURA"),
     HardwareSpec("CERR_CAJONERA_3",        "Cerradura para cajonera 3 cajones",            "CERRADURA"),
     HardwareSpec("CERR_PUERTA_MUEBLE",     "Cerradura para puerta de mueble",              "CERRADURA"),
@@ -67,6 +69,7 @@ CURATED_HARDWARE: list[HardwareSpec] = [
     HardwareSpec("TORNILLO_AGLOMERADO",    "Tornillo aglomerado (unidad)",                 "FERRETERIA"),
 
     # Pasadores y otros
+    HardwareSpec("PESTILLO_PUERTA",        "Pestillo para puerta",                         "PASADOR"),
     HardwareSpec("PASADOR",                "Pasador / cierre simple",                      "PASADOR"),
     HardwareSpec("PORTA_LLAVE",            "Porta llave / gancho",                         "FERRETERIA"),
 ]

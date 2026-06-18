@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
       year: year ? Number(year) : undefined,
       month: month ? Number(month) : undefined,
       current_month: !archive && !year && !month,
+      limit: archive ? 1000 : 200,
       user_id: session.user,
       brand_id: brandId,
       area: session.area,

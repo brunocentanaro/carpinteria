@@ -40,6 +40,21 @@ export async function PATCH(
     const body = await req.json().catch(() => ({}));
     const commercialFields = [
       "approval_status",
+      "client_name",
+      "client_phone",
+      "order_summary",
+      "payment_status",
+      "payment_notes",
+      "client_sent",
+      "client_accepted",
+      "deposit_amount",
+      "order_number",
+      "ready_to_deliver",
+      "delivered",
+      "final_payment_amount",
+    ];
+    const adminOnlyFields = [
+      "approval_status",
       "client_sent",
       "client_accepted",
       "deposit_amount",
@@ -49,6 +64,7 @@ export async function PATCH(
       "final_payment_amount",
     ];
     const hasCommercialField = commercialFields.some((key) => key in body);
+    const hasAdminOnlyField = adminOnlyFields.some((key) => key in body);
     const payload: Record<string, unknown> = {
       action: hasCommercialField ? "session_commercial_status" : "session_update",
       session_id: id,
@@ -58,8 +74,9 @@ export async function PATCH(
     if ("destination" in body) payload.destination = body.destination;
     if ("title" in body) payload.title = body.title;
     if ("additional_services" in body) payload.additional_services = body.additional_services;
+    if ("chat_note" in body) payload.chat_note = body.chat_note;
     if (hasCommercialField) {
-      if (auth.area !== "administracion") {
+      if (hasAdminOnlyField && auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede cambiar estados comerciales" }, { status: 403 });
       }
       for (const key of commercialFields) {

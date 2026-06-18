@@ -178,6 +178,7 @@ export function QuotationPanel({ session }: { session: Session | null }) {
       </header>
 
       <OrderProgress session={session} grand={grand} />
+      <OrderPaperPanel session={session} />
       {session.order_number && <FactoryOrderHeader session={session} grand={grand} />}
       <GlobalsPanel session={session} />
       <PendingPanel session={session} />
@@ -559,6 +560,120 @@ function FactoryOrderHeader({ session, grand }: { session: Session; grand: numbe
 function moneyLabel(value: number | null | undefined) {
   if (!value || value <= 0) return "";
   return `UYU ${fmtUYU(value)}`;
+}
+
+function paymentStatusLabel(status: Session["payment_status"]) {
+  return {
+    unknown: "A confirmar",
+    none: "No pago nada",
+    deposit: "Seño",
+    paid: "Pago",
+  }[status];
+}
+
+function OrderPaperPanel({ session }: { session: Session }) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (payload: Parameters<typeof patchSession>[1]) =>
+      patchSession(session.id, payload),
+    onSuccess: (newSession) => {
+      queryClient.setQueryData(qk.session(session.id), newSession);
+    },
+  });
+  const [clientName, setClientName] = useState(session.client_name);
+  const [clientPhone, setClientPhone] = useState(session.client_phone);
+  const [orderSummary, setOrderSummary] = useState(session.order_summary);
+  const [paymentNotes, setPaymentNotes] = useState(session.payment_notes);
+
+  useEffect(() => {
+    setClientName(session.client_name);
+    setClientPhone(session.client_phone);
+    setOrderSummary(session.order_summary);
+    setPaymentNotes(session.payment_notes);
+  }, [
+    session.id,
+    session.client_name,
+    session.client_phone,
+    session.order_summary,
+    session.payment_notes,
+  ]);
+
+  const saveText = (
+    field: "client_name" | "client_phone" | "order_summary" | "payment_notes",
+    value: string,
+  ) => {
+    if (value !== session[field]) mutation.mutate({ [field]: value });
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
+        <CardTitle className="text-xs uppercase text-muted-foreground">
+          Papel de orden
+        </CardTitle>
+        <Badge variant="secondary" className="rounded px-2 py-0.5 text-[10px]">
+          {paymentStatusLabel(session.payment_status)}
+        </Badge>
+      </CardHeader>
+      <CardContent className="grid gap-3 text-sm md:grid-cols-2">
+        <Label className="space-y-1 text-xs">
+          Cliente
+          <Input
+            value={clientName}
+            onChange={(e) => setClientName(e.target.value)}
+            onBlur={() => saveText("client_name", clientName)}
+            placeholder="Nombre del cliente"
+          />
+        </Label>
+        <Label className="space-y-1 text-xs">
+          Telefono
+          <Input
+            value={clientPhone}
+            onChange={(e) => setClientPhone(e.target.value)}
+            onBlur={() => saveText("client_phone", clientPhone)}
+            placeholder="Telefono"
+          />
+        </Label>
+        <Label className="space-y-1 text-xs md:col-span-2">
+          Pedido segun papel
+          <Input
+            value={orderSummary}
+            onChange={(e) => setOrderSummary(e.target.value)}
+            onBlur={() => saveText("order_summary", orderSummary)}
+            placeholder="Resumen del pedido"
+          />
+        </Label>
+        <Label className="space-y-1 text-xs">
+          Estado de pago
+          <Select
+            value={session.payment_status}
+            onValueChange={(value) =>
+              mutation.mutate({ payment_status: value as Session["payment_status"] })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="unknown">A confirmar</SelectItem>
+              <SelectItem value="none">No pago nada</SelectItem>
+              <SelectItem value="deposit">Seño</SelectItem>
+              <SelectItem value="paid">Pago</SelectItem>
+            </SelectContent>
+          </Select>
+        </Label>
+        <Label className="space-y-1 text-xs">
+          Nota de pago
+          <Input
+            value={paymentNotes}
+            onChange={(e) => setPaymentNotes(e.target.value)}
+            onBlur={() => saveText("payment_notes", paymentNotes)}
+            placeholder="Ej: seña en efectivo"
+          />
+        </Label>
+      </CardContent>
+    </Card>
+  );
 }
 
 function depositProgressLabel(deposit: number | null | undefined, total: number) {
@@ -1074,6 +1189,7 @@ function ItemsList({
 // ---------------------------------------------------------------------------
 
 function Footer({ grand, session }: { grand: number; session: Session }) {
+  const queryClient = useQueryClient();
   const hasItems = session.items.length > 0;
   const hasMolduras = (session.moldura_quotes?.length ?? 0) > 0;
   const allOk =
@@ -1085,6 +1201,15 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
     });
   const [busy, setBusy] = useState<"excel" | "docx" | null>(null);
   const [copiedMessage, setCopiedMessage] = useState(false);
+  const [attachedMessage, setAttachedMessage] = useState(false);
+  const attachMutation = useMutation({
+    mutationFn: (chatNote: string) => patchSession(session.id, { chat_note: chatNote }),
+    onSuccess: (newSession) => {
+      queryClient.setQueryData(qk.session(session.id), newSession);
+      setAttachedMessage(true);
+      window.setTimeout(() => setAttachedMessage(false), 1800);
+    },
+  });
 
   async function downloadExport(kind: "excel" | "docx") {
     if (busy) return;
@@ -1125,6 +1250,11 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
     }
   }
 
+  function attachQuoteToChat() {
+    const message = buildClientMessage(session, grand);
+    attachMutation.mutate(`Cotizacion actualizada desde el panel:\n\n${message}`);
+  }
+
   return (
     <>
       <Separator />
@@ -1143,6 +1273,14 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
           )}
         </div>
         <div className="flex gap-2">
+          <Button
+            variant="outline"
+            onClick={attachQuoteToChat}
+            disabled={attachMutation.isPending || (!hasItems && !hasMolduras)}
+          >
+            <Check className="h-4 w-4 mr-1" />
+            {attachedMessage ? "Enviado" : "Enviar al chat"}
+          </Button>
           <Button
             variant="outline"
             onClick={copyClientMessage}
