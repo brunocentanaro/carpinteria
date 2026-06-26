@@ -130,6 +130,7 @@ export const SessionSchema = z.object({
       painting: z.boolean().default(false),
       varnishing: z.boolean().default(false),
       polishing: z.boolean().default(false),
+      lacquering: z.boolean().default(false),
     })
     .default({
       rectification: false,
@@ -137,6 +138,7 @@ export const SessionSchema = z.object({
       painting: false,
       varnishing: false,
       polishing: false,
+      lacquering: false,
     }),
   general_specs: z
     .object({

@@ -107,7 +107,9 @@ function buildClientMessage(session: Session, grand: number): string {
       ? "barnizado"
       : services.polishing
         ? "lustrado"
-        : "";
+        : services.lacquering
+          ? "laqueado"
+          : "";
   const extras = [
     services.rectification ? "rectificacion de medidas incluida" : "",
     finish ? `terminacion con ${finish}` : "",
@@ -863,6 +865,7 @@ function GlobalsPanel({ session }: { session: Session }) {
     { key: "painting", label: "Pintura" },
     { key: "varnishing", label: "Barniz" },
     { key: "polishing", label: "Lustre" },
+    { key: "lacquering", label: "Laqueado" },
   ];
 
   return (

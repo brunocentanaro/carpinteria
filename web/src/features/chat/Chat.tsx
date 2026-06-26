@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
 import { getSession, qk } from "./api";
@@ -9,7 +10,13 @@ import { QuotationPanel } from "./components/QuotationPanel";
 import { SessionsSidebar } from "./components/SessionsSidebar";
 
 export function Chat() {
+  const searchParams = useSearchParams();
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const id = searchParams.get("sessionId") || searchParams.get("session");
+    if (id) setActiveId(id);
+  }, [searchParams]);
 
   // The chat column and the quotation panel render even when no session is
   // active — the column starts a session lazily on the first message or

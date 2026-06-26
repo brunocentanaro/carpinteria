@@ -103,6 +103,35 @@ DOOR_PU_COATS = 3
 DOOR_FINISH_COVERAGE_M2_PER_L = 8.0
 DOOR_FINISH_MINUTES_PER_M2_PER_COAT = 15.0
 DOOR_FINISH_LITER_PRICE_UYU = 150.0
+DOOR_LACQUERING_PRICE_UYU = 7200.0
+
+
+def _item_has_doors(item: QuotationItem) -> bool:
+    text = _norm_text(f"{item.name} {item.description}")
+    if "puerta" in text or "hoja" in text:
+        return True
+    return any("puerta" in _norm_text(piece.label) for piece in item.pieces)
+
+
+def _apply_lacquering_service(base: dict[str, Any], item: QuotationItem, session: QuotationSession) -> dict[str, Any]:
+    if not session.additional_services.lacquering or not _item_has_doors(item):
+        return base
+    line = QuotationLine(
+        concept="Laqueado de puertas",
+        quantity=1,
+        unit="servicio",
+        unit_price=DOOR_LACQUERING_PRICE_UYU,
+        subtotal=DOOR_LACQUERING_PRICE_UYU,
+    ).model_dump()
+    previous_total = float(base.get("total", 0) or 0)
+    previous_total_with_hardware = float(base.get("total_with_hardware", previous_total) or 0)
+    base.setdefault("lines", []).append(line)
+    base["total"] = round(previous_total + DOOR_LACQUERING_PRICE_UYU, 2)
+    base["total_with_hardware"] = round(previous_total_with_hardware + DOOR_LACQUERING_PRICE_UYU, 2)
+    metadata = dict(base.get("metadata") or {})
+    metadata["lacquering_service_uyu"] = DOOR_LACQUERING_PRICE_UYU
+    base["metadata"] = metadata
+    return base
 
 
 def _is_wood_door_item(item: QuotationItem) -> bool:
@@ -111,7 +140,69 @@ def _is_wood_door_item(item: QuotationItem) -> bool:
         return False
     if any(term in text for term in ("metal", "aluminio", "vidrio", "blindex")):
         return False
-    return any(term in text for term in ("madera", "enchap", "eucal", "pino", "marco", "tapajunta", "placa", "hoja"))
+    if _is_explicit_honeycomb_door(text):
+        return True
+    if _is_furniture_door_context(text):
+        return False
+    explicit_structural = (
+        "puerta placa" in text
+        or "puerta de paso" in text
+        or "puerta interior" in text
+        or "puerta exterior" in text
+        or "hoja de puerta" in text
+        or "puerta para casa" in text
+        or "puerta casa" in text
+        or "marco" in text
+        or "contramarco" in text
+        or "tapajunta" in text
+        or "cubrecanto" in text
+        or "cubre canto" in text
+        or "nido" in text
+        or "alveolar" in text
+    )
+    wood_material = any(term in text for term in ("madera", "enchap", "eucal", "pino", "placa", "hoja", "mdf", "fibro"))
+    return explicit_structural and wood_material
+
+
+def _is_explicit_honeycomb_door(text: str) -> bool:
+    return ("nido" in text and "abej" in text) or "alveolar" in text
+
+
+def _is_furniture_door_context(text: str) -> bool:
+    return any(term in text for term in (
+        "mueble",
+        "placard",
+        "placar",
+        "armario",
+        "aereo",
+        "aéreo",
+        "alacena",
+        "bajo mesada",
+        "bajomesada",
+        "cajonera",
+        "estante",
+        "repisa",
+        "ropero",
+        "biblioteca",
+        "locker",
+        "modulo",
+        "módulo",
+        "melamin",
+        "mdf",
+    ))
+
+
+def _needs_door_core_confirmation(item: QuotationItem) -> bool:
+    text = _norm_text(f"{item.name} {item.description} {item.material}")
+    if "puerta" not in text and "hoja" not in text:
+        return False
+    if _is_explicit_honeycomb_door(text):
+        return False
+    if _is_furniture_door_context(text) or _is_wood_door_item(item):
+        return False
+    if any(term in text for term in ("metal", "aluminio", "vidrio", "blindex")):
+        return False
+    return any(term in text for term in ("madera", "enchap", "eucal", "pino", "placa", "hoja"))
 
 
 def _wood_door_dimensions(item: QuotationItem) -> tuple[float, float, float]:
@@ -143,7 +234,56 @@ def _moldura_unit_without_iva(width_mm: float, height_mm: float, material: str, 
     return round(float(quote.unit_price), 2), quote.source
 
 
-def _veneer_line(catalog: ProductCatalog, tc: float, area_m2: float) -> tuple[QuotationLine, str | None]:
+def _door_face_thickness_mm(item: QuotationItem) -> float:
+    text = _norm_text(f"{item.name} {item.description} {item.material}")
+    if "mdf" in text or "fibro" in text:
+        match = re.search(r"(\d+(?:[.,]\d+)?)\s*mm", text)
+        if match:
+            return float(match.group(1).replace(",", "."))
+        return 5.5
+    return 4.0
+
+
+def _door_leaf_dimensions(item: QuotationItem, thickness: float) -> list[tuple[float, float, float]]:
+    dims: list[tuple[float, float, float]] = []
+    for piece in item.pieces:
+        if "puerta" not in _norm_text(piece.label):
+            continue
+        if piece.width_mm <= 0 or piece.height_mm <= 0:
+            continue
+        for _ in range(max(1, int(piece.quantity or 1))):
+            dims.append((float(piece.width_mm), float(piece.height_mm), thickness))
+    if dims:
+        return dims
+
+    width, height, door_thickness = _wood_door_dimensions(item)
+    return [(width, height, door_thickness) for _ in range(max(1, int(item.quantity or 1)))]
+
+
+def _door_face_line(catalog: ProductCatalog, tc: float, item: QuotationItem, area_m2: float) -> tuple[QuotationLine, str | None]:
+    text = _norm_text(f"{item.name} {item.description} {item.material}")
+    if "mdf" in text or "fibro" in text:
+        requested_thickness = _door_face_thickness_mm(item)
+        match = catalog.find_placa("MDF", requested_thickness, "crudo")
+        if match is None or not match.producto.ancho_mm or not match.producto.largo_mm:
+            return QuotationLine(
+                concept=f"MDF {requested_thickness:g}mm para 2 caras (precio pendiente)",
+                quantity=round(area_m2, 3),
+                unit="m2",
+                unit_price=0,
+                subtotal=0,
+            ), f"Falta precio de MDF {requested_thickness:g}mm para caras de puerta en el listado"
+        product = match.producto
+        product_area = product.ancho_mm * product.largo_mm / 1_000_000
+        unit_m2 = round(product.precio_usd_simp * tc / max(product_area, 0.01), 2)
+        return QuotationLine(
+            concept=f"MDF {requested_thickness:g}mm para 2 caras ({product.nombre})",
+            quantity=round(area_m2, 3),
+            unit="m2",
+            unit_price=unit_m2,
+            subtotal=round(unit_m2 * area_m2, 2),
+        ), None
+
     matches = catalog.search("enchapado eucaliptus 4mm euca", tipo_producto="PLACA", limit=8)
     if not matches:
         matches = catalog.search("eucaliptus 4mm", tipo_producto="PLACA", limit=8)
@@ -180,32 +320,43 @@ def _quote_wood_door(
     tc: float,
     hw_prices: dict[str, float],
 ) -> dict[str, Any]:
-    width, height, thickness = _wood_door_dimensions(item)
-    door_area_m2 = width * height / 1_000_000
+    face_thickness = _door_face_thickness_mm(item)
+    door_thickness = _wood_door_dimensions(item)[2]
+    door_dims = _door_leaf_dimensions(item, door_thickness)
+    width = max(w for w, _, _ in door_dims)
+    height = max(h for _, h, _ in door_dims)
+    thickness = max(t for _, _, t in door_dims)
+    door_area_m2 = sum(w * h for w, h, _ in door_dims) / 1_000_000
     faces_area_m2 = door_area_m2 * 2
-    edge_area_m2 = (2 * (width + height) / 1000) * (thickness / 1000)
+    edge_area_m2 = sum((2 * (w + h) / 1000) * (t / 1000) for w, h, t in door_dims)
     finish_area_one_coat = faces_area_m2 + edge_area_m2
     finish_area_total = finish_area_one_coat * DOOR_PU_COATS
     finish_liters = finish_area_total / DOOR_FINISH_COVERAGE_M2_PER_L
     finish_hours = finish_area_total * DOOR_FINISH_MINUTES_PER_M2_PER_COAT / 60
     assembly_hours = max(2.0, round(door_area_m2 * 1.1, 2))
 
-    vertical_count = max(3, math.ceil(width / DOOR_CORE_SPACING_MM) + 1)
-    horizontal_count = max(6, math.ceil(height / DOOR_CORE_SPACING_MM) + 1)
-    core_linear_m = ((vertical_count * height) + (horizontal_count * width)) / 1000
-    perimeter_m = 2 * (width + height) / 1000
-    frame_len_m = (2 * height + width) / 1000
+    core_linear_m = 0.0
+    vertical_count = 0
+    horizontal_count = 0
+    for w, h, _ in door_dims:
+        v_count = max(3, math.ceil(w / DOOR_CORE_SPACING_MM) + 1)
+        h_count = max(6, math.ceil(h / DOOR_CORE_SPACING_MM) + 1)
+        vertical_count += v_count
+        horizontal_count += h_count
+        core_linear_m += ((v_count * h) + (h_count * w)) / 1000
+    perimeter_m = sum(2 * (w + h) / 1000 for w, h, _ in door_dims)
+    frame_len_m = sum((2 * h + w) / 1000 for w, h, _ in door_dims)
     tapajuntas_len_m = frame_len_m * 2
 
     lines: list[QuotationLine] = []
     pending: list[str] = []
     notes: list[str] = []
 
-    veneer, veneer_note = _veneer_line(catalog, tc, faces_area_m2)
-    lines.append(veneer)
-    if veneer_note:
-        pending.append("ENCHAPADO_EUCALIPTUS_4MM")
-        notes.append(veneer_note)
+    face_line, face_note = _door_face_line(catalog, tc, item, faces_area_m2)
+    lines.append(face_line)
+    if face_note:
+        pending.append("CARAS_PUERTA")
+        notes.append(face_note)
 
     core_unit, core_source = _moldura_unit_without_iva(DOOR_CORE_THICKNESS_MM, DOOR_CORE_WIDTH_MM, "pino", "liston", "metro")
     lines.append(QuotationLine(
@@ -400,6 +551,7 @@ def _quote_wood_door(
         "total_with_hardware": total,
         "tc": tc,
     }
+    _apply_lacquering_service(base, item, session)
     item.last_quote = base
     return base
 
@@ -431,6 +583,7 @@ def _recalculate_item(
         base["hardware_lines"] = []
         base["pending_hardware_codes"] = []
         base["total_with_hardware"] = round(base.get("total", 0), 2)
+        _apply_lacquering_service(base, item, session)
         if (base.get("metadata") or {}).get("subtype") == "cortes_redondos":
             item.quantity = 1
         item.last_quote = base
@@ -485,8 +638,29 @@ def _recalculate_item(
             "quote_type": "placa_directa",
             "subtype": "pasamano",
         }
+        _apply_lacquering_service(base, item, session)
         item.last_quote = base
         return base
+
+    if _needs_door_core_confirmation(item):
+        msg = (
+            "El pedido parece ser una puerta de madera, pero no queda claro si debe fabricarse "
+            "como puerta placa con alma nido de abeja. Confirmar ese sistema constructivo antes "
+            "de cotizar."
+        )
+        item.last_quote = {
+            "error": msg,
+            "notes": msg,
+            "lines": [],
+            "total": 0,
+            "total_with_hardware": 0,
+            "pending_hardware_codes": [],
+            "metadata": {
+                "awaiting_door_core_approval": True,
+                "quote_type": "wood_door_pending",
+            },
+        }
+        return item.last_quote
 
     if _is_wood_door_item(item):
         try:
@@ -625,6 +799,7 @@ def _recalculate_item(
     base["pending_hardware_codes"] = pending
     base["total_with_hardware"] = round(base.get("total", 0), 2)
     base["tc"] = tc
+    _apply_lacquering_service(base, item, session)
     item.last_quote = base
     return base
 
@@ -1046,6 +1221,8 @@ def _format_state(session: QuotationSession) -> str:
         services.append("barniz")
     if session.additional_services.polishing:
         services.append("lustre")
+    if session.additional_services.lacquering:
+        services.append("laqueado")
     body = [
         f"**Sesión** id `{session.id}`",
         f"Color por defecto: `{session.color_default or '—'}` | "
@@ -1539,14 +1716,22 @@ def set_additional_services(
     painting: bool = False,
     varnishing: bool = False,
     polishing: bool = False,
+    lacquering: bool = False,
 ) -> str:
-    """Setea servicios adicionales de la cotizacion: rectificacion de medidas, colocacion, pintura, barniz y lustre."""
+    """Setea servicios adicionales de la cotizacion: rectificacion, colocacion, pintura, barniz, lustre y laqueado."""
     s = _ensure_session(ctx)
     s.additional_services.rectification = bool(rectification)
     s.additional_services.installation = bool(installation)
     s.additional_services.painting = bool(painting)
     s.additional_services.varnishing = bool(varnishing)
     s.additional_services.polishing = bool(polishing)
+    s.additional_services.lacquering = bool(lacquering)
+    if s.items:
+        catalog = ProductCatalog.from_activa()
+        tc = _tc()
+        hw_prices = _hw_prices_map()
+        for item in s.items:
+            _recalculate_item(item, s, catalog=catalog, tc=tc, hw_prices=hw_prices)
     save_session(s)
     selected = []
     if s.additional_services.rectification:
@@ -1559,6 +1744,8 @@ def set_additional_services(
         selected.append("barniz")
     if s.additional_services.polishing:
         selected.append("lustre")
+    if s.additional_services.lacquering:
+        selected.append("laqueado")
     return "Servicios adicionales: " + (", ".join(selected) if selected else "sin adicionales")
 
 
@@ -1733,7 +1920,7 @@ Cómo trabajás:
 - Si el usuario corrige un plano/despiece diciendo que faltan puertas, cajones, estantes, perchero u otro componente, rehacé el item con `add_custom_item` usando la descripción completa corregida; no respondas solo con una disculpa.
 - Si te pide cambiar cantidades de herrajes ("3 bisagras en vez de 2"), usá `set_hardware_quantity`.
 - Si te pasa precios de herrajes, usá `set_hardware_price` (es global, se persiste para todas las sesiones).
-- Si te dice color/días de pago/destino o servicios adicionales (rectificación de medidas, colocación, pintura, barnizado/lustrado), usá las tools correspondientes.
+- Si te dice color/días de pago/destino o servicios adicionales (rectificación de medidas, colocación, pintura, barnizado/lustrado/laqueado), usá las tools correspondientes.
 - Después de mutar algo, mostrá el resumen actualizado del item afectado.
 - Hablás español rioplatense, conciso. Mostrás números formateados (UYU 12.345,67).
 - Códigos de herrajes en MAYÚSCULAS_CON_GUION_BAJO (ej: BISAGRA_FRENO, GUIA_TELESC_400). Si dudás, llamá `list_hardware_catalog`.
@@ -1750,7 +1937,7 @@ Reglas de ruteo de materiales:
 Preguntas operativas obligatorias:
 - Despues de cotizar o corregir un mueble, si el usuario no lo indico explicitamente en ese pedido, cerra siempre preguntando:
   1. Necesita rectificacion de medidas?
-  2. Va pintado, barnizado o lustrado?
+  2. Va pintado, barnizado, lustrado o laqueado?
   3. Lleva envio? Si lleva, a donde es?
   4. Lleva colocacion?
 - Si el usuario responde, aplica `set_additional_services` y/o `set_destination` segun corresponda.

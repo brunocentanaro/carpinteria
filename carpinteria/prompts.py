@@ -68,7 +68,7 @@ Para cada mueble devolvé:
 - wood_only: clasificá si el mueble se puede fabricar en un taller de carpintería con placas de melamínico/MDF.
   SIEMPRE true para: armarios, cajoneras, lockers, estantes de melamínico, muebles de guardado, alacenas, bajo mesadas. Estos muebles usan herrajes comprados (bisagras, guías telescópicas, cerraduras, tiradores metálicos, ruedas) y eso está perfecto, son wood_only=true.
   SIEMPRE true para molduras de madera: barrotes, listones, montantes, zócalos, contravidrios, media cañas, molduras para cuadro y varillas. En esos casos NO los interpretes como muebles de placa: conservá tipo, material, medida de sección en mm, largo de varilla y cantidad para cotizar con el conversor/listado de molduras.
-  SIEMPRE true para puertas de madera/carpintería: hojas de puerta, puertas placa, puertas enchapadas, marcos, contramarcos y tapajuntas. Conservá medidas de hoja, material de caras/enchapado, canto/cubrecanto, marco, tapajuntas, terminación, herrajes y cantidad. Una puerta de madera NO se cotiza como mueble de melamínico genérico.
+  SIEMPRE true para puertas de madera/carpintería estructurales: hojas de puerta, puertas placa/de paso, puertas enchapadas, marcos, contramarcos y tapajuntas. Conservá medidas de hoja, material de caras/enchapado, canto/cubrecanto, marco, tapajuntas, terminación, herrajes y cantidad. Las puertas de un mueble/placard/armario/cajonera en MDF o melamínico NO son puertas placa con alma nido: son piezas/frentes de placa del mueble.
   SIEMPRE false para: mesas con patas de caño/hierro, escritorios con estructura metálica soldada, sillas, sillones, tarimas con estructura de caño, estanterías metálicas, lockers metálicos, cualquier cosa que necesite soldadura o fabricación de estructura de hierro.
 
 IMPORTANTE:
@@ -148,6 +148,7 @@ IMPORTANTE:
 - Para guías de cajón elegí el largo en mm más cercano a la profundidad del cajón
 - Si la descripción menciona puertas, cajones, estantes, divisiones o perchero, NO devuelvas solo la caja exterior. Incluí las piezas internas y frentes necesarios:
   - Puertas: una pieza "puerta" por hoja indicada; si no hay cantidad pero dice puertas, asumí 2 hojas y aclará esa inferencia en el label.
+  - Puertas de muebles de melamínico/MDF: cotizalas como placa/frente normal del mueble. NO uses alma nido de abeja, marco, tapajuntas ni estructura de puerta de casa salvo que el pedido lo diga explícitamente y el usuario lo haya aprobado.
   - Cajones: por cada cajón incluí "frente cajón", laterales de cajón, fondo/base de cajón y trasera de cajón. Agregá guías.
   - Estantes: incluí cada "estante" como pieza independiente.
   - Perchero: el barral no es placa, pero agregá un herraje de barral/soporte si existe en el catálogo; si no existe, no inventes código y dejá el perchero expresado en labels de piezas divisorias.

@@ -2,6 +2,12 @@ from carpinteria.quote_router import classify_quote_type, validate_quote_lines
 from carpinteria.wood_calculator import quote_solid_wood_table
 from carpinteria.catalog import ProductCatalog
 from carpinteria.lista_precios_parser import Producto
+from carpinteria.agents.cotizador_chat import (
+    _door_face_line,
+    _is_wood_door_item,
+    _needs_door_core_confirmation,
+)
+from carpinteria.quotation_session import QuotationItem
 
 
 def test_solid_wood_request_routes_to_glued_boards():
@@ -118,3 +124,82 @@ def test_non_white_melamine_prefers_color_texture_reference():
     match = catalog.find_placa("melaminico", 18, "gris sombra")
     assert match is not None
     assert match.producto.sku == "BASICOS"
+
+
+def test_furniture_doors_do_not_use_honeycomb_core():
+    item = QuotationItem(
+        code="I6",
+        name="placard 4 estantes",
+        description="2 puertas en MDF enchapado en melaminico con cerradura",
+        material="MDF melaminico",
+    )
+    assert not _is_wood_door_item(item)
+    assert not _needs_door_core_confirmation(item)
+
+
+def test_structural_door_uses_honeycomb_core_only_when_explicit():
+    item = QuotationItem(
+        code="P1",
+        name="puerta placa de paso",
+        description="hoja de puerta enchapada en eucaliptus con marco y tapajuntas",
+        material="madera",
+    )
+    assert _is_wood_door_item(item)
+    assert not _needs_door_core_confirmation(item)
+
+
+def test_ambiguous_wood_door_waits_for_core_confirmation():
+    item = QuotationItem(
+        code="P2",
+        name="puerta de madera",
+        description="puerta de madera 800 x 2100 mm",
+        material="madera",
+    )
+    assert not _is_wood_door_item(item)
+    assert _needs_door_core_confirmation(item)
+
+
+def test_explicit_mdf_honeycomb_door_routes_to_core_quote():
+    item = QuotationItem(
+        code="P3",
+        name="puertas banos soporte",
+        description="puertas con nido de abeja, dos caras de MDF 5.5mm",
+        material="MDF",
+    )
+    assert _is_wood_door_item(item)
+    assert not _needs_door_core_confirmation(item)
+
+
+def test_mdf_honeycomb_door_faces_use_mdf_55mm():
+    product = Producto(
+        sku="MDF55",
+        codigo_proveedor="MDF55",
+        proveedor="TEST",
+        tipo_producto="PLACA",
+        familia="MDF",
+        material="MDF",
+        nombre="MDF CRUDO 5.5mm 2.60x1.83",
+        descripcion="MDF CRUDO 5.5mm 2.60x1.83",
+        descripcion_normalizada="mdf crudo 5.5mm 2.60x1.83",
+        search_key="mdf crudo 5.5mm",
+        espesor_mm=5.5,
+        ancho_mm=2600,
+        largo_mm=1830,
+        unidad="HOJA",
+        precio_usd_simp=20,
+        precio_usd_cimp=20,
+        moneda_origen="USD",
+        precio_origen_simp=20,
+        precio_origen_cimp=20,
+        tc_aplicado=1,
+    )
+    item = QuotationItem(
+        code="P4",
+        name="puerta con nido",
+        description="puerta con nido de abeja, 2 caras de MDF 5.5mm",
+        material="MDF",
+    )
+    line, note = _door_face_line(ProductCatalog([product]), 40, item, 2.0)
+    assert note is None
+    assert "MDF 5.5mm para 2 caras" in line.concept
+    assert line.subtotal > 0

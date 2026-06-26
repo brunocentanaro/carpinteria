@@ -76,6 +76,7 @@ ADDITIONAL_SERVICE_LABELS = {
     "painting": "Pintura",
     "varnishing": "Barniz",
     "polishing": "Lustre",
+    "lacquering": "Laqueado",
 }
 
 
@@ -960,16 +961,30 @@ def handle_export_excel(data: dict) -> dict:
         r += 1
         insumo_start = r
 
+        def _is_plate_or_door_material_concept(concept: str) -> bool:
+            return any(token in concept for token in (
+                "placa",
+                "canto",
+                "mdf",
+                "enchapado",
+                "alma nido",
+                "cubrecanto",
+                "tapacanto",
+                "marco",
+                "tapajuntas",
+                "laqueado",
+            ))
+
         for line in q.get("lines", []):
             concept = line.get("concept", "").lower()
-            if "placa" in concept or "canto" in concept:
+            if _is_plate_or_door_material_concept(concept):
                 ws.cell(row=r, column=1, value=line["concept"]).border = bdr
                 ws.cell(row=r, column=2, value=line["quantity"]).border = bdr
                 ws.cell(row=r, column=3, value=line["unit"]).border = bdr
-                usd_price = line["unit_price"] / param_vals["B5"] if param_vals["B5"] else 0
+                usd_price = line["unit_price"] / param_vals["B5"] if param_vals["B5"] and "laqueado" not in concept else 0
                 ws.cell(row=r, column=4, value=round(usd_price, 4)).border = bdr
                 ws.cell(row=r, column=4).number_format = '0.0000'
-                ws.cell(row=r, column=5, value=f"=D{r}*B5").border = bdr
+                ws.cell(row=r, column=5, value=line["unit_price"] if "laqueado" in concept else f"=D{r}*B5").border = bdr
                 ws.cell(row=r, column=5).number_format = money
                 if "placa" in concept:
                     board_area = float(board_meta.get("area_m2") or 0)
@@ -978,6 +993,8 @@ def handle_export_excel(data: dict) -> dict:
                         ws.cell(row=r, column=6, value=f"=MIN(E{r},{area_total_cell}/{board_area}*E{r}*(1+{contingency}))").border = bdr
                     else:
                         ws.cell(row=r, column=6, value=f"=B{r}*E{r}").border = bdr
+                elif "laqueado" in concept:
+                    ws.cell(row=r, column=6, value=f"=B{r}*E{r}").border = bdr
                 else:
                     ws.cell(row=r, column=6, value=f"=B{r}*E{r}").border = bdr
                 ws.cell(row=r, column=6).number_format = money
@@ -1006,7 +1023,7 @@ def handle_export_excel(data: dict) -> dict:
         placa_canto_rows = []
         for rr2 in range(insumo_start, insumo_end + 1):
             val = ws.cell(row=rr2, column=1).value or ""
-            if "placa" in val.lower() or "canto" in val.lower():
+            if _is_plate_or_door_material_concept(val.lower()):
                 placa_canto_rows.append(f"F{rr2}")
         mat_formula = "+".join(placa_canto_rows) if placa_canto_rows else "0"
 

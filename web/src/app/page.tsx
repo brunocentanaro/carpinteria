@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import PieceEditor from "@/components/PieceEditor";
 import QuoteResult from "@/components/QuoteResult";
 import FileUpload from "@/components/FileUpload";
@@ -8,6 +9,7 @@ import PliegoItems from "@/components/PliegoItems";
 import HardwarePricesPanel from "@/components/HardwarePricesPanel";
 import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 import { CutPiece, Quotation, AnalysisPlan, PliegoResult, PliegoItem } from "@/lib/types";
+import { createSession, uploadPliego } from "@/features/chat/api";
 
 interface HardwareLine {
   code: string;
@@ -44,6 +46,7 @@ interface ItemQuote {
 type Tab = "file" | "manual";
 
 export default function Home() {
+  const router = useRouter();
   const { brand } = useBrandEnvironment();
   const [tab, setTab] = useState<Tab>("file");
   const [pieces, setPieces] = useState<CutPiece[]>([]);
@@ -222,6 +225,20 @@ export default function Home() {
     if (result.general_specs.delivery_days) setPaymentDays(result.general_specs.delivery_days);
   }
 
+  async function handlePliegoFiles(files: File[]) {
+    setLoading(true);
+    setError("");
+    try {
+      const session = await createSession({ title: "Pliego" });
+      await uploadPliego({ sessionId: session.id, files });
+      router.push(`/chat?sessionId=${encodeURIComponent(session.id)}`);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Error al subir pliego");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   const grandTotal = itemQuotes.reduce((s, q) => s + q.total_with_hw * q.item.quantity, 0);
 
   const aggregatedHardware = useMemo(() => {
@@ -379,6 +396,7 @@ export default function Home() {
               onImageAnalyzed={handleImageAnalyzed}
               onPiecesLoaded={handlePiecesLoaded}
               onPliegoAnalyzed={handlePliegoAnalyzed}
+              onPliegoFiles={handlePliegoFiles}
             />
             {plans.length > 0 && (
               <div className="text-sm text-primary bg-primary/10 border border-primary/20 rounded p-3">

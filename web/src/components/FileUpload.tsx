@@ -9,9 +9,10 @@ interface Props {
   onImageAnalyzed: (plans: AnalysisPlan[]) => void;
   onPiecesLoaded: (pieces: CutPiece[], material: string, thickness: number, color: string, boardsNeeded: number) => void;
   onPliegoAnalyzed: (result: PliegoResult) => void;
+  onPliegoFiles?: (files: File[]) => Promise<void>;
 }
 
-export default function FileUpload({ onImageAnalyzed, onPiecesLoaded, onPliegoAnalyzed }: Props) {
+export default function FileUpload({ onImageAnalyzed, onPiecesLoaded, onPliegoAnalyzed, onPliegoFiles }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [mode, setMode] = useState<UploadMode>("pliego");
@@ -22,8 +23,13 @@ export default function FileUpload({ onImageAnalyzed, onPiecesLoaded, onPliegoAn
     setError("");
 
     try {
+      const selectedFiles = Array.from(files);
+      if (mode === "pliego" && onPliegoFiles) {
+        await onPliegoFiles(selectedFiles);
+        return;
+      }
       const form = new FormData();
-      for (const file of Array.from(files)) {
+      for (const file of selectedFiles) {
         form.append("files", file);
       }
       form.append("mode", mode);

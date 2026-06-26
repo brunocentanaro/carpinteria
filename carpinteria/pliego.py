@@ -790,17 +790,47 @@ def _is_wood_door_item(item: dict) -> bool:
         return False
     if any(term in text for term in ("metal", "aluminio", "vidrio", "blindex")):
         return False
+    if _is_furniture_door_context(text):
+        return False
+    explicit_structural = (
+        "puerta placa" in text
+        or "puerta de paso" in text
+        or "puerta interior" in text
+        or "puerta exterior" in text
+        or "hoja de puerta" in text
+        or "puerta para casa" in text
+        or "puerta casa" in text
+        or "marco" in text
+        or "contramarco" in text
+        or "tapajunta" in text
+        or "cubrecanto" in text
+        or "cubre canto" in text
+        or "nido" in text
+        or "alveolar" in text
+    )
+    wood_material = any(term in text for term in ("madera", "enchap", "eucal", "pino", "placa", "hoja"))
+    return explicit_structural and wood_material
+
+
+def _is_furniture_door_context(text: str) -> bool:
     return any(term in text for term in (
-        "madera",
-        "enchap",
-        "eucal",
-        "pino",
-        "marco",
-        "tapajunta",
-        "cubre canto",
-        "cubrecanto",
-        "placa",
-        "hoja",
+        "mueble",
+        "placard",
+        "placar",
+        "armario",
+        "aereo",
+        "alacena",
+        "bajo mesada",
+        "bajomesada",
+        "cajonera",
+        "estante",
+        "repisa",
+        "ropero",
+        "biblioteca",
+        "locker",
+        "modulo",
+        "melamin",
+        "mdf",
     ))
 
 

@@ -90,6 +90,7 @@ export async function patchSession(
       painting?: boolean;
       varnishing?: boolean;
       polishing?: boolean;
+      lacquering?: boolean;
     };
     title: string;
     approval_status: "pending" | "approved";
