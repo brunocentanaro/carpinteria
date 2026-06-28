@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertCircle,
   ArrowUpRight,
   BellRing,
   Building2,
@@ -9,8 +10,10 @@ import {
   Clock3,
   Megaphone,
   Newspaper,
+  RefreshCw,
   ShoppingCart,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 
 import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 
@@ -65,20 +68,23 @@ const projects = [
   },
 ];
 
-const purchases = [
-  {
-    urgency: "Revisar hoy",
-    title: "Llamados vigentes de mobiliario y carpintería",
-    copy: "Consulta filtrada en la fuente oficial. Revisar pliego, inscripción RUPE y fecha de recepción antes de cotizar.",
-    href: "https://www.comprasestatales.gub.uy/consultas/",
-  },
-  {
-    urgency: "Monitoreo diario",
-    title: "Compras directas de ferretería y herramientas",
-    copy: "Buscar por organismo y palabras clave: madera, herrajes, muebles, puertas, herramientas y reparación.",
-    href: "https://www.comprasestatales.gub.uy/consultas/",
-  },
-];
+interface StatePurchase {
+  id: string;
+  title: string;
+  organization: string;
+  description: string;
+  deadline: string;
+  published: string;
+  href: string;
+  category: string;
+}
+
+interface StatePurchasesResponse {
+  calls: StatePurchase[];
+  fetchedAt: string;
+  source: string;
+  filters: string[];
+}
 
 const toneClasses: Record<string, string> = {
   amber: "border-amber-200 bg-amber-50 text-amber-950",
@@ -88,6 +94,17 @@ const toneClasses: Record<string, string> = {
 
 export default function NoticieroPage() {
   const { brandId, brand } = useBrandEnvironment();
+  const purchasesQuery = useQuery<StatePurchasesResponse>({
+    queryKey: ["noticiero", "compras-estatales", "madera"],
+    queryFn: async () => {
+      const response = await fetch("/api/noticiero/compras");
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || "No se pudieron consultar los llamados");
+      return body;
+    },
+    staleTime: 15 * 60 * 1000,
+    refetchInterval: 30 * 60 * 1000,
+  });
 
   if (brandId !== "casa") {
     return <main className="p-8 text-muted-foreground">El Noticiero comercial es exclusivo de La Casa del Carpintero.</main>;
@@ -117,7 +134,7 @@ export default function NoticieroPage() {
         <section className="grid gap-3 sm:grid-cols-3">
           <Metric icon={BellRing} label="Acción hoy" value="1" detail="campaña para preparar" />
           <Metric icon={Building2} label="Radar de obras" value="3" detail="oportunidades destacadas" />
-          <Metric icon={ShoppingCart} label="Compras estatales" value="2" detail="búsquedas para revisar" />
+          <Metric icon={ShoppingCart} label="Compras estatales" value={purchasesQuery.data ? String(purchasesQuery.data.calls.length) : "—"} detail="llamados de madera vigentes" />
         </section>
 
         <section>
@@ -144,12 +161,25 @@ export default function NoticieroPage() {
 
         <section>
           <SectionTitle icon={ShoppingCart} title="Compras estatales" subtitle="RUPE registra al proveedor; los llamados se consultan en Compras Estatales/ARCE." />
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
-            {purchases.map((purchase) => <article key={purchase.title} className="rounded-xl border bg-card p-5 shadow-sm">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-700"><Clock3 className="h-4 w-4" />{purchase.urgency}</div>
-              <h3 className="mt-3 text-lg font-semibold">{purchase.title}</h3><p className="mt-2 text-sm leading-6 text-muted-foreground">{purchase.copy}</p>
-              <a href={purchase.href} target="_blank" rel="noreferrer" className="mt-4 inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">Abrir Compras Estatales <ArrowUpRight className="h-4 w-4" /></a>
-            </article>)}
+          <div className="mt-3 overflow-hidden rounded-xl border bg-card shadow-sm">
+            <div className="flex flex-col gap-3 border-b bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div><div className="text-sm font-semibold">Radar automático de oportunidades para carpintería</div><div className="text-xs text-muted-foreground">Recorre mobiliario, productos de madera, herrajes, herramientas, maquinaria y servicios; descarta resultados sin relación con madera.</div></div>
+              <button type="button" onClick={() => purchasesQuery.refetch()} disabled={purchasesQuery.isFetching} className="inline-flex h-9 items-center justify-center gap-2 rounded-md border bg-background px-3 text-sm font-medium hover:bg-muted disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${purchasesQuery.isFetching ? "animate-spin" : ""}`} />Actualizar</button>
+            </div>
+            {purchasesQuery.isLoading && <div className="p-10 text-center text-sm text-muted-foreground">Consultando llamados vigentes en ARCE…</div>}
+            {purchasesQuery.isError && <div className="flex items-start gap-3 p-5 text-sm text-destructive"><AlertCircle className="mt-0.5 h-5 w-5 shrink-0" /><div><div className="font-semibold">No pudimos actualizar Compras Estatales</div><div>{purchasesQuery.error.message}</div></div></div>}
+            {purchasesQuery.data?.calls.length === 0 && <div className="p-10 text-center text-sm text-muted-foreground">Hoy no hay llamados vigentes en estas categorías.</div>}
+            <div className="divide-y">{purchasesQuery.data?.calls.map((purchase) => <article key={purchase.id} className="grid gap-4 p-5 lg:grid-cols-[1fr_auto] lg:items-center">
+              <div>
+                <div className="flex flex-wrap items-center gap-2"><span className="rounded bg-primary/10 px-2 py-1 text-xs font-semibold text-primary">{purchase.category}</span><span className="flex items-center gap-1 text-xs font-semibold text-amber-700"><Clock3 className="h-3.5 w-3.5" />Cierra {purchase.deadline}</span></div>
+                <h3 className="mt-2 text-lg font-semibold">{purchase.title}</h3>
+                <div className="mt-1 text-sm font-medium text-muted-foreground">{purchase.organization}</div>
+                <p className="mt-2 text-sm leading-6">{purchase.description}</p>
+                <div className="mt-2 text-xs text-muted-foreground">Publicado: {purchase.published}</div>
+              </div>
+              <a href={purchase.href} target="_blank" rel="noreferrer" className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:opacity-90">Ver llamado oficial <ArrowUpRight className="h-4 w-4" /></a>
+            </article>)}</div>
+            {purchasesQuery.data && <div className="border-t bg-muted/20 px-4 py-3 text-xs text-muted-foreground">Última consulta: {new Intl.DateTimeFormat("es-UY", { dateStyle: "short", timeStyle: "short" }).format(new Date(purchasesQuery.data.fetchedAt))}. Verificá siempre el pliego y vencimiento en ARCE.</div>}
           </div>
         </section>
 
