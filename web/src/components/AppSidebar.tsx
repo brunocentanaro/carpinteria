@@ -10,6 +10,7 @@ import {
   ListTree,
   LogOut,
   MessageSquare,
+  Newspaper,
   PackageCheck,
   Users,
 } from "lucide-react";
@@ -32,6 +33,7 @@ const NAV: NavItem[] = [
   { href: "/", icon: Calculator, label: "Cotizador clasico" },
   { href: "/chat", icon: MessageSquare, label: "Chat" },
   { href: "/lista-precios", icon: ListTree, label: "Lista de precios" },
+  { href: "/noticiero", icon: Newspaper, label: "Noticiero comercial" },
   { href: "/stock-molduras", icon: PackageCheck, label: "Stock de molduras" },
   { href: "/usuarios", icon: Users, label: "Usuarios" },
 ];
@@ -78,6 +80,7 @@ export function AppSidebar() {
         {NAV.filter((item) => {
           if (item.href === "/usuarios" && area !== "administracion") return false;
           if (item.href === "/stock-molduras" && brandId !== "pirone") return false;
+          if (item.href === "/noticiero" && brandId !== "casa") return false;
           return true;
         }).map((item) => {
           const active =
