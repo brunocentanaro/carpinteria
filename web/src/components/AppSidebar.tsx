@@ -10,6 +10,7 @@ import {
   ListTree,
   LogOut,
   MessageSquare,
+  PackageCheck,
   Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -31,6 +32,7 @@ const NAV: NavItem[] = [
   { href: "/", icon: Calculator, label: "Cotizador clasico" },
   { href: "/chat", icon: MessageSquare, label: "Chat" },
   { href: "/lista-precios", icon: ListTree, label: "Lista de precios" },
+  { href: "/stock-molduras", icon: PackageCheck, label: "Stock de molduras" },
   { href: "/usuarios", icon: Users, label: "Usuarios" },
 ];
 
@@ -73,7 +75,11 @@ export function AppSidebar() {
         )}
       </Link>
       <nav className="flex flex-col gap-1 flex-1">
-        {NAV.filter((item) => item.href !== "/usuarios" || area === "administracion").map((item) => {
+        {NAV.filter((item) => {
+          if (item.href === "/usuarios" && area !== "administracion") return false;
+          if (item.href === "/stock-molduras" && brandId !== "pirone") return false;
+          return true;
+        }).map((item) => {
           const active =
             item.href === "/"
               ? pathname === "/"
