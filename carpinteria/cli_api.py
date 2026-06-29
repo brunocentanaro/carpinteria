@@ -2858,6 +2858,30 @@ def handle_auth_users_update(data: dict) -> dict:
     return {"user": user}
 
 
+def handle_molduras_stock_list(data: dict) -> dict:
+    from .molduras_stock import list_stock
+    return list_stock(str(data.get("code") or "") or None)
+
+
+def handle_molduras_stock_movement(data: dict) -> dict:
+    from .molduras_stock import register_movement
+    return register_movement(data.get("movement", {}), str(data.get("updated_by", "")))
+
+
+def handle_molduras_stock_operation(data: dict) -> dict:
+    from .molduras_stock import create_reservation, release_reservation, set_jit_minimum
+    operation = str(data.get("operation") or "")
+    user = str(data.get("updated_by", ""))
+    payload = data.get("payload", {})
+    if operation == "set_jit":
+        return set_jit_minimum(str(payload.get("code", "")), int(payload.get("quantity", 0)), user)
+    if operation == "reserve":
+        return create_reservation(payload, user)
+    if operation == "release_reservation":
+        return release_reservation(str(payload.get("reservation_id", "")), user)
+    raise ValueError("Operación de stock inválida")
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -2930,6 +2954,12 @@ def main() -> None:
             result = handle_auth_password_reset_confirm(data)
         elif action == "auth_users_update":
             result = handle_auth_users_update(data)
+        elif action == "molduras_stock_list":
+            result = handle_molduras_stock_list(data)
+        elif action == "molduras_stock_movement":
+            result = handle_molduras_stock_movement(data)
+        elif action == "molduras_stock_operation":
+            result = handle_molduras_stock_operation(data)
         elif action == "session_update":
             result = handle_session_update(data)
         elif action == "session_delete":
