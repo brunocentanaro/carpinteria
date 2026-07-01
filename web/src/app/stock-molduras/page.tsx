@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 type View = "stock" | "availability" | "production" | "sale" | "house-shipment" | "adjustment" | "transfer" | "history";
 type MovementType = "PRODUCCION" | "VENTA" | "ENVIO_CASA" | "AJUSTE_POSITIVO" | "AJUSTE_NEGATIVO" | "DESCARTE" | "TRASLADO";
 
-interface Product { code: string; description: string; family: string; material: string; width_mm: number; height_mm: number; jit_min_quantity: number }
+interface Product { code: string; description: string; family: string; material: string; width_mm: number; height_mm: number; price_meter_iva: number; price_varilla_iva: number; jit_min_quantity: number }
 interface Location { wall: string; block: string; label: string }
 interface StockRow extends Product { wall: string; block: string; location: string; complete_quantity: number; fraction_quantity: number; total_units: number; notes?: string }
 interface Movement { id: string; created_at: string; code: string; type: MovementType; origin_wall: string; origin_block: string; destination_wall: string; destination_block: string; complete_quantity: number; fraction_quantity: number; user: string; notes: string }
@@ -201,6 +201,8 @@ function AvailabilityCheck({ data, onOperate }: { data: StockData; onOperate: (o
   const physicalUseful = complete + (includeFractions ? fractions : 0);
   const available = Math.max(0, physicalUseful - reserved);
   const orderQuantity = Math.max(0, Number(requested) || 0);
+  const unitPrice = product?.price_varilla_iva || 0;
+  const orderTotal = orderQuantity * unitPrice;
   const missing = Math.max(0, orderQuantity - available);
   const afterOrder = Math.max(0, available - orderQuantity);
   const jit = Math.max(0, Number(jitMinimum) || 0);
@@ -257,6 +259,8 @@ function AvailabilityCheck({ data, onOperate }: { data: StockData; onOperate: (o
           <ResultRow label="Reservado para otros pedidos" value={reserved} negative />
           <div className="border-t pt-3"><ResultRow label="Stock real disponible" value={available} strong /></div>
           <ResultRow label="Pedido" value={orderQuantity} />
+          <CurrencyResultRow label="Precio unitario según listado" value={unitPrice} />
+          <CurrencyResultRow label="Total del pedido" value={orderTotal} strong />
           <ResultRow label="Faltante" value={missing} strong warning={missing > 0} />
           <div className={`mt-4 rounded-lg p-4 ${missing > 0 ? "bg-amber-50 text-amber-950" : "bg-emerald-50 text-emerald-950"}`}><div className="text-sm font-medium">Acción</div><div className="text-xl font-semibold">{missing > 0 ? `Fabricar ${missing} varillas` : "Pedido cubierto con stock"}</div></div>
         </div>}
@@ -276,6 +280,10 @@ function AvailabilityCheck({ data, onOperate }: { data: StockData; onOperate: (o
 
 function ResultRow({ label, value, strong, muted, negative, warning }: { label: string; value: number; strong?: boolean; muted?: boolean; negative?: boolean; warning?: boolean }) {
   return <div className={`flex items-center justify-between gap-4 ${muted ? "text-muted-foreground line-through" : ""} ${strong ? "text-lg font-semibold" : "text-sm"} ${warning ? "text-amber-700" : ""}`}><span>{label}</span><span className="tabular-nums">{negative && value > 0 ? "−" : ""}{value}</span></div>;
+}
+
+function CurrencyResultRow({ label, value, strong }: { label: string; value: number; strong?: boolean }) {
+  return <div className={`flex items-center justify-between gap-4 ${strong ? "text-lg font-semibold" : "text-sm"}`}><span>{label}</span><span className="tabular-nums">{new Intl.NumberFormat("es-UY", { style: "currency", currency: "UYU" }).format(value)}</span></div>;
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
