@@ -44,6 +44,8 @@ def _catalog() -> dict[str, dict]:
             "material": _material(item.code),
             "width_mm": item.width_mm,
             "height_mm": item.height_mm,
+            "price_meter_iva": item.price_meter_iva,
+            "price_varilla_iva": item.price_varilla_iva,
         }
         for item in load_prices()
     }
