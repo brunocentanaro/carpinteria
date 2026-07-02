@@ -45,7 +45,6 @@ export default function StockMoldurasPage() {
   const [canAdjust, setCanAdjust] = useState(false);
 
   const load = useCallback(async () => {
-    if (brandId !== "pirone") return;
     setLoading(true);
     try {
       const res = await fetch("/api/stock-molduras");
@@ -57,7 +56,7 @@ export default function StockMoldurasPage() {
     } finally {
       setLoading(false);
     }
-  }, [brandId]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -99,7 +98,7 @@ export default function StockMoldurasPage() {
     setView("history");
   }
 
-  if (brandId !== "pirone") return <main className="p-8 text-muted-foreground">Esta ventana es exclusiva de Carpintería Juan Pirone.</main>;
+  if (brandId !== "pirone") return <main className="p-8 text-muted-foreground">El stock operativo es exclusivo de Carpintería Juan Pirone. Consultá las cantidades desde Dashboard de molduras.</main>;
 
   return (
     <main className="mx-auto max-w-7xl space-y-5 p-4 md:p-8">
@@ -173,9 +172,9 @@ function StockCurrent({ data, onHistory }: { data: StockData; onHistory: (code: 
         <Filter value={block} onChange={setBlock} label="Todos los bloques" values={blocks} />
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[900px] text-sm">
-          <thead className="bg-muted/80 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Código</th><th className="px-4 py-3">Descripción</th><th className="px-4 py-3">Familia</th><th className="px-4 py-3">Material</th><th className="px-4 py-3">Ubicación</th><th className="px-4 py-3 text-right">Completas</th><th className="px-4 py-3 text-right">Fraccionadas</th><th className="px-4 py-3 text-right">Total</th><th className="px-4 py-3 text-right">Mínimo JIT</th></tr></thead>
-          <tbody className="divide-y">{rows.map((row) => { const product = productByCode.get(row.code); const low = Boolean(product && product.jit_min_quantity > 0 && Math.max(0, availableByCode.get(row.code) || 0) <= product.jit_min_quantity); return <tr key={`${row.code}-${row.location}`} className={`cursor-pointer hover:bg-muted/40 ${low ? "bg-amber-50" : ""}`} onClick={() => onHistory(row.code)} title="Ver historial"><td className="px-4 py-3 font-mono text-xs font-semibold">{row.code}</td><td className="px-4 py-3 font-medium">{row.description}</td><td className="px-4 py-3">{row.family}</td><td className="px-4 py-3">{row.material}</td><td className="px-4 py-3"><span className="rounded bg-primary/10 px-2 py-1 font-semibold text-primary">{row.location}</span></td><td className="px-4 py-3 text-right font-semibold tabular-nums">{row.complete_quantity}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{row.fraction_quantity}</td><td className="px-4 py-3 text-right font-bold tabular-nums">{row.total_units}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{product?.jit_min_quantity || "—"}{low && <TriangleAlert className="ml-2 inline h-4 w-4 text-amber-600" />}</td></tr>; })}</tbody>
+        <table className="w-full min-w-[1150px] text-sm">
+          <thead className="bg-muted/80 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Código</th><th className="px-4 py-3">Descripción</th><th className="px-4 py-3">Familia</th><th className="px-4 py-3">Material</th><th className="px-4 py-3">Ubicación</th><th className="px-4 py-3 text-right">Completas</th><th className="px-4 py-3 text-right">Fraccionadas</th><th className="px-4 py-3 text-right">Total</th><th className="px-4 py-3 text-right">Precio unitario</th><th className="px-4 py-3 text-right">Valor total</th><th className="px-4 py-3 text-right">Mínimo JIT</th></tr></thead>
+          <tbody className="divide-y">{rows.map((row) => { const product = productByCode.get(row.code); const unitPrice = product?.price_varilla_iva || 0; const stockValue = row.total_units * unitPrice; const low = Boolean(product && product.jit_min_quantity > 0 && Math.max(0, availableByCode.get(row.code) || 0) <= product.jit_min_quantity); return <tr key={`${row.code}-${row.location}`} className={`cursor-pointer hover:bg-muted/40 ${low ? "bg-amber-50" : ""}`} onClick={() => onHistory(row.code)} title="Ver historial"><td className="px-4 py-3 font-mono text-xs font-semibold">{row.code}</td><td className="px-4 py-3 font-medium">{row.description}</td><td className="px-4 py-3">{row.family}</td><td className="px-4 py-3">{row.material}</td><td className="px-4 py-3"><span className="rounded bg-primary/10 px-2 py-1 font-semibold text-primary">{row.location}</span></td><td className="px-4 py-3 text-right font-semibold tabular-nums">{row.complete_quantity}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{row.fraction_quantity}</td><td className="px-4 py-3 text-right font-bold tabular-nums">{row.total_units}</td><td className="whitespace-nowrap px-4 py-3 text-right tabular-nums">{formatUYU(unitPrice)}</td><td className="whitespace-nowrap px-4 py-3 text-right font-bold tabular-nums">{formatUYU(stockValue)}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{product?.jit_min_quantity || "—"}{low && <TriangleAlert className="ml-2 inline h-4 w-4 text-amber-600" />}</td></tr>; })}</tbody>
         </table>
         {rows.length === 0 && <div className="p-12 text-center text-muted-foreground">No hay stock que coincida con los filtros.</div>}
       </div>
@@ -282,8 +281,12 @@ function ResultRow({ label, value, strong, muted, negative, warning }: { label: 
   return <div className={`flex items-center justify-between gap-4 ${muted ? "text-muted-foreground line-through" : ""} ${strong ? "text-lg font-semibold" : "text-sm"} ${warning ? "text-amber-700" : ""}`}><span>{label}</span><span className="tabular-nums">{negative && value > 0 ? "−" : ""}{value}</span></div>;
 }
 
+function formatUYU(value: number) {
+  return new Intl.NumberFormat("es-UY", { style: "currency", currency: "UYU", maximumFractionDigits: 2 }).format(value);
+}
+
 function CurrencyResultRow({ label, value, strong }: { label: string; value: number; strong?: boolean }) {
-  return <div className={`flex items-center justify-between gap-4 ${strong ? "text-lg font-semibold" : "text-sm"}`}><span>{label}</span><span className="tabular-nums">{new Intl.NumberFormat("es-UY", { style: "currency", currency: "UYU" }).format(value)}</span></div>;
+  return <div className={`flex items-center justify-between gap-4 ${strong ? "text-lg font-semibold" : "text-sm"}`}><span>{label}</span><span className="tabular-nums">{formatUYU(value)}</span></div>;
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
