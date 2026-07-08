@@ -29,14 +29,14 @@ export function Chat() {
   });
 
   return (
-    <div className="flex h-screen">
+    <div className="flex h-screen min-w-0 overflow-hidden">
       <SessionsSidebar activeId={activeId} onSelect={setActiveId} />
-      <section className="flex-1 flex overflow-hidden">
+      <section className="flex min-w-0 flex-1 overflow-hidden">
         <ChatColumn
           session={sessionQuery.data ?? null}
           onSessionCreated={setActiveId}
         />
-        <aside className="flex-1 min-w-[480px] border-l bg-muted/30 overflow-y-auto">
+        <aside className="hidden min-w-[480px] flex-1 overflow-y-auto border-l bg-muted/30 xl:block">
           <QuotationPanel session={sessionQuery.data ?? null} />
         </aside>
       </section>
