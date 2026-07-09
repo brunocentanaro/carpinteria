@@ -7,6 +7,7 @@ import {
   Calculator,
   ChartNoAxesColumnIncreasing,
   Factory,
+  Files,
   Hammer,
   ListTree,
   LogOut,
@@ -32,6 +33,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { href: "/", icon: Calculator, label: "Cotizador clasico" },
+  { href: "/pliegos", icon: Files, label: "Pliegos" },
   { href: "/chat", icon: MessageSquare, label: "Chat" },
   { href: "/lista-precios", icon: ListTree, label: "Lista de precios" },
   { href: "/noticiero", icon: Newspaper, label: "Noticiero comercial" },

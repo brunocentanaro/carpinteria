@@ -95,6 +95,27 @@ def _split_state_item_body(body: str) -> tuple[str, str]:
     return body[:best].strip(" -"), body[best:].strip(" -")
 
 
+def _split_state_object_detail(body: str) -> tuple[str, str]:
+    """Split rows where the object column is uppercase and detail is prose."""
+    tokens = body.split()
+    for idx, token in enumerate(tokens):
+        if any(char.islower() for char in token):
+            return " ".join(tokens[:idx]).strip(" -"), " ".join(tokens[idx:]).strip(" -")
+    return body.strip(), ""
+
+
+def _is_carpentry_state_item(text: str) -> bool:
+    norm = _strip_accents(text).lower()
+    if any(term in norm for term in ("silla", "sillon", "butaca")):
+        return False
+    wood_material = any(term in norm for term in ("madera", "mdf", "mdp", "melamin", "placa"))
+    carpentry_object = any(
+        term in norm
+        for term in ("mesa", "armario", "placard", "escritorio", "estante", "biblioteca", "mueble")
+    )
+    return wood_material and carpentry_object
+
+
 def _strip_accents(text: object) -> str:
     raw = unicodedata.normalize("NFKD", str(text or ""))
     return "".join(ch for ch in raw if not unicodedata.combining(ch))
@@ -134,6 +155,22 @@ def _dimensions_from_state_item(text: str, item_no: int, name: str) -> tuple[dic
     if labelled:
         dims.update(labelled)
 
+    for match in re.finditer(
+        r"(ancho|alto|altura|largo|profundidad|fondo|diametro)\s*"
+        r"(?:de\s+)?(\d+(?:[.,]\d+)?)\s*(cm|cms|m|mts|metros)?",
+        norm,
+    ):
+        label, value, unit = match.groups()
+        parsed = _parse_measure_to_mm(value, unit or "cm")
+        if label in ("ancho", "largo", "diametro"):
+            dims.setdefault("width_mm", parsed)
+            if label == "diametro":
+                dims.setdefault("depth_mm", parsed)
+        elif label in ("alto", "altura"):
+            dims.setdefault("height_mm", parsed)
+        elif label in ("profundidad", "fondo"):
+            dims.setdefault("depth_mm", parsed)
+
     triples = re.findall(
         r"(\d+(?:[.,]\d+)?)\s*(cm|cms|m|mts|metros)?\s*x\s*"
         r"(\d+(?:[.,]\d+)?)\s*(cm|cms|m|mts|metros)?\s*x\s*"
@@ -149,8 +186,12 @@ def _dimensions_from_state_item(text: str, item_no: int, name: str) -> tuple[dic
             _parse_measure_to_mm(c, cu or common_unit),
         ]
         dims.setdefault("width_mm", values[0])
-        dims.setdefault("height_mm", values[1])
-        dims.setdefault("depth_mm", values[2])
+        if "armario" in norm or "placard" in norm:
+            dims.setdefault("depth_mm", values[1])
+            dims.setdefault("height_mm", values[2])
+        else:
+            dims.setdefault("height_mm", values[1])
+            dims.setdefault("depth_mm", values[2])
 
     pairs = re.findall(
         r"(\d+(?:[.,]\d+)?)\s*(cm|cms|m|mts|metros)?\s*x\s*"
@@ -221,7 +262,10 @@ def _material_from_state_item(text: str) -> str:
 
 
 def _thickness_from_state_item(text: str) -> float:
-    match = re.search(r"espesor.{0,45}?(\d+(?:[.,]\d+)?)\s*mm", _strip_accents(text).lower())
+    norm = _strip_accents(text).lower()
+    match = re.search(r"espesor.{0,45}?(\d+(?:[.,]\d+)?)\s*mm", norm)
+    if not match:
+        match = re.search(r"(?:mdf|mdp|placa).{0,30}?(\d+(?:[.,]\d+)?)\s*mm", norm)
     if match:
         return float(match.group(1).replace(",", "."))
     return 18.0
@@ -293,20 +337,35 @@ def _extract_state_purchase_items(text: str) -> list[dict]:
     if end:
         compact = compact[: end.start()]
 
-    starts = list(re.finditer(r"\b(\d{4,6})\s+(\d{1,2})\s+", compact))
+    item_first = bool(re.search(r"\bITEM\s+Codigo\s+SICE\s+Cantidad\b", _strip_accents(compact), flags=re.IGNORECASE))
+    if item_first:
+        starts = list(re.finditer(r"\b(\d{1,2})\s+(\d{4,6})\s+(\d+)\s+unidad\b", compact, flags=re.IGNORECASE))
+    else:
+        starts = list(re.finditer(r"\b(\d{4,6})\s+(\d{1,2})\s+", compact))
     items: list[dict] = []
     for idx, match in enumerate(starts):
-        sice = match.group(1)
-        item_no = int(match.group(2))
-        if item_no < 1 or item_no > 6:
+        if item_first:
+            item_no = int(match.group(1))
+            sice = match.group(2)
+            quantity = int(match.group(3))
+        else:
+            sice = match.group(1)
+            item_no = int(match.group(2))
+            quantity = 1
+        if item_no < 1 or item_no > 99:
             continue
         row_end = starts[idx + 1].start() if idx + 1 < len(starts) else len(compact)
         row = compact[match.end():row_end].strip()
-        row, quantity = _parse_state_quantity(row)
-        name, spec = _split_state_item_body(row)
+        if item_first:
+            name, spec = _split_state_object_detail(row)
+        else:
+            row, quantity = _parse_state_quantity(row)
+            name, spec = _split_state_item_body(row)
         if not name:
             continue
         full = _collapse_ws(f"{name}. {spec}")
+        if item_first and not _is_carpentry_state_item(full):
+            continue
         dims, notes = _dimensions_from_state_item(full, item_no, name)
         notes = _unique_notes(notes)
         material = _material_from_state_item(full)

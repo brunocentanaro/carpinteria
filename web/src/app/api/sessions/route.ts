@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
       user_id: session.user,
       brand_id: brandId,
       area: session.area,
+      source: body?.sourceType ? { type: String(body.sourceType) } : undefined,
     });
     return NextResponse.json(result);
   } catch (e: unknown) {
