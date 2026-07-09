@@ -979,7 +979,10 @@ def handle_export_excel(data: dict) -> dict:
             concept = line.get("concept", "").lower()
             if _is_plate_or_door_material_concept(concept):
                 ws.cell(row=r, column=1, value=line["concept"]).border = bdr
-                ws.cell(row=r, column=2, value=line["quantity"]).border = bdr
+                if "mdf" in concept and "para 2 caras" in concept:
+                    ws.cell(row=r, column=2, value=f"=2*{area_total_cell}").border = bdr
+                else:
+                    ws.cell(row=r, column=2, value=line["quantity"]).border = bdr
                 ws.cell(row=r, column=3, value=line["unit"]).border = bdr
                 usd_price = line["unit_price"] / param_vals["B5"] if param_vals["B5"] and "laqueado" not in concept else 0
                 ws.cell(row=r, column=4, value=round(usd_price, 4)).border = bdr
@@ -2022,8 +2025,51 @@ def handle_session_create(data: dict) -> dict:
         title=str(data.get("title") or ""),
         brand_id=str(data.get("brand_id") or "casa"),
         request_area=str(data.get("area") or "personal"),
+        source=data.get("source") if isinstance(data.get("source"), dict) else None,
     )
     return {"session": s.model_dump(mode="json")}
+
+
+def handle_radar_pliego_ingest(data: dict) -> dict:
+    from carpinteria.agents.cotizador_chat import _ingest_pliego_into_session
+    from carpinteria.quotation_session import create_session, get_session_by_external_id, save_session
+
+    source = dict(data.get("source") or {})
+    external_id = str(source.get("external_id") or "")
+    file_paths = list(data.get("file_paths") or [])
+    user_id = str(data.get("user_id") or "anonymous")
+    brand_id = str(data.get("brand_id") or "casa")
+    if not external_id or not file_paths:
+        return {"error": "missing external_id or file_paths"}
+    lookup = lambda: get_session_by_external_id(
+        "compras_estatales", external_id, user_id=user_id, brand_id=brand_id,
+    )
+    existing = lookup()
+    if existing and existing.processing_status == "complete":
+        return {"session": existing.model_dump(mode="json"), "skipped": True}
+    s = existing or create_session(
+        user_id=user_id,
+        title=str(source.get("title") or f"ARCE {external_id}"),
+        brand_id=brand_id,
+        request_area=str(data.get("area") or "personal"),
+        source={**source, "type": "compras_estatales", "processing_status": "processing"},
+    )
+    s.processing_status = "processing"
+    s.processing_error = ""
+    s.source_files = list(source.get("files") or [])
+    save_session(s)
+    try:
+        summary = _ingest_pliego_into_session(s.id, file_paths)
+        s = lookup() or s
+        s.processing_status = "complete"
+        save_session(s)
+        return {"session": s.model_dump(mode="json"), "summary": summary, "skipped": False}
+    except Exception as exc:
+        s = lookup() or s
+        s.processing_status = "failed"
+        s.processing_error = str(exc)
+        save_session(s)
+        return {"session": s.model_dump(mode="json"), "error": str(exc)}
 
 
 def handle_session_get(data: dict) -> dict:
@@ -2066,7 +2112,7 @@ def handle_session_archive(data: dict) -> dict:
 def handle_session_ingest_pliego(data: dict) -> dict:
     """Direct ingest: upload + decompose without going through the chat agent."""
     from carpinteria.agents.cotizador_chat import _ingest_pliego_into_session
-    from carpinteria.quotation_session import append_message, get_session
+    from carpinteria.quotation_session import append_message, get_session, save_session
 
     sid = str(data.get("session_id") or "")
     file_paths = list(data.get("file_paths") or [])
@@ -2076,8 +2122,13 @@ def handle_session_ingest_pliego(data: dict) -> dict:
     summary = _ingest_pliego_into_session(sid, file_paths)
     # Direct (non-chat) ingest: surface the summary in the conversation so the
     # UI shows it after reload. The chat path handles its own persistence.
-    append_message(sid, "assistant", summary)
+    if data.get("record_message", True):
+        append_message(sid, "assistant", summary)
     s = get_session(sid)
+    if s and s.source_type == "manual_pliego":
+        s.processing_status = "complete"
+        s.processing_error = ""
+        save_session(s)
     return {"summary": summary, "session": s.model_dump(mode="json") if s else None}
 
 
@@ -2930,6 +2981,8 @@ def main() -> None:
             result = handle_session_archive(data)
         elif action == "session_ingest_pliego":
             result = handle_session_ingest_pliego(data)
+        elif action == "radar_pliego_ingest":
+            result = handle_radar_pliego_ingest(data)
         elif action == "session_ingest_order_photo":
             result = handle_session_ingest_order_photo(data)
         elif action == "session_ingest_furniture_photo":

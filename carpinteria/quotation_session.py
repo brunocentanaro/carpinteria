@@ -164,6 +164,18 @@ class QuotationSession(BaseModel):
     month: int | None = None
     folder: str = ""
 
+    # External public-bid source (used by the Compras Estatales radar).
+    source_type: str = ""
+    external_id: str = ""
+    source_url: str = ""
+    source_organization: str = ""
+    source_category: str = ""
+    source_deadline: str = ""
+    source_published: str = ""
+    source_files: list[str] = Field(default_factory=list)
+    processing_status: str = ""  # pending | processing | complete | failed
+    processing_error: str = ""
+
     # OpenAI Responses-API thread chain. We don't persist message bodies.
     last_response_id: str | None = None
 
@@ -287,10 +299,22 @@ def _session_row(doc: dict) -> dict:
         "delivered": bool(doc.get("delivered") or False),
         "final_payment_amount": doc.get("final_payment_amount"),
         "total": round(total, 2),
+        "item_count": len(items),
+        "general_specs": doc.get("general_specs") or {},
         "sequence": sequence,
         "year": year,
         "month": month,
         "folder": str(doc.get("folder") or _folder(year, month)),
+        "source_type": doc.get("source_type") or "",
+        "external_id": doc.get("external_id") or "",
+        "source_url": doc.get("source_url") or "",
+        "source_organization": doc.get("source_organization") or "",
+        "source_category": doc.get("source_category") or "",
+        "source_deadline": doc.get("source_deadline") or "",
+        "source_published": doc.get("source_published") or "",
+        "source_files": list(doc.get("source_files") or []),
+        "processing_status": doc.get("processing_status") or "",
+        "processing_error": doc.get("processing_error") or "",
     }
 
 
@@ -300,10 +324,12 @@ def create_session(
     title: str = "",
     brand_id: str = "casa",
     request_area: str = "personal",
+    source: dict[str, Any] | None = None,
 ) -> QuotationSession:
     year, month = current_year_month()
     sequence = _next_sequence(user_id=user_id, year=year, month=month)
     clean_title = title.strip() or _session_title(year, month, sequence)
+    source = source or {}
     s = QuotationSession(
         user_id=user_id,
         requested_by=user_id,
@@ -315,9 +341,34 @@ def create_session(
         year=year,
         month=month,
         folder=_folder(year, month),
+        source_type=str(source.get("type") or ""),
+        external_id=str(source.get("external_id") or ""),
+        source_url=str(source.get("url") or ""),
+        source_organization=str(source.get("organization") or ""),
+        source_category=str(source.get("category") or ""),
+        source_deadline=str(source.get("deadline") or ""),
+        source_published=str(source.get("published") or ""),
+        source_files=list(source.get("files") or []),
+        processing_status=str(source.get("processing_status") or ""),
     )
     _coll().insert_one(s.model_dump())
     return s
+
+
+def get_session_by_external_id(
+    source_type: str,
+    external_id: str,
+    *,
+    user_id: str,
+    brand_id: str,
+) -> QuotationSession | None:
+    doc = _coll().find_one({
+        "source_type": source_type,
+        "external_id": external_id,
+        "user_id": user_id,
+        "brand_id": brand_id,
+    }, {"_id": 0})
+    return QuotationSession.model_validate(doc) if doc else None
 
 
 def get_session(session_id: str) -> QuotationSession | None:

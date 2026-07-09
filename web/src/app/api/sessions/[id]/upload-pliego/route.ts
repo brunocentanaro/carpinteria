@@ -16,6 +16,7 @@ export async function POST(
     const { id } = await params;
     const formData = await req.formData();
     const files = formData.getAll("files") as File[];
+    const surface = String(formData.get("surface") || "chat");
     if (files.length === 0) {
       return NextResponse.json({ error: "no files provided" }, { status: 400 });
     }
@@ -30,6 +31,7 @@ export async function POST(
       action: "session_ingest_pliego",
       session_id: id,
       file_paths: tempPaths,
+      record_message: surface !== "pliegos",
     });
     return NextResponse.json(result);
   } catch (e: unknown) {

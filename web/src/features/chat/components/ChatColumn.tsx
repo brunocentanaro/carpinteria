@@ -337,14 +337,14 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
 
   return (
     <div
-      className="flex-1 flex flex-col relative"
+      className="relative flex min-h-0 min-w-0 flex-1 flex-col"
       onDragEnter={handleDragEnter}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       onPaste={handlePaste}
     >
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-background">
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3 bg-background">
         {messages.length === 0 && (
           <div className="text-sm text-muted-foreground">
             {session ? (
@@ -382,7 +382,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="border-t p-3 bg-card">
+      <div className="shrink-0 border-t p-3 bg-card">
         <input
           type="file"
           ref={fileInputRef}
@@ -407,7 +407,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
           multiple
           className="hidden"
         />
-        <div className="flex gap-2 items-end">
+        <div className="flex flex-wrap items-end gap-2">
           <Button
             type="button"
             variant="outline"
@@ -471,7 +471,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
               }
             }}
             placeholder="Escribí algo… (Enter para enviar, Shift+Enter nueva línea)"
-            className="flex-1 resize-none"
+            className="min-h-10 min-w-[220px] flex-[1_1_260px] resize-none"
             rows={2}
             disabled={sending}
           />
@@ -479,6 +479,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
             type="button"
             onClick={handleSend}
             disabled={sending || !input.trim()}
+            className="shrink-0"
           >
             <Send className="h-4 w-4 mr-1" /> Enviar
           </Button>

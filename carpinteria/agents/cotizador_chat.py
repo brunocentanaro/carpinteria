@@ -237,9 +237,15 @@ def _moldura_unit_without_iva(width_mm: float, height_mm: float, material: str, 
 def _door_face_thickness_mm(item: QuotationItem) -> float:
     text = _norm_text(f"{item.name} {item.description} {item.material}")
     if "mdf" in text or "fibro" in text:
-        match = re.search(r"(\d+(?:[.,]\d+)?)\s*mm", text)
-        if match:
-            return float(match.group(1).replace(",", "."))
+        patterns = (
+            r"(?:mdf|fibro(?:\s*facil)?).{0,40}?(\d+(?:[.,]\d+)?)\s*mm",
+            r"(\d+(?:[.,]\d+)?)\s*mm.{0,40}?(?:mdf|fibro(?:\s*facil)?)",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                thickness = float(match.group(1).replace(",", "."))
+                if 2 <= thickness <= 12:
+                    return thickness
         return 5.5
     return 4.0
 
@@ -541,6 +547,7 @@ def _quote_wood_door(
             "height_mm": height,
             "thickness_mm": thickness,
             "door_area_m2": round(door_area_m2, 3),
+            "face_thickness_mm": face_thickness,
             "finish_coats": DOOR_PU_COATS,
             "finish_liters": round(finish_liters, 3),
             "core_vertical_count": vertical_count,

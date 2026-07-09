@@ -4,6 +4,7 @@ from carpinteria.catalog import ProductCatalog
 from carpinteria.lista_precios_parser import Producto
 from carpinteria.agents.cotizador_chat import (
     _door_face_line,
+    _door_face_thickness_mm,
     _is_wood_door_item,
     _needs_door_core_confirmation,
 )
@@ -203,3 +204,16 @@ def test_mdf_honeycomb_door_faces_use_mdf_55mm():
     assert note is None
     assert "MDF 5.5mm para 2 caras" in line.concept
     assert line.subtotal > 0
+
+
+def test_mdf_face_thickness_ignores_door_dimensions_in_mm():
+    item = QuotationItem(
+        code="P5",
+        name="puertas banos soporte",
+        description=(
+            "puertas con nido de abeja MDF 2055x667mm, 2050x666mm, "
+            "van 2 caras de MDF 5.5mm en cada puerta"
+        ),
+        material="MDF",
+    )
+    assert _door_face_thickness_mm(item) == 5.5

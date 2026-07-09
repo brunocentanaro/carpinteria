@@ -70,7 +70,7 @@ export async function getSession(id: string) {
   ).then((d) => d.session);
 }
 
-export async function createSession(input: { title?: string; brandId?: string } = {}) {
+export async function createSession(input: { title?: string; brandId?: string; sourceType?: string } = {}) {
   return api(
     "/api/sessions",
     { method: "POST", body: JSON.stringify(input) },
@@ -196,9 +196,11 @@ export async function* streamChat(input: {
 export async function uploadPliego(input: {
   sessionId: string;
   files: File[];
+  surface?: "chat" | "pliegos";
 }): Promise<Session | null> {
   const fd = new FormData();
   for (const f of input.files) fd.append("files", f);
+  if (input.surface) fd.append("surface", input.surface);
   const res = await fetch(`/api/sessions/${input.sessionId}/upload-pliego`, {
     method: "POST",
     body: fd,
