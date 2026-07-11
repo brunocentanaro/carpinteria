@@ -33,3 +33,10 @@ def get_db() -> Database:
 
 def collection(name: str):
     return get_db()[name]
+
+
+def close_db() -> None:
+    global _client
+    if _client is not None:
+        _client.close()
+        _client = None
