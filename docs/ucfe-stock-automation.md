@@ -59,6 +59,51 @@ uv run python scripts/ucfe_ventas_articulo.py \
 
 ## Modelo propuesto
 
+### Decisiones confirmadas
+
+- Fábrica y La Casa del Carpintero tendrán stock separado. Un traslado entre
+  ambas debe descontar el origen y acreditar el destino en una única operación
+  trazable.
+- Las compras y ventas de UCFE solo impactan stock luego de un mapping
+  confirmado por un administrador. Los comprobantes y líneas no inventariables
+  también se guardan para auditoría, pero se marcan `IGNORED`.
+- La sincronización será manual desde la aplicación y automática una vez por
+  día.
+- Las notas de crédito, anulaciones y correcciones deben revertir el
+  movimiento original, sin borrar trazabilidad.
+- Por ahora UCFE es la única fuente automática de ventas.
+- El administrador podrá asociar una línea UCFE a un producto existente o
+  crear un producto desde la bandeja de pendientes.
+- Cada producto configura su propia política de reposición: ubicación,
+  stock mínimo, stock objetivo, días de cobertura, plazo de entrega, proveedor
+  preferido y exclusión opcional del cálculo automático.
+
+### Unidades de medida
+
+Las facturas reales ya contienen litros (`ltr`), unidades (`Und.`) y líneas
+sin unidad (`N/A`) para herrajes. Además, el catálogo actual de molduras se
+vende por metro o varilla. El inventario nuevo debe soportar al menos:
+
+- `unidad` para herrajes y productos contables por pieza.
+- `metro` para molduras y madera lineal.
+- `litro` para consumibles que se decida inventariar.
+- `placa`, `paquete` y `kilogramo` como unidades disponibles para futuros
+  proveedores.
+
+Cada producto tendrá una única unidad base y admitirá cantidades decimales.
+El mapping UCFE guardará la unidad de origen y un factor de conversión. Si la
+factura dice `N/A`, la equivalencia deberá ser confirmada por el administrador;
+no se aplicará un movimiento automático por inferencia.
+
+### Alcance del inventario
+
+`molduras_stock.py` representa stock físico de molduras por estante y usa
+cantidades enteras de varillas/fracciones. No es suficiente como base directa
+para compras UCFE de varias categorías y unidades. La automatización se hará
+en un inventario general nuevo, con depósitos `FABRICA` y `CASA`; el módulo de
+molduras podrá migrarse o integrarse posteriormente sin romper la operación
+actual.
+
 1. Ingesta UCFE idempotente.
    - `ucfe_received_cfe`: CFE recibidos crudos, por `Id` y `Uuid`.
    - `ucfe_received_items`: items normalizados desde XML.
