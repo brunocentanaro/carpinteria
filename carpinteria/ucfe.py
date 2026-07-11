@@ -92,7 +92,13 @@ class UcfeReceivedClient:
     def __init__(self, base_url: str = DEFAULT_BASE_URL) -> None:
         self.base_url = base_url if base_url.endswith("/") else f"{base_url}/"
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0", "Accept-Language": "es-UY,es;q=0.9"})
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "es-UY,es;q=0.9,en;q=0.8",
+        })
         self.request_token: str | None = None
 
     def url(self, path: str) -> str:
@@ -142,7 +148,7 @@ class UcfeReceivedClient:
             "ImporteDesde": "", "ImporteHasta": "", "Orden": "", "CuentaTerceros": "null", "moneda": "",
             "pendienteDePago": "", "proveedorDeuda": "", "tieneRecibo": "", "vencidos": "",
         }
-        response = self.session.get(self.url(LIST_PATH), params=params, headers=self._headers(), timeout=60)
+        response = self.session.get(self.url(LIST_PATH), params=params, headers=self._headers(), timeout=(10, 30))
         response.raise_for_status()
         data = _json(response)
         if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
@@ -150,7 +156,7 @@ class UcfeReceivedClient:
         return data
 
     def download_xml(self, cfe_id: object) -> str:
-        response = self.session.get(self.url(XML_PATH), params={"id": cfe_id, "tipo": "1"}, headers=self._headers(), timeout=60)
+        response = self.session.get(self.url(XML_PATH), params={"id": cfe_id, "tipo": "1"}, headers=self._headers(), timeout=(10, 30))
         response.raise_for_status()
         xml_text = _json(response)
         if not isinstance(xml_text, str) or "<" not in xml_text:
@@ -171,17 +177,15 @@ def sync_received(*, start: str, end: str, company_id: str, user: str) -> dict:
     _ensure_storage()
     client = UcfeReceivedClient(os.getenv("UCFE_BASE_URL", DEFAULT_BASE_URL))
     client.login_from_environment()
-    rows_per_page = 100
-    rows: list[dict[str, Any]] = []
-    page = 1
-    while True:
-        page_data = client.list_page(start=start, end=end, company_id=company_id, rows=rows_per_page, page=page)
-        current = list(page_data["rows"])
-        rows.extend(current)
-        total_pages = int(page_data.get("total") or page)
-        if not current or page >= total_pages:
-            break
-        page += 1
+    rows_per_page = 500
+    page_data = client.list_page(start=start, end=end, company_id=company_id, rows=rows_per_page, page=1)
+    rows = list(page_data["rows"])
+    total_records = int(page_data.get("total") or len(rows))
+    if total_records > len(rows):
+        raise UcfeError(
+            f"UCFE devolvió {total_records} comprobantes, más que el máximo de {rows_per_page} por consulta. "
+            "Reducí UCFE_SYNC_LOOKBACK_DAYS para que el cron no omita comprobantes."
+        )
 
     cfe_created = 0
     items_created = 0
@@ -191,6 +195,7 @@ def sync_received(*, start: str, end: str, company_id: str, user: str) -> dict:
         cfe_id = str(row.get("Id") or "").strip()
         if not cfe_id:
             continue
+        existing = collection("ucfe_received_cfe").find_one({"ucfe_id": cfe_id}, {"xml": 1})
         cfe = {
             "ucfe_id": cfe_id,
             "company_id": company_id,
@@ -213,6 +218,8 @@ def sync_received(*, start: str, end: str, company_id: str, user: str) -> dict:
             {"ucfe_id": cfe_id}, {"$set": cfe, "$setOnInsert": {"created_at": now}}, upsert=True,
         )
         cfe_created += int(result.upserted_id is not None)
+        if existing and existing.get("xml"):
+            continue
         try:
             xml_text = client.download_xml(cfe_id)
             collection("ucfe_received_cfe").update_one({"ucfe_id": cfe_id}, {"$set": {"xml": xml_text, "xml_synced_at": now}})

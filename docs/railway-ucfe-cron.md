@@ -17,7 +17,9 @@ El proceso sincroniza por defecto los últimos siete días. La ventana se solapa
 para cubrir comprobantes cargados tarde; los índices únicos por comprobante y
 línea hacen que repetir ejecuciones no duplique datos. El proceso cierra Mongo
 y termina al finalizar, requisito para que Railway pueda ejecutar el próximo
-cron.
+cron. UCFE limita el listado a 500 comprobantes por consulta y no pagina de
+forma confiable; si el rango excede ese máximo, el cron falla de forma visible.
+Reducir `UCFE_SYNC_LOOKBACK_DAYS` a `3` o `1` en ese caso.
 
 Para crear el servicio:
 
