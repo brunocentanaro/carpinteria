@@ -2882,6 +2882,58 @@ def handle_molduras_stock_operation(data: dict) -> dict:
     raise ValueError("Operación de stock inválida")
 
 
+def handle_inventory_list(data: dict) -> dict:
+    from .inventory import list_inventory
+    return list_inventory(str(data.get("product_id") or "") or None)
+
+
+def handle_inventory_product_upsert(data: dict) -> dict:
+    from .inventory import upsert_product
+    return {"product": upsert_product(data.get("product", {}), str(data.get("updated_by", "")))}
+
+
+def handle_inventory_movement(data: dict) -> dict:
+    from .inventory import register_movement
+    return register_movement(data.get("movement", {}), str(data.get("updated_by", "")))
+
+
+def handle_inventory_replenishment(data: dict) -> dict:
+    from .inventory import set_replenishment
+    return {"settings": set_replenishment(data.get("settings", {}), str(data.get("updated_by", "")))}
+
+
+def handle_ucfe_received_sync(data: dict) -> dict:
+    from .ucfe import sync_received
+    return sync_received(
+        start=str(data.get("start") or ""),
+        end=str(data.get("end") or ""),
+        company_id=str(data.get("company_id") or "478"),
+        user=str(data.get("updated_by", "")),
+    )
+
+
+def handle_ucfe_received_list(data: dict) -> dict:
+    from .ucfe import list_received
+    status = str(data.get("mapping_status") or "") or None
+    return list_received(status=status, limit=int(data.get("limit") or 100))
+
+
+def handle_ucfe_item_mapping(data: dict) -> dict:
+    from .ucfe import confirm_item_mapping, ignore_item
+    user = str(data.get("updated_by", ""))
+    operation = str(data.get("operation") or "")
+    if operation == "confirm":
+        return confirm_item_mapping(
+            source_key=str(data.get("source_key") or ""),
+            inventory_product_id=str(data.get("inventory_product_id") or ""),
+            conversion_factor=data.get("conversion_factor"),
+            user=user,
+        )
+    if operation == "ignore":
+        return ignore_item(source_key=str(data.get("source_key") or ""), user=user, note=str(data.get("note") or ""))
+    raise ValueError("Operación de mapping UCFE inválida")
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -2960,6 +3012,20 @@ def main() -> None:
             result = handle_molduras_stock_movement(data)
         elif action == "molduras_stock_operation":
             result = handle_molduras_stock_operation(data)
+        elif action == "inventory_list":
+            result = handle_inventory_list(data)
+        elif action == "inventory_product_upsert":
+            result = handle_inventory_product_upsert(data)
+        elif action == "inventory_movement":
+            result = handle_inventory_movement(data)
+        elif action == "inventory_replenishment":
+            result = handle_inventory_replenishment(data)
+        elif action == "ucfe_received_sync":
+            result = handle_ucfe_received_sync(data)
+        elif action == "ucfe_received_list":
+            result = handle_ucfe_received_list(data)
+        elif action == "ucfe_item_mapping":
+            result = handle_ucfe_item_mapping(data)
         elif action == "session_update":
             result = handle_session_update(data)
         elif action == "session_delete":

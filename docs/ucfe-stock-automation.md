@@ -16,6 +16,16 @@ confianza.
   - Genera reporte de ventas por artículo.
   - Espera `Estado=3`.
   - Descarga PDF o Excel según `formato`.
+- `carpinteria/inventory.py`
+  - Inventario general separado del stock histórico de molduras.
+  - Depósitos iniciales `FABRICA` y `CASA`.
+  - Productos con unidad base, saldos iniciales, traslados, ajustes y
+    configuración de reposición.
+- `carpinteria/ucfe.py`
+  - Sincroniza comprobantes recibidos e ítems XML a Mongo de forma idempotente.
+  - Mantiene ítems en `PENDING` hasta que un administrador los confirme o
+    descarte. Confirmar un mapping reutiliza la equivalencia para futuras
+    facturas del mismo proveedor e ítem normalizado.
 
 Los scripts no guardan credenciales. Leen `UCFE_USERNAME` / `UCFE_PASSWORD` o
 preguntan por prompt local.
@@ -138,10 +148,23 @@ No usar promedio simple para proponer stock futuro. Reglas iniciales:
 
 ## Primer corte recomendable
 
-1. Convertir los scripts UCFE en modulo backend reutilizable.
-2. Agregar action CLI `ucfe_recibidos_sync` que guarde recibidos + items en Mongo.
-3. Agregar pantalla/bandeja "Items UCFE sin mapear".
-4. Permitir confirmar mapping item UCFE -> codigo de stock.
-5. Recién ahi aplicar movimientos automaticos.
+Implementado en backend:
+
+1. Inventario general con `inventory_products`, `inventory_locations`,
+   `inventory_balances`, `inventory_movements` e `inventory_settings`.
+2. Actions CLI `inventory_list`, `inventory_product_upsert`,
+   `inventory_movement` e `inventory_replenishment`.
+3. Ingesta UCFE mediante `ucfe_received_sync`, persistiendo
+   `ucfe_received_cfe` y `ucfe_received_items`.
+4. Bandeja de datos mediante `ucfe_received_list` y mapping mediante
+   `ucfe_item_mapping` (`confirm` o `ignore`).
+
+Pendiente para la siguiente entrega:
+
+1. Pantalla administrativa para productos, saldos iniciales y la bandeja UCFE.
+2. Endpoint protegido que exponga estas actions a administradores.
+3. Aplicar movimientos `COMPRA_UCFE` y `VENTA_UCFE` solo después de que el
+   administrador confirme el flujo de revisión.
+4. Sincronización diaria programada, ranking y sugerencias de reposición.
 
 Esto evita que una factura mal interpretada cambie stock real sin revision.
