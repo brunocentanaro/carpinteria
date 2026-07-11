@@ -10,6 +10,11 @@ from agents import ModelSettings
 # millón de tokens). Da buena calidad para descomponer pliegos y para el chat
 # de cotización sin disparar el costo. Bumpear acá cuando salga gpt-5.5-mini o
 # similar y el costo lo justifique.
+# VISION_MODEL is intentionally separate from AGENT_MODEL: reading hand-drawn
+# plans (pencil, low contrast, handwritten dimensions) is where the "mini" tier
+# is weakest. If plan interpretation is still flaky after the detail=high /
+# routing fixes, bump ONLY this to the full model (e.g. "gpt-5.4") and test —
+# the extra cost per image is marginal next to a mis-measured quote.
 VISION_MODEL = "gpt-5.4-mini"
 AGENT_MODEL = "gpt-5.4-mini"
 MACHINERY_PERCENT = float(os.getenv("MACHINERY_PERCENT", "7"))

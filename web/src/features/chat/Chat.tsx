@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 
-import { getSession, qk } from "./api";
+import { getAuthMe, getSession, qk } from "./api";
 import { ChatColumn } from "./components/ChatColumn";
 import { QuotationPanel } from "./components/QuotationPanel";
 import { SessionsSidebar } from "./components/SessionsSidebar";
@@ -28,6 +28,10 @@ export function Chat() {
     enabled: !!activeId,
   });
 
+  // The owner (área "administracion") sees the agent trace panel for debugging.
+  const meQuery = useQuery({ queryKey: ["auth", "me"], queryFn: getAuthMe, staleTime: 5 * 60 * 1000 });
+  const isOwner = meQuery.data?.area === "administracion" || !!meQuery.data?.allAccess;
+
   return (
     <div className="flex h-screen">
       <SessionsSidebar activeId={activeId} onSelect={setActiveId} />
@@ -35,6 +39,7 @@ export function Chat() {
         <ChatColumn
           session={sessionQuery.data ?? null}
           onSessionCreated={setActiveId}
+          isOwner={isOwner}
         />
         <aside className="flex-1 min-w-[480px] border-l bg-muted/30 overflow-y-auto">
           <QuotationPanel session={sessionQuery.data ?? null} />

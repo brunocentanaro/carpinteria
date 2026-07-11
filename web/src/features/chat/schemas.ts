@@ -5,10 +5,31 @@ import { z } from "zod";
 // the UI types are always trustworthy.
 // ---------------------------------------------------------------------------
 
+export const ToolTraceEntrySchema = z.object({
+  tool: z.string(),
+  args: z.record(z.string(), z.unknown()).default({}),
+  output: z.string().default(""),
+});
+export type ToolTraceEntry = z.infer<typeof ToolTraceEntrySchema>;
+
+export const AttachmentSchema = z.object({
+  key: z.string(),
+  filename: z.string().default(""),
+  content_type: z.string().default(""),
+});
+export type Attachment = z.infer<typeof AttachmentSchema>;
+
 export const ChatMessageSchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string(),
   ts: z.string().optional(),
+  // Per-turn agent trace (tool calls + args + outputs). Only shown to the owner
+  // for debugging why a reply/quote came out the way it did. Optional so the
+  // UI's optimistic (pre-persist) message literals don't need to carry it.
+  trace: z.array(ToolTraceEntrySchema).optional(),
+  // Files the user uploaded on this turn (photos/plans/pliegos), rendered as
+  // thumbnails/links so the submitted document stays visible in the thread.
+  attachments: z.array(AttachmentSchema).optional(),
 });
 export type ChatMessage = z.infer<typeof ChatMessageSchema>;
 

@@ -9,6 +9,7 @@ History is owned by OpenAI's Responses API: we just remember the
 """
 from __future__ import annotations
 
+import json
 import math
 import re
 import unicodedata
@@ -723,7 +724,11 @@ def _recalculate_item(
         for p in item.pieces
     ]
 
-    color = item.color or session.color_default or "blanco"
+    # Don't silently fall back to "blanco" when no color was given: that turned
+    # an unspecified color into a specific white laca board (and the wrong price
+    # tier). Empty color lands on the neutral/standard tier and the calculator
+    # flags it, instead of the agent quietly assuming white.
+    color = item.color or session.color_default or ""
     material = item.material or "melamínico"
     eb_name = item.edge_banding or color
 
@@ -1930,6 +1935,7 @@ Cómo trabajás:
 Reglas de ruteo de materiales:
 - Si el usuario/pliego pide directamente placas u hojas completas para comprar/vender ("placa completa", "hoja", "sin cantear", "solo placa", "pasamano"), usa `add_custom_item` pero describilo como venta directa de placa. No agregues canto, cortes, mano de obra, maquinaria ni merma; es compra/venta de la placa con ganancia, recargo financiero y flete si aplica.
 - Para melaminicos de color o textura madera (gris, roble kendal, etc.) usa las referencias de melaminico color/textura, no la placa blanca/laca blanca. Las referencias tipo BASICOS/MEDIO/PREMIUM corresponden a colores/texturas distintos al blanco.
+- SIEMPRE pasá el color/textura que diga el usuario en el parámetro `color` de `add_custom_item` (ej: "gris", "roble halifax", "negro"). Si el usuario no menciona color, dejá `color` vacío: NO asumas "blanco". El motor avisa solo cuando el color pedido no existe como placa exacta; no lo cambies vos en silencio por otro.
 - Si el pedido dice MDF, MDF crudo, fibrofacil o "NO EN MELAMINICO", cotiza placa MDF cruda/fibrofacil y NO agregues canto ABS/blanco por defecto. Solo agregá canto si el usuario lo pide explicitamente.
 - Si el pedido dice tablones/tablas de madera, cotiza desde Datos/Maderas por madera/tablas, no como placas. Pedi especie si falta.
 - Si el pedido puede ser tanto en madera como en placa/melaminico y el usuario no lo aclara, preguntá antes de cotizar. No asumas placa por defecto en esos casos.
@@ -2001,6 +2007,20 @@ def build_agent(session: QuotationSession | None = None) -> Agent:
     )
 
 
+def _parse_tool_args(raw_arguments: Any) -> dict[str, Any]:
+    """Best-effort parse of a tool call's JSON arguments into a dict for the
+    audit trace. Never raises — falls back to a raw snapshot."""
+    if isinstance(raw_arguments, dict):
+        return raw_arguments
+    if isinstance(raw_arguments, str) and raw_arguments.strip():
+        try:
+            parsed = json.loads(raw_arguments)
+            return parsed if isinstance(parsed, dict) else {"_value": parsed}
+        except (json.JSONDecodeError, ValueError):
+            return {"_raw": raw_arguments[:2000]}
+    return {}
+
+
 async def run_turn_stream(session_id: str, message: str):
     """Streaming variant of ``run_turn``. Async-yields ``(type, payload)`` tuples
     so the caller can push them as SSE / NDJSON.
@@ -2046,6 +2066,15 @@ async def run_turn_stream(session_id: str, message: str):
     if s.last_response_id:
         kwargs["previous_response_id"] = s.last_response_id
 
+    # Per-turn audit trail: every tool call with its arguments + output. Persisted
+    # on the assistant message so the owner can later see *why* the agent produced
+    # a quote (e.g. which material/color it passed to add_custom_item). Defined
+    # before the try so a mid-turn error still saves what ran so far.
+    trace: list[dict[str, Any]] = []
+    # Accumulate streamed text so we can persist the reply even if the SDK's
+    # final_output ends up empty (turn that finishes on a tool call, etc.).
+    text_buffer = ""
+
     try:
         streamed = Runner.run_streamed(agent, message, **kwargs)
 
@@ -2056,32 +2085,41 @@ async def run_turn_stream(session_id: str, message: str):
             ):
                 delta = event.data.delta
                 if delta:
+                    text_buffer += delta
                     yield "token", {"delta": delta}
             elif ev_type == "run_item_stream_event":
                 item = event.item
                 item_type = getattr(item, "type", "")
                 if item_type == "tool_call_item":
                     raw = getattr(item, "raw_item", None)
-                    yield "tool_call", {"tool": getattr(raw, "name", "")}
+                    name = getattr(raw, "name", "")
+                    args = _parse_tool_args(getattr(raw, "arguments", None))
+                    trace.append({"tool": name, "args": args, "output": ""})
+                    yield "tool_call", {"tool": name, "args": args}
                 elif item_type == "tool_call_output_item":
                     output = getattr(item, "output", "")
-                    preview = output[:300] if isinstance(output, str) else str(output)[:300]
-                    yield "tool_result", {"output": preview}
+                    out_text = output if isinstance(output, str) else str(output)
+                    # Attach the output to the most recent call still awaiting one.
+                    for entry in reversed(trace):
+                        if not entry["output"]:
+                            entry["output"] = out_text[:4000]
+                            break
+                    yield "tool_result", {"output": out_text[:300]}
     except Exception as exc:
         msg = friendly_openai_error(exc)
-        append_message(session_id, "assistant", msg)
-        yield "error", {"message": msg}
+        append_message(session_id, "assistant", msg, trace=trace)
+        yield "error", {"message": msg, "trace": trace}
         return
 
     new_resp_id = getattr(streamed, "last_response_id", None)
     if new_resp_id:
         update_response_id(session_id, new_resp_id)
 
-    final = streamed.final_output or ""
+    final = streamed.final_output or text_buffer
     if final:
-        append_message(session_id, "assistant", final)
+        append_message(session_id, "assistant", final, trace=trace)
 
-    yield "done", {"reply": final, "last_response_id": new_resp_id}
+    yield "done", {"reply": final, "last_response_id": new_resp_id, "trace": trace}
 
 
 async def run_turn(session_id: str, message: str) -> dict[str, Any]:

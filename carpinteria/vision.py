@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
+from pathlib import Path
 
 from openai import OpenAI
 
@@ -19,17 +21,21 @@ def _get_client() -> OpenAI:
     return _client
 
 
-def _encode_image(path: str) -> str:
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
+def _image_data_url(path: str) -> str:
+    # Use the real mime type; a JPEG photo of a plan mislabeled as PNG can be
+    # rejected or mishandled by the vision model.
+    p = Path(path)
+    mime = mimetypes.guess_type(p.name)[0] or "image/jpeg"
+    data = base64.b64encode(p.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
 
 
 def analyze_cutting_plan(image_path: str) -> list[ImageAnalysisResult]:
-    b64 = _encode_image(image_path)
-
     content = [
         {"type": "text", "text": IMAGE_ANALYSIS},
-        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        # detail=high keeps the full resolution so pencil dimension marks and
+        # thin lines survive; auto downsampling loses them on hand-drawn plans.
+        {"type": "image_url", "image_url": {"url": _image_data_url(image_path), "detail": "high"}},
     ]
 
     client = _get_client()

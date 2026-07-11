@@ -130,10 +130,33 @@ class AdditionalServices(BaseModel):
     lacquering: bool = False
 
 
+class ToolTraceEntry(BaseModel):
+    """One tool invocation within a turn, kept so the owner can audit *why* the
+    agent produced a given quote (which tool ran, with what arguments, and what
+    it returned)."""
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    output: str = ""
+
+
+class Attachment(BaseModel):
+    """A file the user uploaded (photo/plan/pliego), stored in object storage so
+    the quote can be audited against what was actually submitted. `key` is the
+    object key; the viewable URL is generated on demand (presigned)."""
+    key: str
+    filename: str = ""
+    content_type: str = ""
+
+
 class ChatMessage(BaseModel):
     role: str  # "user" | "assistant"
     content: str
     ts: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Per-turn agent trace, only populated on assistant messages. Lets the owner
+    # see the tool calls + arguments + outputs behind a reply for debugging.
+    trace: list[ToolTraceEntry] = Field(default_factory=list)
+    # Uploaded files tied to this turn (usually on the user message).
+    attachments: list[Attachment] = Field(default_factory=list)
 
 
 class QuotationSession(BaseModel):
@@ -329,7 +352,14 @@ def get_session(session_id: str) -> QuotationSession | None:
 
 def save_session(session: QuotationSession) -> None:
     session.updated_at = datetime.now(timezone.utc)
-    _coll().replace_one({"id": session.id}, session.model_dump(), upsert=True)
+    data = session.model_dump()
+    # `messages` is owned exclusively by append_message ($push). If save_session
+    # wrote it too (via replace_one/$set with the whole doc), a slow handler that
+    # loaded the session early — e.g. a 30-90s image upload — would clobber every
+    # chat message that got $push-ed while it was working. So we never touch
+    # `messages` here; $set only the non-conversational state.
+    data.pop("messages", None)
+    _coll().update_one({"id": session.id}, {"$set": data}, upsert=True)
 
 
 def update_response_id(session_id: str, response_id: str) -> None:
@@ -342,9 +372,15 @@ def update_response_id(session_id: str, response_id: str) -> None:
     )
 
 
-def append_message(session_id: str, role: str, content: str) -> None:
+def append_message(
+    session_id: str,
+    role: str,
+    content: str,
+    trace: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+) -> None:
     """Append a chat message to the session. Atomic so concurrent turns don't clobber."""
-    msg = ChatMessage(role=role, content=content)
+    msg = ChatMessage(role=role, content=content, trace=trace or [], attachments=attachments or [])
     _coll().update_one(
         {"id": session_id},
         {

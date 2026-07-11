@@ -45,7 +45,7 @@ def analyze_order_photo(file_paths: list[str]) -> dict[str, Any]:
     for path in file_paths:
         content.append({
             "type": "image_url",
-            "image_url": {"url": _image_data_url(path)},
+            "image_url": {"url": _image_data_url(path), "detail": "high"},
         })
 
     client = _get_client()

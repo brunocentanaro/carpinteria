@@ -387,6 +387,9 @@ def _merge_state_purchase_items(pliego: dict, text: str) -> dict:
     return pliego
 
 
+_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".heic", ".tif", ".tiff")
+
+
 def analyze_pliego(file_paths: list[str]) -> dict:
     all_text = []
     for path in file_paths:
@@ -395,6 +398,14 @@ def analyze_pliego(file_paths: list[str]) -> dict:
             all_text.append(_extract_pdf_text(path))
         elif low.endswith(".xlsx") or low.endswith(".xls"):
             all_text.append(_extract_xlsx_text(path))
+        elif low.endswith(_IMAGE_EXTENSIONS):
+            # An image can't be read as pliego text — doing so fed the model
+            # UTF-8 garbage and produced a nonsense quote. Photos/plans/sketches
+            # must go through the vision pipeline (the "Mueble" button).
+            raise RuntimeError(
+                "Ese archivo es una imagen (foto/plano/croquis). Usá el botón «Mueble» "
+                "para fotos y planos a mano — el adjunto de pliego es solo para PDF/Excel."
+            )
         else:
             with open(path, encoding="utf-8", errors="replace") as f:
                 all_text.append(f.read())
