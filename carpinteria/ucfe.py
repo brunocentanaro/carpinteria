@@ -77,8 +77,23 @@ def parse_cfe_items(xml_text: str) -> list[dict[str, str | None]]:
 
 
 def _number(value: object) -> float | None:
+    if value is None:
+        return None
+    # Note: `str(value or "")` would turn a legitimate 0 / 0.0 into None
+    # (falsy), dropping real zero-amount lines; convert directly instead.
+    text = str(value).strip()
+    if not text:
+        return None
+    # UCFE mixes formats: CFE XML uses a dot decimal ("1234.56"), while the
+    # localized es-UY list JSON can use "1.234,56". Treat whichever of "," / "."
+    # comes last as the decimal separator and drop the other as thousands, so a
+    # grouped amount no longer collapses to None (old code did a blind , -> .).
+    if text.rfind(",") > text.rfind("."):
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", "")
     try:
-        return round(float(str(value or "").replace(",", ".")), 6)
+        return round(float(text), 6)
     except ValueError:
         return None
 
@@ -86,6 +101,22 @@ def _number(value: object) -> float | None:
 def _normal(value: object) -> str:
     text = unicodedata.normalize("NFKD", str(value or "").strip().lower())
     return "".join(char for char in text if not unicodedata.combining(char))
+
+
+def _ucfe_date(value: str) -> str:
+    """Normalize a date to the US-style MM/DD/YYYY that UCFE's grid endpoint
+    expects. The portal's own JS sends moment(...).format("MM/DD/YYYY"); passing
+    DD/MM/YYYY makes the server throw a generic "error inesperado" (a day > 12
+    lands in the month slot). Accepts our callers' DD/MM/YYYY or ISO YYYY-MM-DD."""
+    text = (value or "").strip()
+    if not text:
+        return text
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%m/%d/%Y")
+        except ValueError:
+            continue
+    return text
 
 
 class UcfeReceivedClient:
@@ -139,13 +170,17 @@ class UcfeReceivedClient:
         }
 
     def list_page(self, *, start: str, end: str, company_id: str, rows: int, page: int) -> dict[str, Any]:
+        # Param shape mirrors the portal's own jqGrid postData: dates as
+        # MM/DD/YYYY and the unused filters sent as empty strings (not the
+        # literal "null", which the endpoint rejects). Filtro=5 = filter by
+        # reception date (FechaAlta) range.
         params = {
             "_search": "false", "nd": str(int(time.time() * 1000)), "rows": str(rows), "page": str(page),
-            "sidx": "Id", "sord": "desc", "tam": str(rows), "Filtro": "5", "TipoCfe": "null",
+            "sidx": "Id", "sord": "desc", "tam": str(rows), "Filtro": "5", "TipoCfe": "",
             "Serie": "", "NumeroDesde": "", "NumeroHasta": "", "IdEmpresa": company_id,
-            "FechaComprobanteHasta": "", "FechaComprobanteDesde": "", "FechaAltaHasta": end,
-            "FechaAltaDesde": start, "Rut": "", "Anulado": "null", "Estado": "null", "Etiqueta": "",
-            "ImporteDesde": "", "ImporteHasta": "", "Orden": "", "CuentaTerceros": "null", "moneda": "",
+            "FechaComprobanteHasta": "", "FechaComprobanteDesde": "", "FechaAltaHasta": _ucfe_date(end),
+            "FechaAltaDesde": _ucfe_date(start), "Rut": "", "Anulado": "", "Estado": "", "Etiqueta": "",
+            "ImporteDesde": "", "ImporteHasta": "", "Orden": "", "CuentaTerceros": "", "moneda": "",
             "pendienteDePago": "", "proveedorDeuda": "", "tieneRecibo": "", "vencidos": "",
         }
         response = self.session.get(self.url(LIST_PATH), params=params, headers=self._headers(), timeout=(10, 30))
