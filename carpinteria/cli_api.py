@@ -2084,7 +2084,12 @@ def handle_image_url(data: dict) -> dict:
     session_id = str(data.get("session_id") or "")
     if not key:
         return {"error": "missing key"}
-    if session_id and not key.startswith(f"sessions/{session_id}/"):
+    # session_id is mandatory and the prefix check always runs: an empty
+    # session_id used to skip scoping entirely, letting any authenticated caller
+    # presign another session's objects by omitting the param.
+    if not session_id:
+        return {"error": "missing session_id"}
+    if not key.startswith(f"sessions/{session_id}/"):
         return {"error": "key does not belong to session"}
     url = image_store.presigned_url(key)
     if not url:
