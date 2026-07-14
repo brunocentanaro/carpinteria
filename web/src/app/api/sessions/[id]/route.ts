@@ -15,11 +15,11 @@ export async function GET(
     const { id } = await params;
     const result = await callPython({ action: "session_get", session_id: id });
     const s = result.session as { user_id?: string; brand_id?: string; order_number?: string } | undefined;
-    const isFactoryOrder = auth.brandId === "pirone" && !!s?.order_number;
-    if (s && auth.area !== "administracion" && s.user_id !== auth.user && !isFactoryOrder) {
+    const isFactoryVisible = auth.brandId === "pirone" && s?.brand_id === "casa";
+    if (s && auth.area !== "administracion" && s.user_id !== auth.user && !isFactoryVisible) {
       return NextResponse.json({ error: "No autorizado" }, { status: 403 });
     }
-    if (s?.brand_id && s.brand_id !== auth.brandId && !auth.allAccess && !isFactoryOrder) {
+    if (s?.brand_id && s.brand_id !== auth.brandId && !auth.allAccess && !isFactoryVisible) {
       return NextResponse.json({ error: "No autorizado" }, { status: 403 });
     }
     return NextResponse.json(result);
@@ -38,6 +38,29 @@ export async function PATCH(
     if (!auth) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
     const { id } = await params;
     const body = await req.json().catch(() => ({}));
+    const currentResult = await callPython({ action: "session_get", session_id: id });
+    const current = currentResult.session as
+      | {
+          user_id?: string;
+          brand_id?: string;
+          order_number?: string;
+          client_name?: string;
+          client_phone?: string;
+          order_summary?: string;
+          payment_status?: string;
+          payment_notes?: string;
+        }
+      | undefined;
+    if (!current) {
+      return NextResponse.json({ error: "Cotizacion no encontrada" }, { status: 404 });
+    }
+    const isFactoryVisible = auth.brandId === "pirone" && current.brand_id === "casa";
+    if (auth.area !== "administracion" && current.user_id !== auth.user && !isFactoryVisible) {
+      return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+    }
+    if (current.brand_id && current.brand_id !== auth.brandId && !auth.allAccess && !isFactoryVisible) {
+      return NextResponse.json({ error: "No autorizado" }, { status: 403 });
+    }
     const commercialFields = [
       "approval_status",
       "client_name",
@@ -53,18 +76,7 @@ export async function PATCH(
       "delivered",
       "final_payment_amount",
     ];
-    const adminOnlyFields = [
-      "approval_status",
-      "client_sent",
-      "client_accepted",
-      "deposit_amount",
-      "order_number",
-      "ready_to_deliver",
-      "delivered",
-      "final_payment_amount",
-    ];
     const hasCommercialField = commercialFields.some((key) => key in body);
-    const hasAdminOnlyField = adminOnlyFields.some((key) => key in body);
     const payload: Record<string, unknown> = {
       action: hasCommercialField ? "session_commercial_status" : "session_update",
       session_id: id,
@@ -76,8 +88,31 @@ export async function PATCH(
     if ("additional_services" in body) payload.additional_services = body.additional_services;
     if ("chat_note" in body) payload.chat_note = body.chat_note;
     if (hasCommercialField) {
-      if (hasAdminOnlyField && auth.area !== "administracion") {
-        return NextResponse.json({ error: "Solo administracion puede cambiar estados comerciales" }, { status: 403 });
+      if ("approval_status" in body && auth.area !== "administracion") {
+        return NextResponse.json({ error: "Solo administracion puede aprobar cotizaciones" }, { status: 403 });
+      }
+      if ("approval_status" in body && auth.brandId !== "casa") {
+        return NextResponse.json({ error: "La aprobacion se gestiona desde La Casa del Carpintero" }, { status: 403 });
+      }
+      if (body.approval_status === "approved") {
+        const requestComplete =
+          !!current.client_name?.trim() &&
+          !!current.client_phone?.trim() &&
+          !!current.order_summary?.trim() &&
+          current.payment_status !== "unknown" &&
+          !!current.payment_notes?.trim();
+        if (!requestComplete) {
+          return NextResponse.json({ error: "Complete todos los datos obligatorios de la solicitud antes de aprobar" }, { status: 400 });
+        }
+      }
+      const casaStepFields = ["client_sent", "client_accepted", "deposit_amount", "order_number", "delivered", "final_payment_amount"];
+      const factoryStepFields = ["ready_to_deliver"];
+      const resetsDownstream = "client_accepted" in body;
+      if (auth.brandId !== "casa" && casaStepFields.some((key) => key in body)) {
+        return NextResponse.json({ error: "Este paso se gestiona desde La Casa del Carpintero" }, { status: 403 });
+      }
+      if (auth.brandId !== "pirone" && !resetsDownstream && factoryStepFields.some((key) => key in body)) {
+        return NextResponse.json({ error: "Este paso se gestiona desde la carpinteria" }, { status: 403 });
       }
       for (const key of commercialFields) {
         if (key in body) payload[key] = body[key];

@@ -420,7 +420,8 @@ def list_sessions(
         elif brand_id == "pirone":
             q["$or"] = [
                 {"brand_id": "pirone"},
-                {"order_number": {"$exists": True, "$nin": ["", None]}},
+                {"brand_id": "casa"},
+                {"brand_id": {"$exists": False}},
             ]
         else:
             q["brand_id"] = brand_id

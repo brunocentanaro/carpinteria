@@ -573,6 +573,16 @@ function paymentStatusLabel(status: Session["payment_status"]) {
   }[status];
 }
 
+function isRequestComplete(session: Session) {
+  return Boolean(
+    session.client_name.trim() &&
+      session.client_phone.trim() &&
+      session.order_summary.trim() &&
+      session.payment_status !== "unknown" &&
+      session.payment_notes.trim(),
+  );
+}
+
 function OrderPaperPanel({ session }: { session: Session }) {
   const queryClient = useQueryClient();
   const mutation = useMutation({
@@ -617,10 +627,16 @@ function OrderPaperPanel({ session }: { session: Session }) {
           {paymentStatusLabel(session.payment_status)}
         </Badge>
       </CardHeader>
+      {!isRequestComplete(session) && (
+        <div className="px-4 pb-3 text-xs text-amber-700">
+          Complete todos los campos para registrar la solicitud.
+        </div>
+      )}
       <CardContent className="grid gap-3 text-sm md:grid-cols-2">
         <Label className="space-y-1 text-xs">
-          Cliente
+          Cliente *
           <Input
+            required
             value={clientName}
             onChange={(e) => setClientName(e.target.value)}
             onBlur={() => saveText("client_name", clientName)}
@@ -628,8 +644,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           />
         </Label>
         <Label className="space-y-1 text-xs">
-          Telefono
+          Telefono *
           <Input
+            required
             value={clientPhone}
             onChange={(e) => setClientPhone(e.target.value)}
             onBlur={() => saveText("client_phone", clientPhone)}
@@ -637,8 +654,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           />
         </Label>
         <Label className="space-y-1 text-xs md:col-span-2">
-          Pedido segun papel
+          Pedido segun papel *
           <Input
+            required
             value={orderSummary}
             onChange={(e) => setOrderSummary(e.target.value)}
             onBlur={() => saveText("order_summary", orderSummary)}
@@ -646,7 +664,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
           />
         </Label>
         <Label className="space-y-1 text-xs">
-          Estado de pago
+          Estado de pago *
           <Select
             value={session.payment_status}
             onValueChange={(value) =>
@@ -665,8 +683,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           </Select>
         </Label>
         <Label className="space-y-1 text-xs">
-          Nota de pago
+          Nota de pago *
           <Input
+            required
             value={paymentNotes}
             onChange={(e) => setPaymentNotes(e.target.value)}
             onBlur={() => saveText("payment_notes", paymentNotes)}
@@ -687,7 +706,7 @@ function depositProgressLabel(deposit: number | null | undefined, total: number)
 
 function OrderProgress({ session, grand }: { session: Session; grand: number }) {
   const steps = [
-    { key: "requested", label: "Solicitada", done: true },
+    { key: "requested", label: "Solicitada", done: isRequestComplete(session) },
     {
       key: "approved",
       label: "Aprobada",
@@ -738,6 +757,7 @@ function OrderProgress({ session, grand }: { session: Session; grand: number }) 
     steps.length > 1 ? ((completedCount - 1) / (steps.length - 1)) * 100 : 0;
   const currentStep =
     [...steps].reverse().find((step) => step.done || step.rejected) ?? steps[0];
+  const currentStepLabel = isRequestComplete(session) ? currentStep.label : "Solicitud incompleta";
 
   return (
     <Card className="overflow-hidden">
@@ -751,7 +771,7 @@ function OrderProgress({ session, grand }: { session: Session; grand: number }) 
             currentStep.rejected ? "bg-red-100 text-red-700" : "bg-emerald-50 text-emerald-700"
           }`}
         >
-          {currentStep.rejected ? "No aceptada" : currentStep.label}
+          {currentStep.rejected ? "No aceptada" : currentStepLabel}
         </Badge>
       </CardHeader>
       <CardContent className="px-4 pb-4 pt-1">

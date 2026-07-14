@@ -74,6 +74,16 @@ function orderAge(s: SessionRow) {
   return compactAge(s.order_created_at);
 }
 
+function isRequestComplete(s: SessionRow) {
+  return Boolean(
+    s.client_name.trim() &&
+      s.client_phone.trim() &&
+      s.order_summary.trim() &&
+      s.payment_status !== "unknown" &&
+      s.payment_notes.trim(),
+  );
+}
+
 export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   const queryClient = useQueryClient();
   const { brandId } = useBrandEnvironment();
@@ -125,6 +135,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   });
 
   function currentStep(s: SessionRow) {
+    if (!isRequestComplete(s)) return "Completar solicitud";
     if (s.delivered && s.final_payment_amount) return "Cobrada";
     if (s.delivered) return "Cobro final";
     if (s.ready_to_deliver) return "Entrega";
@@ -139,7 +150,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
 
   function progressDots(s: SessionRow) {
     const steps = [
-      true,
+      isRequestComplete(s),
       s.approval_status === "approved",
       s.client_sent,
       s.client_accepted === "yes",
@@ -189,7 +200,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
     statusMutation.mutate({ id: s.id, fields: { order_number: value } });
   }
 
-  function adminControls(s: SessionRow) {
+  function progressControls(s: SessionRow) {
     const deposit = amountDraft(s.id, "deposit_amount", s.deposit_amount);
     const finalPayment = amountDraft(s.id, "final_payment_amount", s.final_payment_amount);
     const baseButton = "rounded border px-2 py-1 text-[10px] text-muted-foreground hover:bg-muted";
@@ -197,7 +208,12 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
     const dangerButton = "rounded border border-red-200 px-2 py-1 text-[10px] text-red-700 hover:bg-red-50";
 
     let control: React.ReactNode = null;
-    if (s.approval_status !== "approved") {
+    if (
+      s.approval_status !== "approved" &&
+      isRequestComplete(s) &&
+      isAdmin &&
+      brandId === "casa"
+    ) {
       control = (
         <div className="flex gap-1">
           <button
@@ -212,7 +228,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (!s.client_sent) {
+    } else if (!s.client_sent && brandId === "casa") {
       control = (
         <div className="flex gap-1">
           <button
@@ -227,7 +243,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (s.client_accepted === "pending") {
+    } else if (s.client_accepted === "pending" && brandId === "casa") {
       control = (
         <div className="flex gap-1">
           <button
@@ -262,7 +278,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (s.client_accepted === "no") {
+    } else if (s.client_accepted === "no" && brandId === "casa") {
       control = (
         <button
           type="button"
@@ -275,7 +291,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           Reabrir
         </button>
       );
-    } else if (!s.deposit_amount) {
+    } else if (!s.deposit_amount && brandId === "casa") {
       control = (
         <div className="flex items-center gap-1">
           <input
@@ -298,7 +314,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (!s.order_number) {
+    } else if (!s.order_number && brandId === "casa") {
       const value = orderDraft(s);
       control = (
         <div className="flex items-center gap-1">
@@ -321,7 +337,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (!s.ready_to_deliver) {
+    } else if (!s.ready_to_deliver && brandId === "pirone") {
       control = (
         <button
           type="button"
@@ -334,7 +350,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           Listo para entregar
         </button>
       );
-    } else if (!s.delivered) {
+    } else if (!s.delivered && brandId === "casa") {
       control = (
         <button
           type="button"
@@ -347,7 +363,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           Marcar entregada
         </button>
       );
-    } else if (!s.final_payment_amount) {
+    } else if (!s.final_payment_amount && brandId === "casa") {
       control = (
         <div className="flex items-center gap-1">
           <input
@@ -445,7 +461,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
                     })}
                   </div>
                 </button>
-                {isAdmin && adminControls(s)}
+                {progressControls(s)}
               </div>
             </li>
           ))}
