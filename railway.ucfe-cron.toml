@@ -1,0 +1,14 @@
+# Config-as-code for the separate `ucfe-cron` Railway service (same repo/image
+# as `carpinteria` web). Point that service's "Config file path" at this file.
+# It runs the UCFE received-invoice sync daily and exits; Railway re-runs it on
+# the schedule. Needs MONGO_URL, UCFE_USERNAME and UCFE_PASSWORD (reference them
+# from the web service). Web service keeps using the root railway.toml.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "uv run python -m carpinteria.ucfe_cron"
+# 09:15 UTC = 06:15 Uruguay. Sync overlaps the last 7 days; unique keys per
+# comprobante/line make repeated runs idempotent.
+cronSchedule = "15 9 * * *"
