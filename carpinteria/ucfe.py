@@ -1,0 +1,432 @@
+from __future__ import annotations
+
+import html
+import os
+import re
+import time
+import unicodedata
+import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
+from typing import Any
+from urllib.parse import urljoin, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+
+from .db import collection
+
+
+DEFAULT_BASE_URL = "https://prod9187.ucfe.com.uy/Gestion/"
+LIST_PATH = "api/CfeRecibido/GetCfeRecibidoInicial"
+XML_PATH = "api/CfeRecibido/GetXMLorAdenda"
+
+
+class UcfeError(RuntimeError):
+    pass
+
+
+def _parse_token(html_text: str) -> str | None:
+    soup = BeautifulSoup(html_text, "html.parser")
+    input_tag = soup.find("input", attrs={"name": "__RequestVerificationToken"})
+    if input_tag and input_tag.get("value"):
+        return str(input_tag["value"])
+    match = re.search(r"__RequestVerificationToken['\"]?\s*[:=]\s*['\"]([^'\"]+)", html_text)
+    return html.unescape(match.group(1)) if match else None
+
+
+def _json(response: requests.Response) -> Any:
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise UcfeError(f"UCFE no devolvió JSON válido ({response.status_code})") from exc
+
+
+def _js_escape(value: str) -> str:
+    safe = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_+-./"
+    return "".join(char if char in safe else f"%{ord(char):02X}" for char in value)
+
+
+def _local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _child_text(element: ET.Element, name: str) -> str | None:
+    for child in element:
+        if _local_name(child.tag) == name:
+            return child.text.strip() if child.text else ""
+    return None
+
+
+def parse_cfe_items(xml_text: str) -> list[dict[str, str | None]]:
+    root = ET.fromstring(xml_text)
+    items: list[dict[str, str | None]] = []
+    for item in root.iter():
+        if _local_name(item.tag) != "Item":
+            continue
+        items.append({
+            "line_number": _child_text(item, "NroLinDet"),
+            "name": _child_text(item, "NomItem"),
+            "description": _child_text(item, "DscItem"),
+            "quantity": _child_text(item, "Cantidad"),
+            "source_unit": _child_text(item, "UniMed"),
+            "unit_price": _child_text(item, "PrecioUnitario"),
+            "amount": _child_text(item, "MontoItem"),
+            "tax_indicator": _child_text(item, "IndFact"),
+        })
+    return items
+
+
+def _number(value: object) -> float | None:
+    if value is None:
+        return None
+    # Note: `str(value or "")` would turn a legitimate 0 / 0.0 into None
+    # (falsy), dropping real zero-amount lines; convert directly instead.
+    text = str(value).strip()
+    if not text:
+        return None
+    # UCFE mixes formats: CFE XML uses a dot decimal ("1234.56"), while the
+    # localized es-UY list JSON can use "1.234,56". Treat whichever of "," / "."
+    # comes last as the decimal separator and drop the other as thousands, so a
+    # grouped amount no longer collapses to None (old code did a blind , -> .).
+    if text.rfind(",") > text.rfind("."):
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", "")
+    try:
+        return round(float(text), 6)
+    except ValueError:
+        return None
+
+
+def _normal(value: object) -> str:
+    text = unicodedata.normalize("NFKD", str(value or "").strip().lower())
+    return "".join(char for char in text if not unicodedata.combining(char))
+
+
+def _ucfe_date(value: str) -> str:
+    """Normalize a date to the US-style MM/DD/YYYY that UCFE's grid endpoint
+    expects. The portal's own JS sends moment(...).format("MM/DD/YYYY"); passing
+    DD/MM/YYYY makes the server throw a generic "error inesperado" (a day > 12
+    lands in the month slot). Accepts our callers' DD/MM/YYYY or ISO YYYY-MM-DD."""
+    text = (value or "").strip()
+    if not text:
+        return text
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%m/%d/%Y")
+        except ValueError:
+            continue
+    return text
+
+
+class UcfeReceivedClient:
+    def __init__(self, base_url: str = DEFAULT_BASE_URL) -> None:
+        self.base_url = base_url if base_url.endswith("/") else f"{base_url}/"
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "es-UY,es;q=0.9,en;q=0.8",
+        })
+        self.request_token: str | None = None
+
+    def url(self, path: str) -> str:
+        return urljoin(self.base_url, path)
+
+    def login_from_environment(self) -> None:
+        username = os.environ.get("UCFE_USERNAME", "").strip()
+        password = os.environ.get("UCFE_PASSWORD", "")
+        if not username or not password:
+            raise UcfeError("Faltan UCFE_USERNAME y UCFE_PASSWORD para sincronizar UCFE")
+        login_page = self.session.get(self.base_url, timeout=30)
+        login_page.raise_for_status()
+        token = _parse_token(login_page.text)
+        if not token:
+            raise UcfeError("No encontré el token de login de UCFE")
+        parsed = urlparse(self.base_url)
+        response = self.session.post(
+            self.base_url,
+            data={"__RequestVerificationToken": token, "username": username, "password": _js_escape(password)},
+            headers={"Origin": f"{parsed.scheme}://{parsed.netloc}", "Referer": self.base_url},
+            timeout=30,
+        )
+        response.raise_for_status()
+        home = self.session.get(self.url("Home/Index"), timeout=30)
+        home.raise_for_status()
+        if "formularioLogin" in home.text:
+            raise UcfeError("UCFE rechazó las credenciales de sincronización")
+        self.request_token = _parse_token(home.text) or token
+
+    def _headers(self) -> dict[str, str]:
+        if not self.request_token:
+            raise UcfeError("La sesión UCFE no fue autenticada")
+        return {
+            "__requestverificationtoken": self.request_token,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": self.url("Home/Index"),
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+        }
+
+    def list_page(self, *, start: str, end: str, company_id: str, rows: int, page: int) -> dict[str, Any]:
+        # Param shape mirrors the portal's own jqGrid postData: dates as
+        # MM/DD/YYYY and the unused filters sent as empty strings (not the
+        # literal "null", which the endpoint rejects). Filtro=5 = filter by
+        # reception date (FechaAlta) range.
+        params = {
+            "_search": "false", "nd": str(int(time.time() * 1000)), "rows": str(rows), "page": str(page),
+            "sidx": "Id", "sord": "desc", "tam": str(rows), "Filtro": "5", "TipoCfe": "",
+            "Serie": "", "NumeroDesde": "", "NumeroHasta": "", "IdEmpresa": company_id,
+            "FechaComprobanteHasta": "", "FechaComprobanteDesde": "", "FechaAltaHasta": _ucfe_date(end),
+            "FechaAltaDesde": _ucfe_date(start), "Rut": "", "Anulado": "", "Estado": "", "Etiqueta": "",
+            "ImporteDesde": "", "ImporteHasta": "", "Orden": "", "CuentaTerceros": "", "moneda": "",
+            "pendienteDePago": "", "proveedorDeuda": "", "tieneRecibo": "", "vencidos": "",
+        }
+        response = self.session.get(self.url(LIST_PATH), params=params, headers=self._headers(), timeout=(10, 30))
+        response.raise_for_status()
+        data = _json(response)
+        if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
+            raise UcfeError("Respuesta inesperada listando comprobantes recibidos")
+        return data
+
+    def download_xml(self, cfe_id: object) -> str:
+        response = self.session.get(self.url(XML_PATH), params={"id": cfe_id, "tipo": "1"}, headers=self._headers(), timeout=(10, 30))
+        response.raise_for_status()
+        xml_text = _json(response)
+        if not isinstance(xml_text, str) or "<" not in xml_text:
+            raise UcfeError(f"UCFE no devolvió XML para comprobante {cfe_id}")
+        return xml_text
+
+
+def _ensure_storage() -> None:
+    collection("ucfe_received_cfe").create_index("ucfe_id", unique=True)
+    collection("ucfe_received_cfe").create_index("uuid", unique=True, sparse=True)
+    collection("ucfe_received_cfe").create_index([("document_date", -1), ("ucfe_id", -1)])
+    collection("ucfe_received_items").create_index("source_key", unique=True)
+    collection("ucfe_received_items").create_index([("mapping_status", 1), ("document_date", -1)])
+    collection("ucfe_item_mappings").create_index([("supplier_rut", 1), ("normalized_name", 1)], unique=True)
+
+
+def sync_received(*, start: str, end: str, company_id: str, user: str) -> dict:
+    _ensure_storage()
+    client = UcfeReceivedClient(os.getenv("UCFE_BASE_URL", DEFAULT_BASE_URL))
+    client.login_from_environment()
+    rows_per_page = 500
+    page_data = client.list_page(start=start, end=end, company_id=company_id, rows=rows_per_page, page=1)
+    rows = list(page_data["rows"])
+    total_records = int(page_data.get("total") or len(rows))
+    if total_records > len(rows):
+        raise UcfeError(
+            f"UCFE devolvió {total_records} comprobantes, más que el máximo de {rows_per_page} por consulta. "
+            "Reducí UCFE_SYNC_LOOKBACK_DAYS para que el cron no omita comprobantes."
+        )
+
+    cfe_created = 0
+    items_created = 0
+    stock_applied = 0
+    xml_errors: list[dict[str, str]] = []
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        cfe_id = str(row.get("Id") or "").strip()
+        if not cfe_id:
+            continue
+        existing = collection("ucfe_received_cfe").find_one({"ucfe_id": cfe_id}, {"xml": 1})
+        cfe = {
+            "ucfe_id": cfe_id,
+            "company_id": company_id,
+            "document_date": row.get("FechaComprobante"),
+            "document_type": row.get("TipoCfe"),
+            "series_number": row.get("SerieNumero"),
+            "supplier_name": row.get("NombreFantasiaRucEmisor"),
+            "supplier_rut": str(row.get("RucEmisor") or ""),
+            "currency": row.get("TipoMoneda"),
+            "total_amount": _number(row.get("MontoTotal")),
+            "amount_payable": _number(row.get("MontoTotalAPagar")),
+            "raw": row,
+            "last_synced_at": now,
+            "last_synced_by": user,
+        }
+        uuid = str(row.get("Uuid") or "").strip()
+        if uuid:
+            cfe["uuid"] = uuid
+        result = collection("ucfe_received_cfe").update_one(
+            {"ucfe_id": cfe_id}, {"$set": cfe, "$setOnInsert": {"created_at": now}}, upsert=True,
+        )
+        cfe_created += int(result.upserted_id is not None)
+        if existing and existing.get("xml"):
+            continue
+        try:
+            xml_text = client.download_xml(cfe_id)
+            collection("ucfe_received_cfe").update_one({"ucfe_id": cfe_id}, {"$set": {"xml": xml_text, "xml_synced_at": now}})
+            items = parse_cfe_items(xml_text)
+        except UcfeError as exc:
+            xml_errors.append({"ucfe_id": cfe_id, "error": str(exc)})
+            continue
+        for index, item in enumerate(items, start=1):
+            line_number = str(item.get("line_number") or index)
+            source_key = f"UCFE_RECEIVED:{cfe_id}:{line_number}"
+            item_doc = {
+                "source_key": source_key,
+                "ucfe_id": cfe_id,
+                "line_number": line_number,
+                "document_date": row.get("FechaComprobante"),
+                "supplier_name": row.get("NombreFantasiaRucEmisor"),
+                "supplier_rut": str(row.get("RucEmisor") or ""),
+                "name": item.get("name") or "",
+                "description": item.get("description") or "",
+                "quantity": _number(item.get("quantity")),
+                "source_unit": item.get("source_unit") or "",
+                "unit_price": _number(item.get("unit_price")),
+                "amount": _number(item.get("amount")),
+                "tax_indicator": item.get("tax_indicator") or "",
+                "normalized_name": _normal(item.get("name")),
+                "last_synced_at": now,
+            }
+            mapping = collection("ucfe_item_mappings").find_one(
+                {"supplier_rut": item_doc["supplier_rut"], "normalized_name": item_doc["normalized_name"]},
+                {"_id": 0},
+            )
+            initial_mapping = {"mapping_status": "PENDING"}
+            if mapping:
+                initial_mapping = {
+                    "mapping_status": "CONFIRMED",
+                    "inventory_product_id": mapping["inventory_product_id"],
+                    "target_unit": mapping["target_unit"],
+                    "conversion_factor": mapping["conversion_factor"],
+                    "mapping_confirmed_at": mapping["updated_at"],
+                    "mapping_confirmed_by": mapping["updated_by"],
+                }
+            item_result = collection("ucfe_received_items").update_one(
+                {"source_key": source_key},
+                {"$set": item_doc, "$setOnInsert": {**initial_mapping, "created_at": now}},
+                upsert=True,
+            )
+            items_created += int(item_result.upserted_id is not None)
+            # A newly-received line that already matches a confirmed mapping feeds
+            # straight into stock (idempotent via source_key). One bad mapping must
+            # not abort the whole sync, so failures are recorded, not raised.
+            if mapping and item_result.upserted_id is not None:
+                try:
+                    if _apply_purchase_to_stock(
+                        item_doc,
+                        product_id=mapping["inventory_product_id"],
+                        factor=mapping["conversion_factor"],
+                        location_code=mapping.get("location_code", "FABRICA"),
+                        user=user,
+                    ):
+                        stock_applied += 1
+                except Exception as exc:
+                    xml_errors.append({"ucfe_id": cfe_id, "error": f"stock {source_key}: {exc}"})
+    return {
+        "received": len(rows), "cfe_created": cfe_created, "items_created": items_created,
+        "stock_applied": stock_applied, "xml_errors": xml_errors, "synced_at": now,
+    }
+
+
+def list_received(*, status: str | None = None, limit: int = 100) -> dict:
+    _ensure_storage()
+    item_query = {"mapping_status": status.upper()} if status else {}
+    items = list(collection("ucfe_received_items").find(item_query, {"_id": 0}).sort("document_date", -1).limit(max(1, min(limit, 500))))
+    cfes = list(collection("ucfe_received_cfe").find({}, {"_id": 0, "xml": 0}).sort("document_date", -1).limit(max(1, min(limit, 500))))
+    return {"cfes": cfes, "items": items}
+
+
+def _apply_purchase_to_stock(item: dict, *, product_id: str, factor: float, location_code: str, user: str) -> bool:
+    """Register a COMPRA stock entry for one confirmed UCFE line. Idempotent via
+    the line's source_key (re-sync / re-confirm never double-count). Returns True
+    if a movement exists for this line afterwards, False if skipped because the
+    line has no positive quantity (e.g. a service/rounding line)."""
+    from . import inventory
+
+    raw = item.get("quantity")
+    quantity = raw if isinstance(raw, (int, float)) else _number(raw)
+    if quantity is None or quantity <= 0:
+        return False
+    stock_quantity = round(quantity * factor, 6)
+    if stock_quantity <= 0:
+        return False
+    inventory.register_movement(
+        {
+            "type": "COMPRA",
+            "product_id": product_id,
+            "destination_location": location_code,
+            "quantity": stock_quantity,
+            "source_key": item["source_key"],
+            "notes": f"Compra UCFE · {item.get('supplier_name', '')} · {item.get('name', '')}".strip(" ·"),
+        },
+        user,
+    )
+    return True
+
+
+def confirm_item_mapping(
+    *, source_key: str, inventory_product_id: str, conversion_factor: object, user: str,
+    location_code: str = "FABRICA",
+) -> dict:
+    _ensure_storage()
+    item = collection("ucfe_received_items").find_one({"source_key": source_key}, {"_id": 0})
+    if item is None:
+        raise ValueError("La línea UCFE no existe")
+    product = collection("inventory_products").find_one({"id": inventory_product_id}, {"_id": 0})
+    if product is None:
+        raise ValueError("El producto de inventario no existe")
+    factor = _number(conversion_factor)
+    if factor is None or factor <= 0:
+        raise ValueError("El factor de conversión debe ser mayor a cero")
+    location_code = str(location_code or "").strip().upper() or "FABRICA"
+    now = datetime.now(timezone.utc)
+    mapping = {
+        "supplier_rut": item["supplier_rut"],
+        "normalized_name": item["normalized_name"],
+        "inventory_product_id": inventory_product_id,
+        "target_unit": product["unit"],
+        "conversion_factor": factor,
+        "source_unit": item.get("source_unit", ""),
+        "location_code": location_code,
+        "updated_at": now,
+        "updated_by": user,
+    }
+    collection("ucfe_item_mappings").update_one(
+        {"supplier_rut": mapping["supplier_rut"], "normalized_name": mapping["normalized_name"]},
+        {"$set": mapping, "$setOnInsert": {"created_at": now, "created_by": user}},
+        upsert=True,
+    )
+    update = {
+        "mapping_status": "CONFIRMED",
+        "inventory_product_id": inventory_product_id,
+        "target_unit": product["unit"],
+        "conversion_factor": factor,
+        "location_code": location_code,
+        "mapping_confirmed_at": now,
+        "mapping_confirmed_by": user,
+    }
+    # Every line for this supplier+item (all still-pending ones plus the one just
+    # clicked) becomes CONFIRMED and feeds its quantity into stock.
+    match = {"supplier_rut": mapping["supplier_rut"], "normalized_name": mapping["normalized_name"]}
+    affected = list(collection("ucfe_received_items").find(
+        {**match, "mapping_status": {"$in": ["PENDING", "CONFIRMED"]}}, {"_id": 0},
+    ))
+    if all(a["source_key"] != source_key for a in affected):
+        affected.append(item)
+    collection("ucfe_received_items").update_many({**match, "mapping_status": "PENDING"}, {"$set": update})
+    collection("ucfe_received_items").update_one({"source_key": source_key}, {"$set": update})
+
+    stock_applied = 0
+    for line in affected:
+        if _apply_purchase_to_stock(line, product_id=inventory_product_id, factor=factor, location_code=location_code, user=user):
+            stock_applied += 1
+    return {"mapping": mapping, "mapped_items": len(affected), "stock_applied": stock_applied}
+
+
+def ignore_item(*, source_key: str, user: str, note: str = "") -> dict:
+    _ensure_storage()
+    result = collection("ucfe_received_items").find_one_and_update(
+        {"source_key": source_key},
+        {"$set": {"mapping_status": "IGNORED", "ignored_at": datetime.now(timezone.utc), "ignored_by": user, "ignore_note": note}},
+        return_document=True,
+    )
+    if result is None:
+        raise ValueError("La línea UCFE no existe")
+    result.pop("_id", None)
+    return {"item": result}

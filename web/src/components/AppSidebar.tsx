@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Newspaper,
   PackageCheck,
+  Warehouse,
   Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -39,6 +40,7 @@ const NAV: NavItem[] = [
   { href: "/noticiero", icon: Newspaper, label: "Noticiero comercial" },
   { href: "/dashboard-molduras", icon: ChartNoAxesColumnIncreasing, label: "Dashboard de molduras" },
   { href: "/stock-molduras", icon: PackageCheck, label: "Stock de molduras" },
+  { href: "/inventario", icon: Warehouse, label: "Inventario operativo" },
   { href: "/usuarios", icon: Users, label: "Usuarios" },
 ];
 
@@ -83,6 +85,7 @@ export function AppSidebar() {
       <nav className="flex flex-col gap-1 flex-1">
         {NAV.filter((item) => {
           if (item.href === "/usuarios" && area !== "administracion") return false;
+          if (item.href === "/inventario" && area !== "administracion") return false;
           if (item.href === "/stock-molduras" && brandId !== "pirone") return false;
           if (item.href === "/noticiero" && brandId !== "casa") return false;
           return true;
