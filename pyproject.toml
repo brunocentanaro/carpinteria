@@ -5,6 +5,7 @@ description = "Cotizador de carpintería con OpenAI Agents SDK"
 requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.12.3",
+    "boto3>=1.43.45",
     "google-api-python-client>=2.140.0",
     "google-auth>=2.49.1",
     "gspread>=6.2.1",

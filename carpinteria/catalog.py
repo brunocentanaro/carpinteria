@@ -15,25 +15,39 @@ from carpinteria.lista_precios_parser import Producto
 # Map legacy material strings ("melamínico", "MDF", "fibrofácil"...) to the
 # canonical (familia, material) pair used in the new schema. Order matters —
 # more specific terms first.
+# NOTE: in the Activa catalog, melaminic boards are stored as familia="MDF",
+# material="MELAMINICO" — NOT familia="MELAMINICO" (that value doesn't exist).
+# Raw MDF is material="MDF". So we scope by `material`, not `familia`, for these:
+# the old {"familia": "MELAMINICO"} matched zero rows and silently fell back to
+# the whole board pool, which is how "melamínico gris" ended up as an MDF.
 _MATERIAL_QUERY_MAP: list[tuple[str, dict]] = [
-    ("melam",         {"familia": "MELAMINICO"}),
-    ("melaminic",     {"familia": "MELAMINICO"}),
-    ("melamina",      {"familia": "MELAMINICO"}),
-    ("multiplaca",    {"familia": "MULTIPLACA"}),
+    ("melam",         {"material": "MELAMINICO"}),
+    ("melaminic",     {"material": "MELAMINICO"}),
+    ("melamina",      {"material": "MELAMINICO"}),
+    ("multiplaca",    {"material": "MULTIPLACA"}),
     ("compensado",    {"familia": "COMPENSADO"}),
-    ("fenolic",       {"familia": "FENOLICO"}),
+    ("fenolic",       {"material": "FENOLICO"}),
     ("fibrofacil",    {"familia": "FIBRO_FACIL"}),
     ("fibro facil",   {"familia": "FIBRO_FACIL"}),
     ("fibroplus",     {"familia": "FIBRA"}),
-    ("chapadur",      {"familia": "FIBRA"}),
-    ("aglomerado",    {"familia": "MULTIPLACA"}),  # closest in new catalog
+    ("chapadur",      {"material": "CHAPADUR"}),
+    ("aglomerado",    {"material": "MULTIPLACA"}),  # closest in new catalog
     ("placa",         {"familia": "PLACA"}),
-    ("mdf",           {"familia": "MDF"}),
+    ("mdf",           {"material": "MDF"}),  # raw MDF only; melaminic MDF is caught above by "melam"
     ("osb",           {"familia": "OSB"}),
     ("hdf",           {"familia": "HDF"}),
     ("lambriplac",    {"familia": "LAMBRIPLAC"}),
     ("slotwall",      {"familia": "SLOTWALL"}),
 ]
+
+# Words that describe the board type/finish, not a color. Stripped before we
+# decide a request carries a real color, so "MDF crudo" isn't treated as a
+# color and pushed toward the priced melaminic tiers.
+_NON_COLOR_TERMS = {
+    "mdf", "fibrofacil", "fibra", "crudo", "cruda", "compensado", "fenolico",
+    "multiplaca", "aglomerado", "placa", "melaminico", "melamina", "melaminizado",
+    "hoja", "tablero",
+}
 
 
 def _normalize_material_query(q: str) -> dict:
@@ -69,9 +83,16 @@ def _query_words(q: str) -> list[str]:
     return [w for w in _norm_text(q).split() if len(w) > 2]
 
 
+def _color_words(q: str) -> list[str]:
+    """Real color/texture words in the request (material/finish terms removed)."""
+    return [w for w in _query_words(q) if w not in _NON_COLOR_TERMS and w != "blanco"]
+
+
 def _is_non_white_color(q: str) -> bool:
     qn = _norm_text(q)
-    return bool(qn) and "blanco" not in qn
+    if not qn or "blanco" in qn:
+        return False
+    return bool(_color_words(q))
 
 
 @dataclass
@@ -79,12 +100,25 @@ class PlacaMatch:
     producto: Producto
     requested_espesor_mm: float
     is_approx: bool
+    requested_color: str = ""
+    color_is_approx: bool = False
 
     @property
     def thickness_note(self) -> str:
         if not self.is_approx:
             return ""
         return f"(no hay {self.requested_espesor_mm:.0f}mm, se usó {self.producto.espesor_mm:.0f}mm más cercano)"
+
+    @property
+    def color_note(self) -> str:
+        """Explain when the requested color/texture wasn't found as an exact board,
+        so the quote never silently swaps the material the client asked for."""
+        if not self.color_is_approx or not self.requested_color:
+            return ""
+        return (
+            f"No hay una placa exacta en «{self.requested_color}»; "
+            f"se cotizó sobre {self.producto.nombre}. Confirmá el color/textura."
+        )
 
 
 class ProductCatalog:
@@ -149,12 +183,27 @@ class ProductCatalog:
         # Material query may also be a wood (e.g. "EUCA", "ROBLE") — combine with
         # the color words so the scorer can pick e.g. "MDF MELAMINICO BLANCO".
         words = _query_words(f"{material_query} {color_query}")
+        color_words = _color_words(color_query)
+        non_white = _is_non_white_color(color_query)
+
+        def _wrap(producto: Producto, *, is_approx: bool) -> PlacaMatch:
+            # Flag a color mismatch: the client asked for a specific (non-white)
+            # color/texture but the chosen board's name doesn't contain it.
+            hn = _norm_text(f"{producto.descripcion_normalizada} {producto.nombre} {producto.material}")
+            color_ok = any(w in hn for w in color_words) if color_words else True
+            return PlacaMatch(
+                producto,
+                espesor_mm,
+                is_approx=is_approx,
+                requested_color=color_query.strip(),
+                color_is_approx=bool(non_white and color_words and not color_ok),
+            )
 
         # Exact thickness first.
         exact = [p for p in scoped if p.espesor_mm and abs(p.espesor_mm - espesor_mm) < 0.01]
-        match = self._best_by_words(exact, words, non_white_color=_is_non_white_color(color_query))
+        match = self._best_by_words(exact, words, non_white_color=non_white, color_words=color_words)
         if match:
-            return PlacaMatch(match, espesor_mm, is_approx=False)
+            return _wrap(match, is_approx=False)
 
         # Closest thickness fallback.
         thicknesses = sorted({p.espesor_mm for p in scoped if p.espesor_mm})
@@ -162,9 +211,9 @@ class ProductCatalog:
             closest = min(thicknesses, key=lambda t: abs(t - espesor_mm))
             if abs(closest - espesor_mm) > 0.01:
                 approx = [p for p in scoped if p.espesor_mm == closest]
-                match = self._best_by_words(approx, words, non_white_color=_is_non_white_color(color_query))
+                match = self._best_by_words(approx, words, non_white_color=non_white, color_words=color_words)
                 if match:
-                    return PlacaMatch(match, espesor_mm, is_approx=True)
+                    return _wrap(match, is_approx=True)
 
         return None
 
@@ -194,11 +243,19 @@ class ProductCatalog:
 
     # ----- internals -----
 
-    def _best_by_words(self, candidates: list[Producto], words: list[str], *, non_white_color: bool = False) -> Producto | None:
+    def _best_by_words(
+        self,
+        candidates: list[Producto],
+        words: list[str],
+        *,
+        non_white_color: bool = False,
+        color_words: list[str] | None = None,
+    ) -> Producto | None:
         if not candidates:
             return None
         if not words:
             return candidates[0]
+        color_words = color_words or []
         scored = []
         for p in candidates:
             haystack = f"{p.descripcion_normalizada} {p.material} {p.familia}"
@@ -207,7 +264,13 @@ class ProductCatalog:
             if non_white_color:
                 if "blanco" in hn:
                     score -= 5
-                if any(token in hn for token in ("basicos", "medio", "premium")):
+                # A board whose name actually carries the requested color/texture
+                # (roble halifax, negro, verde eucalipto…) must beat the generic
+                # priced tiers — otherwise the +tier boost always swallowed it.
+                matched = sum(1 for w in color_words if w and w in hn)
+                if matched:
+                    score += 4 * matched
+                elif any(token in hn for token in ("basicos", "medio", "premium")):
                     score += 2
             scored.append((score, p))
         scored.sort(key=lambda x: (x[0], -((x[1].espesor_mm or 0) * 100 + (x[1].ancho_mm or 0))), reverse=True)

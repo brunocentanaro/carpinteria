@@ -2109,6 +2109,40 @@ def handle_session_archive(data: dict) -> dict:
     return {"months": months}
 
 
+def _store_attachments(session_id: str, file_paths: list[str]) -> list[dict]:
+    """Upload each submitted file to object storage (best-effort) so the quote can
+    later be audited against the exact document/photo. Returns attachment refs;
+    empty if storage is off — the quoting flow never depends on this succeeding."""
+    from carpinteria import image_store
+    out: list[dict] = []
+    for p in file_paths:
+        att = image_store.store_file(p, session_id=session_id)
+        if att:
+            out.append(att)
+    return out
+
+
+def handle_image_url(data: dict) -> dict:
+    """Return a short-lived presigned URL to view a stored upload. Scoped to the
+    session prefix so one session can't fetch another's objects."""
+    from carpinteria import image_store
+    key = str(data.get("key") or "")
+    session_id = str(data.get("session_id") or "")
+    if not key:
+        return {"error": "missing key"}
+    # session_id is mandatory and the prefix check always runs: an empty
+    # session_id used to skip scoping entirely, letting any authenticated caller
+    # presign another session's objects by omitting the param.
+    if not session_id:
+        return {"error": "missing session_id"}
+    if not key.startswith(f"sessions/{session_id}/"):
+        return {"error": "key does not belong to session"}
+    url = image_store.presigned_url(key)
+    if not url:
+        return {"error": "image storage not configured or object not found"}
+    return {"url": url}
+
+
 def handle_session_ingest_pliego(data: dict) -> dict:
     """Direct ingest: upload + decompose without going through the chat agent."""
     from carpinteria.agents.cotizador_chat import _ingest_pliego_into_session
@@ -2118,6 +2152,13 @@ def handle_session_ingest_pliego(data: dict) -> dict:
     file_paths = list(data.get("file_paths") or [])
     if not sid or not file_paths:
         return {"error": "missing session_id or file_paths"}
+
+    import os
+    # Record the upload as a user turn so the thread is auditable — otherwise the
+    # assistant summary shows up "loose", with no trace of what was submitted.
+    names = ", ".join(os.path.basename(p) for p in file_paths)
+    attachments = _store_attachments(sid, file_paths)
+    append_message(sid, "user", f"📎 Subió pliego: {names}", attachments=attachments)
 
     summary = _ingest_pliego_into_session(sid, file_paths)
     # Direct (non-chat) ingest: surface the summary in the conversation so the
@@ -2153,6 +2194,11 @@ def handle_session_ingest_order_photo(data: dict) -> dict:
     s = get_session(sid)
     if s is None:
         return {"error": "session not found"}
+
+    import os
+    names = ", ".join(os.path.basename(p) for p in file_paths)
+    attachments = _store_attachments(sid, file_paths)
+    append_message(sid, "user", f"📷 Subió foto de orden: {names}", attachments=attachments)
 
     extracted = analyze_order_photo(file_paths)
     if extracted.get("order_number"):
@@ -2226,6 +2272,14 @@ def handle_session_ingest_furniture_photo(data: dict) -> dict:
     s = get_session(sid)
     if s is None:
         return {"error": "session not found"}
+
+    import os
+    names = ", ".join(os.path.basename(p) for p in file_paths)
+    user_note = f"📷 Subió foto de mueble: {names}"
+    if context.strip():
+        user_note += f"\n{context.strip()}"
+    attachments = _store_attachments(sid, file_paths)
+    append_message(sid, "user", user_note, attachments=attachments)
 
     extracted = analyze_furniture_photo(file_paths, context=context)
     missing = list(extracted.get("missing_inputs") or [])
@@ -3041,6 +3095,8 @@ def main() -> None:
             result = handle_export_excel_session(data)
         elif action == "export_docx_session":
             result = handle_export_docx_session(data)
+        elif action == "image_url":
+            result = handle_image_url(data)
         else:
             result = {"error": f"Unknown action: {action}"}
     except Exception as e:

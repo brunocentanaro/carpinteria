@@ -1,15 +1,15 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ClipboardList, ImagePlus, Paperclip, Send } from "lucide-react";
+import { ClipboardList, ImagePlus, Paperclip, Send, Wrench } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { createSession, qk, streamChat, uploadFurniturePhoto, uploadOrderPhoto, uploadPliego } from "../api";
-import type { ChatMessage, Session } from "../schemas";
+import type { Attachment, ChatMessage, Session, ToolTraceEntry } from "../schemas";
 import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 
 const TOOL_LABELS: Record<string, string> = {
@@ -58,9 +58,11 @@ interface ChatColumnProps {
   session: Session | null;
   /** Called once we've created a session lazily (first message or upload). */
   onSessionCreated: (id: string) => void;
+  /** Owner (área administracion) sees the per-turn agent trace for debugging. */
+  isOwner?: boolean;
 }
 
-export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
+export function ChatColumn({ session, onSessionCreated, isOwner = false }: ChatColumnProps) {
   const queryClient = useQueryClient();
   const { brandId } = useBrandEnvironment();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -184,6 +186,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
         } else if (event.type === "tool_result") {
           setCurrentTool(null);
         } else if (event.type === "error") {
+          const trace = event.trace ?? [];
           setMessages((m) => {
             const copy = m.slice();
             const last = copy[copy.length - 1];
@@ -191,16 +194,30 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
               copy[copy.length - 1] = {
                 ...last,
                 content: `❌ Error: ${event.message}`,
+                trace,
               };
               return copy;
             }
             return [
               ...m,
-              { role: "assistant", content: `❌ Error: ${event.message}` },
+              { role: "assistant", content: `❌ Error: ${event.message}`, trace },
             ];
           });
+        } else if (event.type === "done") {
+          // Attach the per-turn trace to the assistant bubble so the owner can
+          // expand "¿por qué?" without reloading the session from Mongo.
+          const trace = event.trace ?? [];
+          if (trace.length > 0) {
+            setMessages((m) => {
+              const copy = m.slice();
+              const last = copy[copy.length - 1];
+              if (last?.role === "assistant") {
+                copy[copy.length - 1] = { ...last, trace };
+              }
+              return copy;
+            });
+          }
         }
-        // `done` we ignore — buffer already has the final text; no extra action.
       }
       queryClient.invalidateQueries({ queryKey: qk.session(s.id) });
     } catch (e) {
@@ -220,30 +237,6 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
       setCurrentTool(null);
     }
   }, [input, sending, queryClient]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleFiles = useCallback(
-    async (files: File[]) => {
-      if (files.length === 0 || uploadMutation.isPending) return;
-      try {
-        const s = await ensureSession();
-        const newSession = await uploadMutation.mutateAsync({
-          sessionId: s.id,
-          files,
-        });
-        if (newSession) {
-          queryClient.setQueryData(qk.session(s.id), newSession);
-          setMessages(newSession.messages ?? []);
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        setMessages((m) => [
-          ...m,
-          { role: "assistant", content: `❌ Error subiendo pliego: ${msg}` },
-        ]);
-      }
-    },
-    [uploadMutation, queryClient], // eslint-disable-line react-hooks/exhaustive-deps
-  );
 
   const handleOrderPhotos = useCallback(
     async (files: File[]) => {
@@ -294,6 +287,46 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
       }
     },
     [furniturePhotoMutation, input, queryClient], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
+  // Clip / drag-drop entry point. Route by type: images (photos, hand-drawn
+  // plans) go through the vision pipeline; PDF/Excel go to the pliego pipeline.
+  // Previously everything went to pliego, so a photographed plan was read as
+  // UTF-8 text and produced a garbage quote.
+  const handleFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      const isImage = (f: File) =>
+        f.type.startsWith("image/") ||
+        /\.(png|jpe?g|webp|gif|bmp|heic|tiff?)$/i.test(f.name);
+      const images = files.filter(isImage);
+      const docs = files.filter((f) => !isImage(f));
+
+      if (images.length > 0) {
+        await handleFurniturePhotos(images);
+      }
+      if (docs.length > 0) {
+        if (uploadMutation.isPending) return;
+        try {
+          const s = await ensureSession();
+          const newSession = await uploadMutation.mutateAsync({
+            sessionId: s.id,
+            files: docs,
+          });
+          if (newSession) {
+            queryClient.setQueryData(qk.session(s.id), newSession);
+            setMessages(newSession.messages ?? []);
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          setMessages((m) => [
+            ...m,
+            { role: "assistant", content: `❌ Error subiendo pliego: ${msg}` },
+          ]);
+        }
+      }
+    },
+    [uploadMutation, handleFurniturePhotos, queryClient], // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   const handlePaste = useCallback(
@@ -361,7 +394,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
           </div>
         )}
         {messages.map((m, i) => (
-          <ChatBubble key={i} message={m} />
+          <ChatBubble key={i} message={m} isOwner={isOwner} sessionId={session?.id} />
         ))}
         {uploadingFiles && (
           <ProcessingBubble files={uploadingFiles} startedAt={uploadStartedAt} />
@@ -489,7 +522,7 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
       {isDragging && (
         <div className="absolute inset-0 z-10 flex items-center justify-center bg-primary/10 border-4 border-dashed border-primary/50 rounded pointer-events-none">
           <div className="text-primary text-lg font-semibold">
-            Soltá el pliego acá
+            Soltá acá — pliego (PDF/Excel) o foto/plano
           </div>
         </div>
       )}
@@ -501,10 +534,20 @@ export function ChatColumn({ session, onSessionCreated }: ChatColumnProps) {
 // Bubbles
 // ---------------------------------------------------------------------------
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({
+  message,
+  isOwner,
+  sessionId,
+}: {
+  message: ChatMessage;
+  isOwner?: boolean;
+  sessionId?: string;
+}) {
   const isUser = message.role === "user";
+  const trace = message.trace ?? [];
+  const attachments = message.attachments ?? [];
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
+    <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
       <div
         className={`max-w-[80%] px-3 py-2 rounded-lg text-sm ${
           isUser
@@ -518,8 +561,116 @@ function ChatBubble({ message }: { message: ChatMessage }) {
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
         )}
       </div>
+      {attachments.length > 0 && (
+        <Attachments attachments={attachments} sessionId={sessionId} />
+      )}
+      {isOwner && !isUser && trace.length > 0 && <TracePanel trace={trace} />}
     </div>
   );
+}
+
+// Thumbnails / links for the files the user submitted this turn. The <img> src
+// hits our /api/images route, which redirects to a short-lived presigned URL.
+function Attachments({
+  attachments,
+  sessionId,
+}: {
+  attachments: Attachment[];
+  sessionId?: string;
+}) {
+  const list = attachments;
+  const src = (key: string) =>
+    `/api/images?key=${encodeURIComponent(key)}&sessionId=${encodeURIComponent(sessionId ?? "")}`;
+  return (
+    <div className="mt-1 flex flex-wrap gap-2 max-w-[80%]">
+      {list.map((att, i) => {
+        const isImage = (att.content_type ?? "").startsWith("image/");
+        if (isImage) {
+          return (
+            <a key={i} href={src(att.key)} target="_blank" rel="noreferrer" title={att.filename}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={src(att.key)}
+                alt={att.filename || "adjunto"}
+                className="h-20 w-20 rounded-md border object-cover hover:opacity-90"
+              />
+            </a>
+          );
+        }
+        return (
+          <a
+            key={i}
+            href={src(att.key)}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-1 rounded-md border bg-muted/40 px-2 py-1 text-xs hover:bg-muted"
+          >
+            <Paperclip className="h-3 w-3" />
+            {att.filename || "archivo"}
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
+// Owner-only "why did the agent do this?" panel. Shows each tool the agent
+// called this turn, the arguments it passed (e.g. the material/color it chose),
+// and a preview of what the tool returned — so mismatches are debuggable.
+function TracePanel({ trace }: { trace: ToolTraceEntry[] }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="max-w-[80%] mt-1">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+      >
+        <Wrench className="h-3 w-3" />
+        {open ? "Ocultar" : "¿Por qué?"} · {trace.length} paso{trace.length === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <div className="mt-1 space-y-2 rounded-md border bg-muted/40 p-2 text-[11px]">
+          {trace.map((entry, i) => {
+            const args = entry.args ?? {};
+            const argKeys = Object.keys(args);
+            return (
+              <div key={i} className="border-b border-border/50 pb-2 last:border-0 last:pb-0">
+                <div className="font-mono font-semibold text-foreground">
+                  {i + 1}. {TOOL_LABELS[entry.tool] || entry.tool}
+                </div>
+                {argKeys.length > 0 && (
+                  <div className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5">
+                    {argKeys.map((k) => (
+                      <Fragment key={k}>
+                        <span className="text-muted-foreground">{k}:</span>
+                        <span className="font-mono break-words">{formatArg(args[k])}</span>
+                      </Fragment>
+                    ))}
+                  </div>
+                )}
+                {entry.output && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer text-muted-foreground">resultado</summary>
+                    <pre className="mt-1 whitespace-pre-wrap break-words text-[10px] text-foreground/80">
+                      {entry.output}
+                    </pre>
+                  </details>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatArg(value: unknown): string {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
 }
 
 function ThinkingBubble({

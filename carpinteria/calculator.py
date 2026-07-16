@@ -182,6 +182,14 @@ def calculate_quotation(
     placa = match.producto
     if match.is_approx:
         notes_parts.append(match.thickness_note)
+    # Surface color/material fidelity so the quote never silently swaps what the
+    # client asked for (e.g. "melamínico gris" landing on a white/basic board).
+    if match.color_note:
+        notes_parts.append(match.color_note)
+    elif not (color or "").strip() and pieces:
+        notes_parts.append(
+            "No especificaste color/textura; se cotizó sobre tarifa estándar. Confirmá el color."
+        )
     board_area_m2 = ((placa.ancho_mm or 0) * (placa.largo_mm or 0)) / 1_000_000
 
     placa_label = (
@@ -372,6 +380,10 @@ def calculate_quotation(
                 "area_m2": board_area_m2,
                 "unit_price_uyu": placa_unit_uyu,
                 "partial_contingency_percent": PARTIAL_BOARD_AREA_CONTINGENCY_PERCENT,
+                # Color fidelity: what the client asked vs. what got matched, so
+                # the owner can spot a silent color/material swap at a glance.
+                "color_requested": (color or "").strip(),
+                "color_is_approx": match.color_is_approx,
             }
         },
     )

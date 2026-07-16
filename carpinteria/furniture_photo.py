@@ -48,11 +48,18 @@ def analyze_furniture_photo(file_paths: list[str], context: str = "") -> dict[st
         {
             "type": "text",
             "text": (
-                "Interpreta fotos, croquis o capturas de pedidos de muebles para cotizar. "
-                "Extrae SOLO lo que se vea o diga el texto adjunto. Convierte medidas en cm/m a mm. "
+                "Interpreta fotos, croquis o planos de muebles para cotizar. "
+                "Pueden ser planos DIBUJADOS A MANO en papel, a lápiz o lapicera: leé con atención "
+                "las cotas manuscritas, las flechas de dimensión y los números junto a cada lado, "
+                "aunque el trazo sea tenue o irregular. Extrae SOLO lo que se vea o diga el texto adjunto. "
+                "Convierte medidas en cm/m a mm. Si una cota es ambigua o no se entiende la unidad, "
+                "NO la adivines: marca needs_clarification=true y detallá la duda en missing_inputs. "
                 "Si no esta claro si el mueble es madera maciza o placas/melaminico, NO asumas: "
                 "marca needs_clarification=true y agrega la duda a missing_inputs. "
                 "Si faltan medidas necesarias para cotizar, tambien pedilas. "
+                "Anotá SIEMPRE en 'notes' las medidas y el material/color que interpretaste (ej: "
+                "'leí 1200x600x400mm, melamínico gris 18mm') para que el usuario pueda confirmarlas. "
+                "Capturá el color/textura si aparece escrito (gris, roble, negro, etc.). "
                 "Devolve SOLO JSON con estas claves: name, description, quantity, dimensions, "
                 "material, thickness_mm, color, edge_banding, needs_clarification, missing_inputs, notes. "
                 "dimensions debe tener width_mm, height_mm y depth_mm, usando null si falta. "
@@ -63,7 +70,7 @@ def analyze_furniture_photo(file_paths: list[str], context: str = "") -> dict[st
     for path in file_paths:
         content.append({
             "type": "image_url",
-            "image_url": {"url": _image_data_url(path)},
+            "image_url": {"url": _image_data_url(path), "detail": "high"},
         })
 
     client = _get_client()

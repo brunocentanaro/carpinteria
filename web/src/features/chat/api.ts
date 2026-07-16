@@ -140,12 +140,14 @@ export async function setItemPlaca(input: {
 }
 
 // SSE event shape emitted by the streaming /api/chat route.
+import type { ToolTraceEntry } from "./schemas";
+
 export type ChatStreamEvent =
   | { type: "token"; delta: string }
-  | { type: "tool_call"; tool: string }
+  | { type: "tool_call"; tool: string; args?: Record<string, unknown> }
   | { type: "tool_result"; output: string }
-  | { type: "done"; reply: string; last_response_id: string | null }
-  | { type: "error"; message: string };
+  | { type: "done"; reply: string; last_response_id: string | null; trace?: ToolTraceEntry[] }
+  | { type: "error"; message: string; trace?: ToolTraceEntry[] };
 
 /**
  * Async generator over the streamed agent turn. Each yielded item is a parsed
@@ -410,6 +412,29 @@ export async function listHardwareCatalog() {
     undefined,
     z.object({ hardware: z.array(HardwareCatalogEntrySchema) }),
   ).then((d) => d.hardware);
+}
+
+// ---------------------------------------------------------------------------
+// Auth (current user) — used to gate owner-only UI like the agent trace panel.
+// ---------------------------------------------------------------------------
+
+const AuthMeSchema = z.object({
+  session: z
+    .object({
+      user: z.string().optional(),
+      area: z.enum(["personal", "administracion"]).optional(),
+      allAccess: z.boolean().optional(),
+    })
+    .nullable()
+    .optional(),
+});
+
+export async function getAuthMe() {
+  const res = await fetch("/api/auth/me");
+  if (!res.ok) return null;
+  const data = await res.json().catch(() => null);
+  if (!data) return null;
+  return AuthMeSchema.parse(data).session ?? null;
 }
 
 // Augment qk in place for the catalog hardware key.
