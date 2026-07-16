@@ -224,6 +224,7 @@ def sync_received(*, start: str, end: str, company_id: str, user: str) -> dict:
 
     cfe_created = 0
     items_created = 0
+    stock_applied = 0
     xml_errors: list[dict[str, str]] = []
     now = datetime.now(timezone.utc)
     for row in rows:
@@ -302,9 +303,24 @@ def sync_received(*, start: str, end: str, company_id: str, user: str) -> dict:
                 upsert=True,
             )
             items_created += int(item_result.upserted_id is not None)
+            # A newly-received line that already matches a confirmed mapping feeds
+            # straight into stock (idempotent via source_key). One bad mapping must
+            # not abort the whole sync, so failures are recorded, not raised.
+            if mapping and item_result.upserted_id is not None:
+                try:
+                    if _apply_purchase_to_stock(
+                        item_doc,
+                        product_id=mapping["inventory_product_id"],
+                        factor=mapping["conversion_factor"],
+                        location_code=mapping.get("location_code", "FABRICA"),
+                        user=user,
+                    ):
+                        stock_applied += 1
+                except Exception as exc:
+                    xml_errors.append({"ucfe_id": cfe_id, "error": f"stock {source_key}: {exc}"})
     return {
         "received": len(rows), "cfe_created": cfe_created, "items_created": items_created,
-        "xml_errors": xml_errors, "synced_at": now,
+        "stock_applied": stock_applied, "xml_errors": xml_errors, "synced_at": now,
     }
 
 
@@ -316,7 +332,38 @@ def list_received(*, status: str | None = None, limit: int = 100) -> dict:
     return {"cfes": cfes, "items": items}
 
 
-def confirm_item_mapping(*, source_key: str, inventory_product_id: str, conversion_factor: object, user: str) -> dict:
+def _apply_purchase_to_stock(item: dict, *, product_id: str, factor: float, location_code: str, user: str) -> bool:
+    """Register a COMPRA stock entry for one confirmed UCFE line. Idempotent via
+    the line's source_key (re-sync / re-confirm never double-count). Returns True
+    if a movement exists for this line afterwards, False if skipped because the
+    line has no positive quantity (e.g. a service/rounding line)."""
+    from . import inventory
+
+    raw = item.get("quantity")
+    quantity = raw if isinstance(raw, (int, float)) else _number(raw)
+    if quantity is None or quantity <= 0:
+        return False
+    stock_quantity = round(quantity * factor, 6)
+    if stock_quantity <= 0:
+        return False
+    inventory.register_movement(
+        {
+            "type": "COMPRA",
+            "product_id": product_id,
+            "destination_location": location_code,
+            "quantity": stock_quantity,
+            "source_key": item["source_key"],
+            "notes": f"Compra UCFE · {item.get('supplier_name', '')} · {item.get('name', '')}".strip(" ·"),
+        },
+        user,
+    )
+    return True
+
+
+def confirm_item_mapping(
+    *, source_key: str, inventory_product_id: str, conversion_factor: object, user: str,
+    location_code: str = "FABRICA",
+) -> dict:
     _ensure_storage()
     item = collection("ucfe_received_items").find_one({"source_key": source_key}, {"_id": 0})
     if item is None:
@@ -327,6 +374,7 @@ def confirm_item_mapping(*, source_key: str, inventory_product_id: str, conversi
     factor = _number(conversion_factor)
     if factor is None or factor <= 0:
         raise ValueError("El factor de conversión debe ser mayor a cero")
+    location_code = _clean(location_code).upper() or "FABRICA"
     now = datetime.now(timezone.utc)
     mapping = {
         "supplier_rut": item["supplier_rut"],
@@ -335,6 +383,7 @@ def confirm_item_mapping(*, source_key: str, inventory_product_id: str, conversi
         "target_unit": product["unit"],
         "conversion_factor": factor,
         "source_unit": item.get("source_unit", ""),
+        "location_code": location_code,
         "updated_at": now,
         "updated_by": user,
     }
@@ -348,15 +397,26 @@ def confirm_item_mapping(*, source_key: str, inventory_product_id: str, conversi
         "inventory_product_id": inventory_product_id,
         "target_unit": product["unit"],
         "conversion_factor": factor,
+        "location_code": location_code,
         "mapping_confirmed_at": now,
         "mapping_confirmed_by": user,
     }
-    result = collection("ucfe_received_items").update_many(
-        {"supplier_rut": mapping["supplier_rut"], "normalized_name": mapping["normalized_name"], "mapping_status": "PENDING"},
-        {"$set": update},
-    )
+    # Every line for this supplier+item (all still-pending ones plus the one just
+    # clicked) becomes CONFIRMED and feeds its quantity into stock.
+    match = {"supplier_rut": mapping["supplier_rut"], "normalized_name": mapping["normalized_name"]}
+    affected = list(collection("ucfe_received_items").find(
+        {**match, "mapping_status": {"$in": ["PENDING", "CONFIRMED"]}}, {"_id": 0},
+    ))
+    if all(a["source_key"] != source_key for a in affected):
+        affected.append(item)
+    collection("ucfe_received_items").update_many({**match, "mapping_status": "PENDING"}, {"$set": update})
     collection("ucfe_received_items").update_one({"source_key": source_key}, {"$set": update})
-    return {"mapping": mapping, "mapped_items": result.modified_count}
+
+    stock_applied = 0
+    for line in affected:
+        if _apply_purchase_to_stock(line, product_id=inventory_product_id, factor=factor, location_code=location_code, user=user):
+            stock_applied += 1
+    return {"mapping": mapping, "mapped_items": len(affected), "stock_applied": stock_applied}
 
 
 def ignore_item(*, source_key: str, user: str, note: str = "") -> dict:

@@ -2927,6 +2927,7 @@ def handle_ucfe_item_mapping(data: dict) -> dict:
             source_key=str(data.get("source_key") or ""),
             inventory_product_id=str(data.get("inventory_product_id") or ""),
             conversion_factor=data.get("conversion_factor"),
+            location_code=str(data.get("location_code") or "FABRICA"),
             user=user,
         )
     if operation == "ignore":

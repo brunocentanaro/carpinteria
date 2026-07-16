@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
         source_key: body.source_key,
         inventory_product_id: body.inventory_product_id,
         conversion_factor: body.conversion_factor,
+        location_code: body.location_code,
         note: body.note,
         updated_by: session.user,
       });

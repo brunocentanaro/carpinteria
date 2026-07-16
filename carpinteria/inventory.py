@@ -13,7 +13,9 @@ LOCATIONS = (
     {"code": "FABRICA", "name": "Fábrica"},
     {"code": "CASA", "name": "La Casa del Carpintero"},
 )
-MOVEMENT_TYPES = {"SALDO_INICIAL", "TRASLADO", "AJUSTE_POSITIVO", "AJUSTE_NEGATIVO"}
+# COMPRA behaves like AJUSTE_POSITIVO (increments the destination) but tags the
+# entry as coming from a purchase invoice (UCFE), for traceability.
+MOVEMENT_TYPES = {"SALDO_INICIAL", "TRASLADO", "AJUSTE_POSITIVO", "AJUSTE_NEGATIVO", "COMPRA"}
 
 
 def _now() -> datetime:
@@ -142,12 +144,12 @@ def register_movement(data: dict, user: str) -> dict:
     destination = None
     if movement_type in {"TRASLADO", "AJUSTE_NEGATIVO"}:
         origin = _location(data.get("origin_location"))
-    if movement_type in {"SALDO_INICIAL", "TRASLADO", "AJUSTE_POSITIVO"}:
+    if movement_type in {"SALDO_INICIAL", "TRASLADO", "AJUSTE_POSITIVO", "COMPRA"}:
         destination = _location(data.get("destination_location"))
     if origin and destination and origin == destination:
         raise ValueError("El depósito de origen y destino deben ser distintos")
 
-    if movement_type in {"SALDO_INICIAL", "AJUSTE_POSITIVO"}:
+    if movement_type in {"SALDO_INICIAL", "AJUSTE_POSITIVO", "COMPRA"}:
         _increment(product_id, destination, quantity, user)
     elif movement_type == "AJUSTE_NEGATIVO":
         _decrement(product_id, origin, quantity, user)
@@ -176,7 +178,7 @@ def register_movement(data: dict, user: str) -> dict:
     try:
         collection("inventory_movements").insert_one(movement)
     except Exception:
-        if movement_type in {"SALDO_INICIAL", "AJUSTE_POSITIVO"}:
+        if movement_type in {"SALDO_INICIAL", "AJUSTE_POSITIVO", "COMPRA"}:
             _decrement(product_id, destination, quantity, user)
         elif movement_type == "AJUSTE_NEGATIVO":
             _increment(product_id, origin, quantity, user)
