@@ -374,7 +374,7 @@ def confirm_item_mapping(
     factor = _number(conversion_factor)
     if factor is None or factor <= 0:
         raise ValueError("El factor de conversión debe ser mayor a cero")
-    location_code = _clean(location_code).upper() or "FABRICA"
+    location_code = str(location_code or "").strip().upper() or "FABRICA"
     now = datetime.now(timezone.utc)
     mapping = {
         "supplier_rut": item["supplier_rut"],
