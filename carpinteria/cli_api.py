@@ -3063,6 +3063,11 @@ def handle_accounting_supplier_payment(data: dict) -> dict:
     return register_supplier_payment(data.get("payment", {}), str(data.get("updated_by", "")))
 
 
+def handle_accounting_supplier_sync(data: dict) -> dict:
+    from .accounting import sync_ucfe_supplier_invoices
+    return sync_ucfe_supplier_invoices(str(data.get("updated_by", "")) or "ucfe")
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -3165,6 +3170,8 @@ def main() -> None:
             result = handle_accounting_supplier_invoice(data)
         elif action == "accounting_supplier_payment":
             result = handle_accounting_supplier_payment(data)
+        elif action == "accounting_supplier_sync":
+            result = handle_accounting_supplier_sync(data)
         elif action == "session_update":
             result = handle_session_update(data)
         elif action == "session_delete":

@@ -105,7 +105,7 @@ def sync_ucfe_supplier_invoices(user: str = "ucfe") -> dict:
             "source_key": source_key,
             "notes": "Factura recibida desde UCFE",
         }
-        upsert_supplier_invoice(payload, user)
+        upsert_supplier_invoice(payload, user, ensure_storage=False)
         if existing:
             updated += 1
         else:
@@ -161,8 +161,9 @@ def register_movement(data: dict, user: str) -> dict:
     return {"movement": movement, "already_registered": False}
 
 
-def upsert_supplier_invoice(data: dict, user: str) -> dict:
-    _ensure_storage()
+def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = True) -> dict:
+    if ensure_storage:
+        _ensure_storage()
     invoice_id = _clean(data.get("id"))
     supplier = _clean(data.get("supplier"))
     invoice_number = _clean(data.get("invoice_number"))
@@ -256,7 +257,6 @@ def register_supplier_payment(data: dict, user: str) -> dict:
 
 def list_accounting(year: int | None = None, month: int | None = None) -> dict:
     _ensure_storage()
-    sync_ucfe_supplier_invoices()
     now = datetime.now()
     year = int(year or now.year)
     month = int(month or now.month)
