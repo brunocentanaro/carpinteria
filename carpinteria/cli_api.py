@@ -3040,6 +3040,29 @@ def handle_ucfe_item_mapping(data: dict) -> dict:
     raise ValueError("Operación de mapping UCFE inválida")
 
 
+def handle_accounting_list(data: dict) -> dict:
+    from .accounting import list_accounting
+    return list_accounting(
+        year=int(data.get("year") or 0) or None,
+        month=int(data.get("month") or 0) or None,
+    )
+
+
+def handle_accounting_movement(data: dict) -> dict:
+    from .accounting import register_movement
+    return register_movement(data.get("movement", {}), str(data.get("updated_by", "")))
+
+
+def handle_accounting_supplier_invoice(data: dict) -> dict:
+    from .accounting import upsert_supplier_invoice
+    return upsert_supplier_invoice(data.get("invoice", {}), str(data.get("updated_by", "")))
+
+
+def handle_accounting_supplier_payment(data: dict) -> dict:
+    from .accounting import register_supplier_payment
+    return register_supplier_payment(data.get("payment", {}), str(data.get("updated_by", "")))
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -3134,6 +3157,14 @@ def main() -> None:
             result = handle_ucfe_received_list(data)
         elif action == "ucfe_item_mapping":
             result = handle_ucfe_item_mapping(data)
+        elif action == "accounting_list":
+            result = handle_accounting_list(data)
+        elif action == "accounting_movement":
+            result = handle_accounting_movement(data)
+        elif action == "accounting_supplier_invoice":
+            result = handle_accounting_supplier_invoice(data)
+        elif action == "accounting_supplier_payment":
+            result = handle_accounting_supplier_payment(data)
         elif action == "session_update":
             result = handle_session_update(data)
         elif action == "session_delete":

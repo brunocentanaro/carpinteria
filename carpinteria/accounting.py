@@ -1,0 +1,313 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from pymongo import ReturnDocument
+
+from .db import collection
+
+
+MOVEMENT_DIRECTIONS = {"income", "expense", "transfer"}
+PAYMENT_METHODS = {
+    "efectivo",
+    "cheque",
+    "deposito",
+    "transferencia",
+    "visa",
+    "master",
+    "maestro",
+    "mercadolibre",
+    "otro",
+}
+INVOICE_STATUSES = {"pendiente", "parcial", "pagada", "no_aplica"}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _clean(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _money(value: object) -> float:
+    try:
+        amount = round(float(value or 0), 2)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("El importe debe ser numerico") from exc
+    if amount < 0:
+        raise ValueError("El importe no puede ser negativo")
+    return amount
+
+
+def _positive_money(value: object) -> float:
+    amount = _money(value)
+    if amount <= 0:
+        raise ValueError("El importe debe ser mayor a cero")
+    return amount
+
+
+def _currency(value: object) -> str:
+    currency = _clean(value).upper() or "UYU"
+    if currency in {"$", "PESOS"}:
+        return "UYU"
+    if currency in {"DOLAR", "DOLARES", "U$S"}:
+        return "USD"
+    if currency not in {"UYU", "USD"}:
+        raise ValueError("Moneda invalida")
+    return currency
+
+
+def _safe_currency(value: object) -> str:
+    try:
+        return _currency(value)
+    except ValueError:
+        return "UYU"
+
+
+def _ensure_storage() -> None:
+    collection("accounting_movements").create_index("id", unique=True)
+    collection("accounting_movements").create_index([("brand_id", 1), ("year", 1), ("month", 1), ("workday_number", 1)])
+    collection("accounting_movements").create_index("source_key", unique=True, sparse=True)
+    collection("supplier_invoices").create_index("id", unique=True)
+    collection("supplier_invoices").create_index("source_key", unique=True, sparse=True)
+    collection("supplier_invoices").create_index([("brand_id", 1), ("supplier", 1), ("status", 1)])
+    collection("supplier_payments").create_index("id", unique=True)
+    collection("supplier_payments").create_index("supplier_invoice_id")
+
+
+def sync_ucfe_supplier_invoices(user: str = "ucfe") -> dict:
+    _ensure_storage()
+    created = 0
+    updated = 0
+    for cfe in collection("ucfe_received_cfe").find({}, {"_id": 0, "xml": 0}):
+        ucfe_id = _clean(cfe.get("ucfe_id"))
+        if not ucfe_id:
+            continue
+        amount = _money(cfe.get("amount_payable") if cfe.get("amount_payable") is not None else cfe.get("total_amount"))
+        if amount <= 0:
+            continue
+        series_number = _clean(cfe.get("series_number"))
+        supplier = _clean(cfe.get("supplier_name")) or _clean(cfe.get("supplier_rut")) or "Proveedor UCFE"
+        source_key = f"UCFE_CFE:{ucfe_id}"
+        existing = collection("supplier_invoices").find_one({"source_key": source_key}, {"_id": 0})
+        payload = {
+            "supplier": supplier,
+            "rut": _clean(cfe.get("supplier_rut")),
+            "invoice_number": series_number or ucfe_id,
+            "currency": _safe_currency(cfe.get("currency") or "UYU"),
+            "amount": amount,
+            "paid_amount": float(existing.get("paid_amount") or 0) if existing else 0,
+            "purchase_date": _clean(cfe.get("document_date")),
+            "status": existing.get("status") if existing and existing.get("paid_amount") else "pendiente",
+            "ucfe_cfe_id": ucfe_id,
+            "source_key": source_key,
+            "notes": "Factura recibida desde UCFE",
+        }
+        upsert_supplier_invoice(payload, user)
+        if existing:
+            updated += 1
+        else:
+            created += 1
+    return {"created": created, "updated": updated}
+
+
+def register_movement(data: dict, user: str) -> dict:
+    _ensure_storage()
+    direction = _clean(data.get("direction")).lower()
+    if direction not in MOVEMENT_DIRECTIONS:
+        raise ValueError("Direccion de movimiento invalida")
+    payment_method = _clean(data.get("payment_method")).lower() or "efectivo"
+    if payment_method not in PAYMENT_METHODS:
+        raise ValueError("Medio de pago invalido")
+    amount = _positive_money(data.get("amount"))
+    year = int(data.get("year") or datetime.now().year)
+    month = int(data.get("month") or datetime.now().month)
+    if not 1 <= month <= 12:
+        raise ValueError("Mes invalido")
+    workday_number = int(data.get("workday_number") or 1)
+    if workday_number <= 0:
+        raise ValueError("Dia trabajado invalido")
+    movement = {
+        "id": str(uuid4()),
+        "brand_id": "casa",
+        "year": year,
+        "month": month,
+        "workday_number": workday_number,
+        "date": _clean(data.get("date")),
+        "direction": direction,
+        "category": _clean(data.get("category")) or "general",
+        "subcategory": _clean(data.get("subcategory")),
+        "payment_method": payment_method,
+        "amount": amount,
+        "currency": _currency(data.get("currency")),
+        "description": _clean(data.get("description")),
+        "reference": _clean(data.get("reference")),
+        "source": _clean(data.get("source")) or "manual",
+        "source_key": _clean(data.get("source_key")) or None,
+        "reconciled": bool(data.get("reconciled", False)),
+        "created_at": _now(),
+        "created_by": user,
+        "updated_at": _now(),
+        "updated_by": user,
+    }
+    if movement["source_key"]:
+        existing = collection("accounting_movements").find_one({"source_key": movement["source_key"]}, {"_id": 0})
+        if existing:
+            return {"movement": existing, "already_registered": True}
+    collection("accounting_movements").insert_one(movement)
+    movement.pop("_id", None)
+    return {"movement": movement, "already_registered": False}
+
+
+def upsert_supplier_invoice(data: dict, user: str) -> dict:
+    _ensure_storage()
+    invoice_id = _clean(data.get("id"))
+    supplier = _clean(data.get("supplier"))
+    invoice_number = _clean(data.get("invoice_number"))
+    if not supplier:
+        raise ValueError("Falta proveedor")
+    amount = _positive_money(data.get("amount"))
+    paid_amount = _money(data.get("paid_amount"))
+    if paid_amount > amount:
+        raise ValueError("El pago no puede superar el monto de la factura")
+    status = _clean(data.get("status")).lower()
+    if not status:
+        status = "pagada" if paid_amount >= amount else "parcial" if paid_amount > 0 else "pendiente"
+    if status not in INVOICE_STATUSES:
+        raise ValueError("Estado de factura invalido")
+    now = _now()
+    invoice = {
+        "brand_id": "casa",
+        "supplier": supplier,
+        "rut": _clean(data.get("rut")),
+        "invoice_number": invoice_number,
+        "currency": _currency(data.get("currency")),
+        "amount": amount,
+        "paid_amount": paid_amount,
+        "balance": round(max(0, amount - paid_amount), 2),
+        "purchase_date": _clean(data.get("purchase_date")),
+        "due_date": _clean(data.get("due_date")),
+        "status": status,
+        "ucfe_cfe_id": _clean(data.get("ucfe_cfe_id")),
+        "source_key": _clean(data.get("source_key")) or None,
+        "notes": _clean(data.get("notes")),
+        "updated_at": now,
+        "updated_by": user,
+    }
+    query = {"id": invoice_id} if invoice_id else None
+    if query is None and invoice["source_key"]:
+        query = {"source_key": invoice["source_key"]}
+    if query is None and supplier and invoice_number:
+        query = {"brand_id": "casa", "supplier": supplier, "invoice_number": invoice_number}
+    existing = collection("supplier_invoices").find_one(query or {"id": "__none__"}, {"_id": 0})
+    if existing:
+        invoice_id = existing["id"]
+    else:
+        invoice_id = str(uuid4())
+    invoice["id"] = invoice_id
+    collection("supplier_invoices").update_one(
+        {"id": invoice_id},
+        {"$set": invoice, "$setOnInsert": {"created_at": now, "created_by": user}},
+        upsert=True,
+    )
+    saved = collection("supplier_invoices").find_one({"id": invoice_id}, {"_id": 0}) or invoice
+    return {"invoice": saved}
+
+
+def register_supplier_payment(data: dict, user: str) -> dict:
+    _ensure_storage()
+    invoice_id = _clean(data.get("supplier_invoice_id"))
+    invoice = collection("supplier_invoices").find_one({"id": invoice_id}, {"_id": 0})
+    if not invoice:
+        raise ValueError("La factura no existe")
+    amount = _positive_money(data.get("amount"))
+    if amount > float(invoice.get("balance") or 0):
+        raise ValueError("El pago supera el saldo pendiente")
+    payment = {
+        "id": str(uuid4()),
+        "brand_id": "casa",
+        "supplier_invoice_id": invoice_id,
+        "supplier": invoice["supplier"],
+        "payment_date": _clean(data.get("payment_date")),
+        "amount": amount,
+        "currency": _currency(data.get("currency") or invoice.get("currency")),
+        "receipt_number": _clean(data.get("receipt_number")),
+        "payment_method": _clean(data.get("payment_method")).lower() or "transferencia",
+        "bank_reference": _clean(data.get("bank_reference")),
+        "notes": _clean(data.get("notes")),
+        "created_at": _now(),
+        "created_by": user,
+    }
+    collection("supplier_payments").insert_one(payment)
+    paid = round(float(invoice.get("paid_amount") or 0) + amount, 2)
+    balance = round(max(0, float(invoice.get("amount") or 0) - paid), 2)
+    status = "pagada" if balance == 0 else "parcial"
+    updated = collection("supplier_invoices").find_one_and_update(
+        {"id": invoice_id},
+        {"$set": {"paid_amount": paid, "balance": balance, "status": status, "updated_at": _now(), "updated_by": user}},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    payment.pop("_id", None)
+    return {"payment": payment, "invoice": updated}
+
+
+def list_accounting(year: int | None = None, month: int | None = None) -> dict:
+    _ensure_storage()
+    sync_ucfe_supplier_invoices()
+    now = datetime.now()
+    year = int(year or now.year)
+    month = int(month or now.month)
+    movement_query = {"brand_id": "casa", "year": year}
+    if month:
+        movement_query["month"] = month
+    movements = list(collection("accounting_movements").find(movement_query, {"_id": 0}).sort([("year", -1), ("month", -1), ("workday_number", -1), ("created_at", -1)]).limit(500))
+    invoices = list(collection("supplier_invoices").find({"brand_id": "casa"}, {"_id": 0}).sort([("status", 1), ("supplier", 1), ("purchase_date", -1)]).limit(500))
+    payments = list(collection("supplier_payments").find({"brand_id": "casa"}, {"_id": 0}).sort("created_at", -1).limit(250))
+    return {
+        "year": year,
+        "month": month,
+        "movements": movements,
+        "supplier_invoices": invoices,
+        "supplier_payments": payments,
+        "monthly_results": monthly_results(year),
+        "annual_result": annual_result(year),
+    }
+
+
+def monthly_results(year: int) -> list[dict]:
+    _ensure_storage()
+    rows: list[dict] = []
+    for month in range(1, 13):
+        movements = list(collection("accounting_movements").find({"brand_id": "casa", "year": year, "month": month}, {"_id": 0}))
+        income = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income")
+        expenses = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense")
+        card_sales = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income" and m.get("payment_method") in {"visa", "master", "maestro"})
+        credit_sales = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income" and m.get("category") == "factura_credito")
+        cash_sales = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income" and m.get("payment_method") == "efectivo")
+        supplier_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"proveedores", "costo_venta"})
+        payroll = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") == "sueldos")
+        fixed_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"impuestos", "servicios", "costos_fijos"})
+        rows.append({
+            "year": year,
+            "month": month,
+            "gross_sales": round(income, 2),
+            "cash_sales": round(cash_sales, 2),
+            "card_sales": round(card_sales, 2),
+            "credit_sales": round(credit_sales, 2),
+            "fixed_costs": round(fixed_costs, 2),
+            "payroll": round(payroll, 2),
+            "supplier_costs": round(supplier_costs, 2),
+            "total_costs": round(expenses, 2),
+            "operating_result": round(income - expenses, 2),
+            "movement_count": len(movements),
+        })
+    return rows
+
+
+def annual_result(year: int) -> dict:
+    rows = monthly_results(year)
+    keys = ["gross_sales", "cash_sales", "card_sales", "credit_sales", "fixed_costs", "payroll", "supplier_costs", "total_costs", "operating_result"]
+    return {"year": year, **{key: round(sum(float(row[key]) for row in rows), 2) for key in keys}}

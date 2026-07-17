@@ -14,6 +14,7 @@ import {
   MessageSquare,
   Newspaper,
   PackageCheck,
+  ReceiptText,
   Warehouse,
   Users,
 } from "lucide-react";
@@ -38,6 +39,7 @@ const NAV: NavItem[] = [
   { href: "/chat", icon: MessageSquare, label: "Chat" },
   { href: "/lista-precios", icon: ListTree, label: "Lista de precios" },
   { href: "/noticiero", icon: Newspaper, label: "Noticiero comercial" },
+  { href: "/contabilidad", icon: ReceiptText, label: "Contabilidad" },
   { href: "/dashboard-molduras", icon: ChartNoAxesColumnIncreasing, label: "Dashboard de molduras" },
   { href: "/stock-molduras", icon: PackageCheck, label: "Stock de molduras" },
   { href: "/inventario", icon: Warehouse, label: "Inventario operativo" },
@@ -88,6 +90,7 @@ export function AppSidebar() {
           if (item.href === "/inventario" && area !== "administracion") return false;
           if (item.href === "/stock-molduras" && brandId !== "pirone") return false;
           if (item.href === "/noticiero" && brandId !== "casa") return false;
+          if (item.href === "/contabilidad" && brandId !== "casa") return false;
           return true;
         }).map((item) => {
           const active =
