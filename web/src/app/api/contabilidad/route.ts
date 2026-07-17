@@ -48,6 +48,8 @@ export async function POST(req: NextRequest) {
       result = await callPython({ action: "accounting_supplier_invoice", invoice: body.invoice || {}, updated_by: session.user });
     } else if (operation === "supplier_payment") {
       result = await callPython({ action: "accounting_supplier_payment", payment: body.payment || {}, updated_by: session.user });
+    } else if (operation === "daily_supplier_payment") {
+      result = await callPython({ action: "accounting_daily_supplier_payment", payment: body.payment || {}, updated_by: session.user });
     } else if (operation === "supplier_sync") {
       result = await callPython({ action: "accounting_supplier_sync", updated_by: session.user });
     } else {

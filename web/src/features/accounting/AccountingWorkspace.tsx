@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart3, CalendarDays, CirclePlus, FileText, Landmark, RefreshCw } from "lucide-react";
+import { BarChart3, CalendarDays, ChevronDown, CirclePlus, FileText, Landmark, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -28,6 +28,7 @@ interface Movement {
   currency: string;
   description: string;
   reference: string;
+  supplier_invoice_id?: string;
   reconciled: boolean;
 }
 interface SupplierInvoice {
@@ -167,15 +168,15 @@ export function AccountingWorkspace() {
     {dataQuery.isLoading ? <div className="border bg-card p-10 text-center text-sm text-muted-foreground">Cargando contabilidad...</div> : null}
     {dataQuery.error ? <div className="border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{dataQuery.error.message}</div> : null}
     {data ? <>
-      {tab === "daily" ? <DailySheet data={data} year={year} month={month} saving={mutation.isPending} onSave={(movement) => mutation.mutate({ operation: "movement", movement })} /> : null}
+      {tab === "daily" ? <DailySheet data={data} year={year} month={month} saving={mutation.isPending} onSave={(movement) => mutation.mutate({ operation: "movement", movement })} onSupplierPayment={(payment) => mutation.mutate({ operation: "daily_supplier_payment", payment })} /> : null}
       {tab === "monthly" ? <MonthlyResultPanel data={data} month={month} /> : null}
-      {tab === "payables" ? <PayablesPanel data={data} saving={mutation.isPending} onInvoice={(invoice) => mutation.mutate({ operation: "supplier_invoice", invoice })} onPayment={(payment) => mutation.mutate({ operation: "supplier_payment", payment })} onSyncUcfe={() => mutation.mutate({ operation: "supplier_sync" })} /> : null}
+      {tab === "payables" ? <PayablesPanel data={data} saving={mutation.isPending} onInvoice={(invoice) => mutation.mutate({ operation: "supplier_invoice", invoice })} onSyncUcfe={() => mutation.mutate({ operation: "supplier_sync" })} /> : null}
       {tab === "annual" && isAdmin ? <AnnualPanel data={data} /> : null}
     </> : null}
   </main>;
 }
 
-function DailySheet({ data, year, month, saving, onSave }: { data: AccountingData; year: number; month: number; saving: boolean; onSave: (movement: Record<string, unknown>) => void }) {
+function DailySheet({ data, year, month, saving, onSave, onSupplierPayment }: { data: AccountingData; year: number; month: number; saving: boolean; onSave: (movement: Record<string, unknown>) => void; onSupplierPayment: (payment: Record<string, unknown>) => void }) {
   const [draft, setDraft] = useState({
     workday_number: "1",
     date: today(),
@@ -187,7 +188,11 @@ function DailySheet({ data, year, month, saving, onSave }: { data: AccountingDat
     currency: "UYU",
     description: "",
     reference: "",
+    supplier_invoice_id: "",
   });
+  const openInvoices = data.supplier_invoices.filter((item) => item.status !== "pagada" && item.status !== "no_aplica");
+  const selectedInvoice = openInvoices.find((item) => item.id === draft.supplier_invoice_id);
+  const isSupplierPayment = draft.direction === "expense" && draft.category === "proveedores";
   const totals = useMemo(() => {
     const income = data.movements.filter((m) => m.direction === "income").reduce((sum, m) => sum + m.amount, 0);
     const expenses = data.movements.filter((m) => m.direction === "expense").reduce((sum, m) => sum + m.amount, 0);
@@ -195,8 +200,36 @@ function DailySheet({ data, year, month, saving, onSave }: { data: AccountingDat
     return { income, expenses, cash };
   }, [data.movements]);
   function save() {
+    if (isSupplierPayment) {
+      if (!selectedInvoice) {
+        toast.error("Selecciona la factura del proveedor que se esta cancelando");
+        return;
+      }
+      const amount = Number(draft.amount);
+      if (amount > selectedInvoice.balance) {
+        toast.error("El pago no puede superar el saldo pendiente de la factura");
+        return;
+      }
+      onSupplierPayment({
+        supplier_invoice_id: selectedInvoice.id,
+        payment_date: draft.date,
+        amount,
+        currency: selectedInvoice.currency,
+        receipt_number: draft.reference,
+        payment_method: draft.payment_method,
+        bank_reference: draft.reference,
+        notes: draft.description,
+        description: draft.description,
+        reference: draft.reference,
+        year,
+        month,
+        workday_number: Number(draft.workday_number),
+      });
+      setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", supplier_invoice_id: "" }));
+      return;
+    }
     onSave({ ...draft, year, month, amount: Number(draft.amount) });
-    setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "" }));
+    setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", supplier_invoice_id: "" }));
   }
   return <div className="space-y-5">
     <section className="grid gap-3 sm:grid-cols-3"><Metric label="Entradas del mes" value={money(totals.income)} /><Metric label="Salidas del mes" value={money(totals.expenses)} /><Metric label="Caja neta efectivo" value={money(totals.cash)} /></section>
@@ -205,16 +238,21 @@ function DailySheet({ data, year, month, saving, onSave }: { data: AccountingDat
       <div className="mt-4 grid gap-3 md:grid-cols-4">
         <Field label="Dia trabajado"><Input type="number" min="1" value={draft.workday_number} onChange={(e) => setDraft({ ...draft, workday_number: e.target.value })} /></Field>
         <Field label="Fecha"><Input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} /></Field>
-        <Field label="Tipo"><select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="income">Entrada</option><option value="expense">Salida</option><option value="transfer">Transferencia</option></select></Field>
-        <Field label="Categoria"><select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></Field>
+        <Field label="Tipo"><select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value, supplier_invoice_id: "" })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="income">Entrada</option><option value="expense">Salida</option><option value="transfer">Transferencia</option></select></Field>
+        <Field label="Categoria"><select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value, supplier_invoice_id: "" })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></Field>
         <Field label="Medio"><select value={draft.payment_method} onChange={(e) => setDraft({ ...draft, payment_method: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{paymentMethods.map((method) => <option key={method} value={method}>{method}</option>)}</select></Field>
         <Field label="Importe"><Input type="number" min="0" step="0.01" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} /></Field>
         <Field label="Moneda"><select value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="UYU">UYU</option><option value="USD">USD</option></select></Field>
         <Field label="Subcategoria"><Input value={draft.subcategory} onChange={(e) => setDraft({ ...draft, subcategory: e.target.value })} /></Field>
+        {isSupplierPayment ? <Field label="Factura proveedor"><select value={draft.supplier_invoice_id} onChange={(e) => {
+          const invoice = openInvoices.find((item) => item.id === e.target.value);
+          setDraft({ ...draft, supplier_invoice_id: e.target.value, currency: invoice?.currency || draft.currency, amount: invoice ? String(invoice.balance) : draft.amount, subcategory: invoice?.supplier || draft.subcategory });
+        }} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="">Seleccionar factura</option>{openInvoices.map((item) => <option key={item.id} value={item.id}>{item.supplier} - {item.invoice_number || "sin numero"} - saldo {money(item.balance, item.currency)}</option>)}</select></Field> : null}
         <Field label="Descripcion"><Input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></Field>
-        <Field label="Referencia"><Input value={draft.reference} onChange={(e) => setDraft({ ...draft, reference: e.target.value })} /></Field>
+        <Field label={isSupplierPayment ? "Recibo / referencia" : "Referencia"}><Input value={draft.reference} onChange={(e) => setDraft({ ...draft, reference: e.target.value })} /></Field>
       </div>
-      <Button className="mt-4" disabled={saving || !(Number(draft.amount) > 0)} onClick={save}><CirclePlus /> Registrar movimiento</Button>
+      {isSupplierPayment && selectedInvoice ? <div className="mt-3 text-sm text-muted-foreground">Factura {selectedInvoice.invoice_number || "sin numero"} de {selectedInvoice.supplier}. Saldo pendiente: <span className="font-medium text-foreground">{money(selectedInvoice.balance, selectedInvoice.currency)}</span>.</div> : null}
+      <Button className="mt-4" disabled={saving || !(Number(draft.amount) > 0) || (isSupplierPayment && !draft.supplier_invoice_id)} onClick={save}><CirclePlus /> {isSupplierPayment ? "Registrar pago a proveedor" : "Registrar movimiento"}</Button>
     </section>
     <MovementTable movements={data.movements} />
   </div>;
@@ -228,15 +266,15 @@ function MonthlyResultPanel({ data, month }: { data: AccountingData; month: numb
   </div>;
 }
 
-function PayablesPanel({ data, saving, onInvoice, onPayment, onSyncUcfe }: { data: AccountingData; saving: boolean; onInvoice: (invoice: Record<string, unknown>) => void; onPayment: (payment: Record<string, unknown>) => void; onSyncUcfe: () => void }) {
+function PayablesPanel({ data, saving, onInvoice, onSyncUcfe }: { data: AccountingData; saving: boolean; onInvoice: (invoice: Record<string, unknown>) => void; onSyncUcfe: () => void }) {
   const [invoice, setInvoice] = useState({ supplier: "", rut: "", invoice_number: "", currency: "UYU", amount: "", purchase_date: today(), due_date: "", notes: "" });
-  const [payment, setPayment] = useState({ supplier_invoice_id: "", payment_date: today(), amount: "", currency: "UYU", receipt_number: "", payment_method: "transferencia", bank_reference: "" });
   const open = data.supplier_invoices.filter((item) => item.status !== "pagada" && item.status !== "no_aplica");
   return <div className="space-y-5">
     <section className="grid gap-3 sm:grid-cols-4"><Metric label="Facturas pendientes" value={open.length} /><Metric label="Saldo UYU" value={money(open.filter((i) => i.currency === "UYU").reduce((sum, i) => sum + i.balance, 0))} /><Metric label="Saldo USD" value={money(open.filter((i) => i.currency === "USD").reduce((sum, i) => sum + i.balance, 0), "USD")} /><div className="border bg-card p-4"><div className="text-sm text-muted-foreground">UCFE recibidos</div><Button className="mt-2 w-full" variant="outline" disabled={saving} onClick={onSyncUcfe}><RefreshCw /> Sincronizar</Button></div></section>
-    <section className="grid gap-5 lg:grid-cols-2">
-      <div className="border bg-card p-4"><h2 className="font-semibold">Nueva factura a pagar</h2><div className="mt-4 grid gap-3 sm:grid-cols-2"><Field label="Proveedor"><Input value={invoice.supplier} onChange={(e) => setInvoice({ ...invoice, supplier: e.target.value })} /></Field><Field label="RUT"><Input value={invoice.rut} onChange={(e) => setInvoice({ ...invoice, rut: e.target.value })} /></Field><Field label="Factura"><Input value={invoice.invoice_number} onChange={(e) => setInvoice({ ...invoice, invoice_number: e.target.value })} /></Field><Field label="Monto"><Input type="number" min="0" step="0.01" value={invoice.amount} onChange={(e) => setInvoice({ ...invoice, amount: e.target.value })} /></Field><Field label="Moneda"><select value={invoice.currency} onChange={(e) => setInvoice({ ...invoice, currency: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="UYU">UYU</option><option value="USD">USD</option></select></Field><Field label="Fecha compra"><Input type="date" value={invoice.purchase_date} onChange={(e) => setInvoice({ ...invoice, purchase_date: e.target.value })} /></Field><Field label="Vencimiento"><Input type="date" value={invoice.due_date} onChange={(e) => setInvoice({ ...invoice, due_date: e.target.value })} /></Field><Field label="Notas"><Input value={invoice.notes} onChange={(e) => setInvoice({ ...invoice, notes: e.target.value })} /></Field></div><Button className="mt-4" disabled={saving || !invoice.supplier || !(Number(invoice.amount) > 0)} onClick={() => onInvoice({ ...invoice, amount: Number(invoice.amount), paid_amount: 0 })}>Guardar factura</Button></div>
-      <div className="border bg-card p-4"><h2 className="font-semibold">Registrar pago</h2><div className="mt-4 grid gap-3 sm:grid-cols-2"><Field label="Factura"><select value={payment.supplier_invoice_id} onChange={(e) => setPayment({ ...payment, supplier_invoice_id: e.target.value, currency: data.supplier_invoices.find((i) => i.id === e.target.value)?.currency || "UYU" })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="">Seleccionar</option>{open.map((item) => <option key={item.id} value={item.id}>{item.supplier} - {item.invoice_number} ({money(item.balance, item.currency)})</option>)}</select></Field><Field label="Fecha pago"><Input type="date" value={payment.payment_date} onChange={(e) => setPayment({ ...payment, payment_date: e.target.value })} /></Field><Field label="Monto"><Input type="number" min="0" step="0.01" value={payment.amount} onChange={(e) => setPayment({ ...payment, amount: e.target.value })} /></Field><Field label="Recibo"><Input value={payment.receipt_number} onChange={(e) => setPayment({ ...payment, receipt_number: e.target.value })} /></Field><Field label="Medio"><select value={payment.payment_method} onChange={(e) => setPayment({ ...payment, payment_method: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{paymentMethods.map((method) => <option key={method} value={method}>{method}</option>)}</select></Field><Field label="Referencia banco"><Input value={payment.bank_reference} onChange={(e) => setPayment({ ...payment, bank_reference: e.target.value })} /></Field></div><Button className="mt-4" disabled={saving || !payment.supplier_invoice_id || !(Number(payment.amount) > 0)} onClick={() => onPayment({ ...payment, amount: Number(payment.amount) })}>Registrar pago</Button></div>
+    <section className="border bg-card p-4">
+      <h2 className="font-semibold">Nueva factura a pagar</h2>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Proveedor"><Input value={invoice.supplier} onChange={(e) => setInvoice({ ...invoice, supplier: e.target.value })} /></Field><Field label="RUT"><Input value={invoice.rut} onChange={(e) => setInvoice({ ...invoice, rut: e.target.value })} /></Field><Field label="Factura"><Input value={invoice.invoice_number} onChange={(e) => setInvoice({ ...invoice, invoice_number: e.target.value })} /></Field><Field label="Monto"><Input type="number" min="0" step="0.01" value={invoice.amount} onChange={(e) => setInvoice({ ...invoice, amount: e.target.value })} /></Field><Field label="Moneda"><select value={invoice.currency} onChange={(e) => setInvoice({ ...invoice, currency: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="UYU">UYU</option><option value="USD">USD</option></select></Field><Field label="Fecha compra"><Input type="date" value={invoice.purchase_date} onChange={(e) => setInvoice({ ...invoice, purchase_date: e.target.value })} /></Field><Field label="Vencimiento"><Input type="date" value={invoice.due_date} onChange={(e) => setInvoice({ ...invoice, due_date: e.target.value })} /></Field><Field label="Notas"><Input value={invoice.notes} onChange={(e) => setInvoice({ ...invoice, notes: e.target.value })} /></Field></div>
+      <Button className="mt-4" disabled={saving || !invoice.supplier || !(Number(invoice.amount) > 0)} onClick={() => onInvoice({ ...invoice, amount: Number(invoice.amount), paid_amount: 0 })}>Guardar factura</Button>
     </section>
     <PayablesTable invoices={data.supplier_invoices} />
   </div>;
@@ -255,7 +293,18 @@ function MovementTable({ movements }: { movements: Movement[] }) {
 }
 
 function PayablesTable({ invoices }: { invoices: SupplierInvoice[] }) {
-  return <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Facturas de proveedores</h2></div>{invoices.length === 0 ? <Empty text="Todavia no hay facturas a pagar." /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-sm"><thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Proveedor</th><th className="px-4 py-3">Factura</th><th className="px-4 py-3">Compra</th><th className="px-4 py-3 text-right">Monto</th><th className="px-4 py-3 text-right">Pagado</th><th className="px-4 py-3 text-right">Saldo</th><th className="px-4 py-3">Estado</th></tr></thead><tbody className="divide-y">{invoices.map((invoice) => <tr key={invoice.id}><td className="px-4 py-3 font-medium">{invoice.supplier}</td><td className="px-4 py-3">{invoice.invoice_number || "-"}</td><td className="px-4 py-3">{invoice.purchase_date || "-"}</td><td className="px-4 py-3 text-right">{money(invoice.amount, invoice.currency)}</td><td className="px-4 py-3 text-right">{money(invoice.paid_amount, invoice.currency)}</td><td className="px-4 py-3 text-right font-semibold">{money(invoice.balance, invoice.currency)}</td><td className="px-4 py-3"><Badge variant={invoice.status === "pagada" ? "default" : invoice.status === "parcial" ? "secondary" : "outline"}>{invoice.status}</Badge></td></tr>)}</tbody></table></div>}</section>;
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const openInvoices = invoices.filter((invoice) => invoice.status !== "pagada" && invoice.status !== "no_aplica");
+  const providers = Array.from(openInvoices.reduce((map, invoice) => {
+    const key = invoice.supplier || "Proveedor sin nombre";
+    const current = map.get(key) || { supplier: key, invoices: [] as SupplierInvoice[], uyu: 0, usd: 0 };
+    current.invoices.push(invoice);
+    if (invoice.currency === "USD") current.usd += invoice.balance;
+    else current.uyu += invoice.balance;
+    map.set(key, current);
+    return map;
+  }, new Map<string, { supplier: string; invoices: SupplierInvoice[]; uyu: number; usd: number }>()).values()).sort((a, b) => a.supplier.localeCompare(b.supplier));
+  return <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Saldos por proveedor</h2></div>{providers.length === 0 ? <Empty text="No hay saldos pendientes con proveedores." /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-sm"><thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Proveedor</th><th className="px-4 py-3 text-right">Facturas</th><th className="px-4 py-3 text-right">Saldo UYU</th><th className="px-4 py-3 text-right">Saldo USD</th><th className="px-4 py-3 text-right">Detalle</th></tr></thead><tbody className="divide-y">{providers.map((provider) => <tr key={provider.supplier} className="align-top"><td className="px-4 py-3 font-medium">{provider.supplier}{expanded === provider.supplier ? <div className="mt-3 overflow-hidden border"><table className="w-full text-xs"><thead className="bg-muted/50 text-left uppercase text-muted-foreground"><tr><th className="px-3 py-2">Factura</th><th className="px-3 py-2">Compra</th><th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-right">Pagado</th><th className="px-3 py-2 text-right">Saldo</th><th className="px-3 py-2">Estado</th></tr></thead><tbody className="divide-y">{provider.invoices.map((invoice) => <tr key={invoice.id}><td className="px-3 py-2">{invoice.invoice_number || "-"}</td><td className="px-3 py-2">{invoice.purchase_date || "-"}</td><td className="px-3 py-2 text-right">{money(invoice.amount, invoice.currency)}</td><td className="px-3 py-2 text-right">{money(invoice.paid_amount, invoice.currency)}</td><td className="px-3 py-2 text-right font-semibold">{money(invoice.balance, invoice.currency)}</td><td className="px-3 py-2"><Badge variant={invoice.status === "parcial" ? "secondary" : "outline"}>{invoice.status}</Badge></td></tr>)}</tbody></table></div> : null}</td><td className="px-4 py-3 text-right tabular-nums">{provider.invoices.length}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{money(provider.uyu)}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{money(provider.usd, "USD")}</td><td className="px-4 py-3 text-right"><Button type="button" variant="outline" size="sm" onClick={() => setExpanded(expanded === provider.supplier ? null : provider.supplier)}><ChevronDown className={`transition-transform ${expanded === provider.supplier ? "rotate-180" : ""}`} /> Ver facturas</Button></td></tr>)}</tbody></table></div>}</section>;
 }
 
 function ResultLine({ label, value, negative, strong }: { label: string; value?: number; negative?: boolean; strong?: boolean }) {

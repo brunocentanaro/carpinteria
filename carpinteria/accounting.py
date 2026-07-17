@@ -146,6 +146,7 @@ def register_movement(data: dict, user: str) -> dict:
         "reference": _clean(data.get("reference")),
         "source": _clean(data.get("source")) or "manual",
         "source_key": _clean(data.get("source_key")) or None,
+        "supplier_invoice_id": _clean(data.get("supplier_invoice_id")),
         "reconciled": bool(data.get("reconciled", False)),
         "created_at": _now(),
         "created_by": user,
@@ -253,6 +254,42 @@ def register_supplier_payment(data: dict, user: str) -> dict:
     )
     payment.pop("_id", None)
     return {"payment": payment, "invoice": updated}
+
+
+def register_daily_supplier_payment(data: dict, user: str) -> dict:
+    result = register_supplier_payment(data, user)
+    payment = result["payment"]
+    invoice = result["invoice"] or {}
+    invoice_number = _clean(invoice.get("invoice_number"))
+    description = _clean(data.get("description"))
+    if not description:
+        description = f"Pago proveedor {invoice.get('supplier', '')}".strip()
+        if invoice_number:
+            description = f"{description} factura {invoice_number}"
+    reference = _clean(data.get("reference")) or _clean(data.get("receipt_number")) or _clean(data.get("bank_reference")) or invoice_number
+    movement_result = register_movement({
+        "year": data.get("year"),
+        "month": data.get("month"),
+        "workday_number": data.get("workday_number"),
+        "date": data.get("payment_date") or data.get("date"),
+        "direction": "expense",
+        "category": "proveedores",
+        "subcategory": invoice.get("supplier", ""),
+        "payment_method": data.get("payment_method"),
+        "amount": payment.get("amount"),
+        "currency": payment.get("currency"),
+        "description": description,
+        "reference": reference,
+        "source": "supplier_payment",
+        "source_key": f"SUPPLIER_PAYMENT:{payment['id']}",
+        "supplier_invoice_id": payment.get("supplier_invoice_id"),
+    }, user)
+    collection("supplier_payments").update_one(
+        {"id": payment["id"]},
+        {"$set": {"accounting_movement_id": movement_result["movement"]["id"]}},
+    )
+    payment["accounting_movement_id"] = movement_result["movement"]["id"]
+    return {**result, "movement": movement_result["movement"]}
 
 
 def list_accounting(year: int | None = None, month: int | None = None) -> dict:
