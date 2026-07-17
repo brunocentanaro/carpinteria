@@ -23,30 +23,61 @@ import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 
 const campaigns = [
   {
-    date: "12 JUL",
-    eyebrow: "En 2 semanas",
+    date: "2026-07-12",
     title: "Día del Padre",
     copy: "Empujar herramientas, bancos de trabajo y kits para el taller con una campaña de regalo útil.",
     action: "Preparar piezas y pauta esta semana",
     tone: "amber",
   },
   {
-    date: "16 AGO",
-    eyebrow: "Próxima campaña",
+    date: "2026-08-16",
     title: "Día de la Niñez",
     copy: "Proponer muebles infantiles, organizadores y proyectos de madera para hacer en familia.",
     action: "Definir productos antes del 19 de julio",
     tone: "green",
   },
   {
-    date: "04 OCT",
-    eyebrow: "Oportunidad de contenido",
+    date: "2026-10-04",
     title: "Mes del Patrimonio",
     copy: "Mostrar restauración, oficios y maderas tradicionales. Ideal para contenido de marca y talleres.",
     action: "Armar una historia de oficio local",
     tone: "slate",
   },
+  {
+    date: "2026-11-27",
+    title: "Black Friday",
+    copy: "Preparar ofertas concretas en herramientas, maquinaria e insumos con stock y vigencia claramente definidos.",
+    action: "Seleccionar productos y márgenes de la campaña",
+    tone: "amber",
+  },
+  {
+    date: "2026-12-25",
+    title: "Navidad",
+    copy: "Promover herramientas, kits y accesorios como regalos útiles para profesionales y aficionados a la carpintería.",
+    action: "Definir catálogo de regalos y fechas de entrega",
+    tone: "green",
+  },
 ];
+
+function campaignDate(value: string) {
+  return new Date(`${value}T12:00:00`);
+}
+
+function campaignDateLabel(value: string) {
+  return new Intl.DateTimeFormat("es-UY", { day: "2-digit", month: "short" })
+    .format(campaignDate(value))
+    .replace(".", "")
+    .toUpperCase();
+}
+
+function campaignEyebrow(value: string, now: Date) {
+  const days = Math.ceil((campaignDate(value).getTime() - now.getTime()) / 86_400_000);
+  if (days === 0) return "Hoy";
+  if (days === 1) return "Mañana";
+  if (days < 14) return `En ${days} días`;
+  if (days < 60) return `En ${Math.ceil(days / 7)} semanas`;
+  return `En ${Math.ceil(days / 30)} meses`;
+}
 
 const stateProjects = [
   {
@@ -163,6 +194,12 @@ export default function NoticieroPage() {
   const router = useRouter();
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [processingError, setProcessingError] = useState("");
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const upcomingCampaigns = campaigns
+    .filter((campaign) => campaignDate(campaign.date) >= today)
+    .sort((a, b) => campaignDate(a.date).getTime() - campaignDate(b.date).getTime())
+    .slice(0, 3);
   const purchasesQuery = useQuery<StatePurchasesResponse>({
     queryKey: ["noticiero", "compras-estatales", "carpinteria-v2"],
     queryFn: async () => {
@@ -234,8 +271,8 @@ export default function NoticieroPage() {
         <section>
           <SectionTitle icon={Megaphone} title="Próximas campañas" subtitle="Avisos anticipados para planificar y llegar en fecha a cada campaña de marketing." />
           <div className="mt-3 grid gap-3 lg:grid-cols-3">
-            {campaigns.map((item) => <article key={item.title} className={`rounded-xl border p-5 ${toneClasses[item.tone]}`}>
-              <div className="flex items-start justify-between gap-3"><div className="text-xs font-semibold uppercase tracking-wide opacity-65">{item.eyebrow}</div><div className="rounded-md bg-white/70 px-2 py-1 text-xs font-bold">{item.date}</div></div>
+            {upcomingCampaigns.map((item) => <article key={item.title} className={`rounded-xl border p-5 ${toneClasses[item.tone]}`}>
+              <div className="flex items-start justify-between gap-3"><div className="text-xs font-semibold uppercase tracking-wide opacity-65">{campaignEyebrow(item.date, today)}</div><div className="rounded-md bg-white/70 px-2 py-1 text-xs font-bold">{campaignDateLabel(item.date)}</div></div>
               <h3 className="mt-4 text-xl font-semibold">{item.title}</h3>
               <p className="mt-2 text-sm leading-6 opacity-80">{item.copy}</p>
               <div className="mt-4 flex items-center gap-2 border-t border-current/10 pt-3 text-xs font-semibold"><CheckCircle2 className="h-4 w-4" />{item.action}</div>
