@@ -180,7 +180,18 @@ export function QuotationPanel({ session }: { session: Session | null }) {
       </header>
 
       <OrderProgress session={session} grand={grand} />
-      <OrderPaperPanel session={session} />
+      <OrderPaperPanel
+        key={[
+          session.id,
+          session.client_name,
+          session.client_phone,
+          session.order_summary,
+          session.payment_status,
+          session.payment_notes,
+          session.client_details_confirmed,
+        ].join("|")}
+        session={session}
+      />
       {session.order_number && <FactoryOrderHeader session={session} grand={grand} />}
       <GlobalsPanel session={session} />
       <PendingPanel session={session} />
@@ -575,7 +586,8 @@ function paymentStatusLabel(status: Session["payment_status"]) {
 
 function isRequestComplete(session: Session) {
   return Boolean(
-    session.client_name.trim() &&
+    session.client_details_confirmed &&
+      session.client_name.trim() &&
       session.client_phone.trim() &&
       session.order_summary.trim() &&
       session.payment_status !== "unknown" &&
@@ -596,40 +608,67 @@ function OrderPaperPanel({ session }: { session: Session }) {
   const [clientPhone, setClientPhone] = useState(session.client_phone);
   const [orderSummary, setOrderSummary] = useState(session.order_summary);
   const [paymentNotes, setPaymentNotes] = useState(session.payment_notes);
+  const [paymentStatus, setPaymentStatus] = useState(session.payment_status);
 
-  useEffect(() => {
-    setClientName(session.client_name);
-    setClientPhone(session.client_phone);
-    setOrderSummary(session.order_summary);
-    setPaymentNotes(session.payment_notes);
-  }, [
-    session.id,
-    session.client_name,
-    session.client_phone,
-    session.order_summary,
-    session.payment_notes,
-  ]);
+  const draftComplete = Boolean(
+    clientName.trim() &&
+      clientPhone.trim() &&
+      orderSummary.trim() &&
+      paymentStatus !== "unknown" &&
+      paymentNotes.trim(),
+  );
 
-  const saveText = (
-    field: "client_name" | "client_phone" | "order_summary" | "payment_notes",
-    value: string,
-  ) => {
-    if (value !== session[field]) mutation.mutate({ [field]: value });
+  const confirmDetails = () => {
+    if (!draftComplete) return;
+    mutation.mutate({
+      client_name: clientName,
+      client_phone: clientPhone,
+      order_summary: orderSummary,
+      payment_status: paymentStatus,
+      payment_notes: paymentNotes,
+      client_details_confirmed: true,
+    });
   };
 
   return (
     <Card>
-      <CardHeader className="flex-row items-center justify-between space-y-0 pb-3">
-        <CardTitle className="text-xs uppercase text-muted-foreground">
-          Papel de orden
-        </CardTitle>
-        <Badge variant="secondary" className="rounded px-2 py-0.5 text-[10px]">
-          {paymentStatusLabel(session.payment_status)}
-        </Badge>
+      <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 pb-3">
+        <div className="space-y-2">
+          <CardTitle className="text-xs uppercase text-muted-foreground">
+            Papel de orden
+          </CardTitle>
+          <Badge variant="secondary" className="rounded px-2 py-0.5 text-[10px]">
+            {paymentStatusLabel(session.payment_status)}
+          </Badge>
+        </div>
+        {session.client_details_confirmed ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={mutation.isPending}
+            onClick={() => mutation.mutate({ client_details_confirmed: false })}
+          >
+            <Check className="text-emerald-600" />
+            Datos confirmados · Editar
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            size="icon"
+            aria-label="Confirmar y guardar datos del cliente"
+            title="Confirmar y guardar datos"
+            disabled={!draftComplete || mutation.isPending}
+            onClick={confirmDetails}
+            className="rounded-full"
+          >
+            <Check />
+          </Button>
+        )}
       </CardHeader>
-      {!isRequestComplete(session) && (
+      {!session.client_details_confirmed && (
         <div className="px-4 pb-3 text-xs text-amber-700">
-          Complete todos los campos para registrar la solicitud.
+          Complete todos los campos y confirme con el tick para guardar la solicitud.
         </div>
       )}
       <CardContent className="grid gap-3 text-sm md:grid-cols-2">
@@ -637,9 +676,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Cliente *
           <Input
             required
+            disabled={session.client_details_confirmed}
             value={clientName}
             onChange={(e) => setClientName(e.target.value)}
-            onBlur={() => saveText("client_name", clientName)}
             placeholder="Nombre del cliente"
           />
         </Label>
@@ -647,9 +686,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Telefono *
           <Input
             required
+            disabled={session.client_details_confirmed}
             value={clientPhone}
             onChange={(e) => setClientPhone(e.target.value)}
-            onBlur={() => saveText("client_phone", clientPhone)}
             placeholder="Telefono"
           />
         </Label>
@@ -657,19 +696,18 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Pedido segun papel *
           <Input
             required
+            disabled={session.client_details_confirmed}
             value={orderSummary}
             onChange={(e) => setOrderSummary(e.target.value)}
-            onBlur={() => saveText("order_summary", orderSummary)}
             placeholder="Resumen del pedido"
           />
         </Label>
         <Label className="space-y-1 text-xs">
           Estado de pago *
           <Select
-            value={session.payment_status}
-            onValueChange={(value) =>
-              mutation.mutate({ payment_status: value as Session["payment_status"] })
-            }
+            disabled={session.client_details_confirmed}
+            value={paymentStatus}
+            onValueChange={(value) => setPaymentStatus(value as Session["payment_status"])}
           >
             <SelectTrigger>
               <SelectValue />
@@ -686,12 +724,17 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Nota de pago *
           <Input
             required
+            disabled={session.client_details_confirmed}
             value={paymentNotes}
             onChange={(e) => setPaymentNotes(e.target.value)}
-            onBlur={() => saveText("payment_notes", paymentNotes)}
             placeholder="Ej: seña en efectivo"
           />
         </Label>
+        {mutation.error ? (
+          <p className="text-xs text-destructive md:col-span-2" role="alert">
+            {mutation.error.message}
+          </p>
+        ) : null}
       </CardContent>
     </Card>
   );

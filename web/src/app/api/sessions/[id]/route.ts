@@ -49,6 +49,7 @@ export async function PATCH(
           order_summary?: string;
           payment_status?: string;
           payment_notes?: string;
+          client_details_confirmed?: boolean;
         }
       | undefined;
     if (!current) {
@@ -68,6 +69,7 @@ export async function PATCH(
       "order_summary",
       "payment_status",
       "payment_notes",
+      "client_details_confirmed",
       "client_sent",
       "client_accepted",
       "deposit_amount",
@@ -96,6 +98,7 @@ export async function PATCH(
       }
       if (body.approval_status === "approved") {
         const requestComplete =
+          current.client_details_confirmed === true &&
           !!current.client_name?.trim() &&
           !!current.client_phone?.trim() &&
           !!current.order_summary?.trim() &&

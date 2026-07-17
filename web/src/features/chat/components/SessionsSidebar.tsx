@@ -76,7 +76,8 @@ function orderAge(s: SessionRow) {
 
 function isRequestComplete(s: SessionRow) {
   return Boolean(
-    s.client_name.trim() &&
+    s.client_details_confirmed &&
+      s.client_name.trim() &&
       s.client_phone.trim() &&
       s.order_summary.trim() &&
       s.payment_status !== "unknown" &&
