@@ -61,6 +61,17 @@ def _currency(value: object) -> str:
     return currency
 
 
+def _required_date(value: object, label: str) -> str:
+    cleaned = _clean(value)
+    if not cleaned:
+        raise ValueError(f"Falta {label}")
+    try:
+        date.fromisoformat(cleaned)
+    except ValueError as exc:
+        raise ValueError(f"{label.capitalize()} invalida") from exc
+    return cleaned
+
+
 def _safe_currency(value: object) -> str:
     try:
         return _currency(value)
@@ -102,6 +113,7 @@ def sync_ucfe_supplier_invoices(user: str = "ucfe") -> dict:
             "amount": amount,
             "paid_amount": float(existing.get("paid_amount") or 0) if existing else 0,
             "purchase_date": _clean(cfe.get("document_date")),
+            "due_date": _clean(existing.get("due_date") or cfe.get("document_date")) if existing else _clean(cfe.get("document_date")),
             "status": existing.get("status") if existing and existing.get("paid_amount") else "pendiente",
             "ucfe_cfe_id": ucfe_id,
             "source_key": source_key,
@@ -131,6 +143,17 @@ def register_movement(data: dict, user: str) -> dict:
     workday_number = int(data.get("workday_number") or 1)
     if workday_number <= 0:
         raise ValueError("Dia trabajado invalido")
+    category = _clean(data.get("category")) or "general"
+    invoice_number = _clean(data.get("invoice_number"))
+    issue_date = _clean(data.get("issue_date"))
+    due_date = _clean(data.get("due_date"))
+    if direction == "income" and category in {"facturas", "factura_credito"}:
+        if not invoice_number:
+            raise ValueError("Falta numero de factura de venta")
+        issue_date = _required_date(issue_date, "fecha de emision")
+        due_date = _required_date(due_date, "fecha de vencimiento")
+        if due_date < issue_date:
+            raise ValueError("El vencimiento no puede ser anterior a la emision")
     movement = {
         "id": str(uuid4()),
         "brand_id": "casa",
@@ -139,13 +162,16 @@ def register_movement(data: dict, user: str) -> dict:
         "workday_number": workday_number,
         "date": _clean(data.get("date")),
         "direction": direction,
-        "category": _clean(data.get("category")) or "general",
+        "category": category,
         "subcategory": _clean(data.get("subcategory")),
         "payment_method": payment_method,
         "amount": amount,
         "currency": _currency(data.get("currency")),
         "description": _clean(data.get("description")),
-        "reference": _clean(data.get("reference")),
+        "reference": _clean(data.get("reference")) or invoice_number,
+        "invoice_number": invoice_number,
+        "issue_date": issue_date,
+        "due_date": due_date,
         "source": _clean(data.get("source")) or "manual",
         "source_key": _clean(data.get("source_key")) or None,
         "supplier_invoice_id": _clean(data.get("supplier_invoice_id")),
@@ -172,6 +198,12 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
     invoice_number = _clean(data.get("invoice_number"))
     if not supplier:
         raise ValueError("Falta proveedor")
+    if not invoice_number:
+        raise ValueError("Falta numero de factura de compra")
+    purchase_date = _required_date(data.get("purchase_date"), "fecha de emision")
+    due_date = _required_date(data.get("due_date"), "fecha de vencimiento")
+    if due_date < purchase_date:
+        raise ValueError("El vencimiento no puede ser anterior a la emision")
     amount = _positive_money(data.get("amount"))
     paid_amount = _money(data.get("paid_amount"))
     if paid_amount > amount:
@@ -191,8 +223,8 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
         "amount": amount,
         "paid_amount": paid_amount,
         "balance": round(max(0, amount - paid_amount), 2),
-        "purchase_date": _clean(data.get("purchase_date")),
-        "due_date": _clean(data.get("due_date")),
+        "purchase_date": purchase_date,
+        "due_date": due_date,
         "status": status,
         "ucfe_cfe_id": _clean(data.get("ucfe_cfe_id")),
         "source_key": _clean(data.get("source_key")) or None,
@@ -282,6 +314,9 @@ def register_daily_supplier_payment(data: dict, user: str) -> dict:
         "currency": payment.get("currency"),
         "description": description,
         "reference": reference,
+        "invoice_number": invoice_number,
+        "issue_date": invoice.get("purchase_date", ""),
+        "due_date": invoice.get("due_date", ""),
         "source": "supplier_payment",
         "source_key": f"SUPPLIER_PAYMENT:{payment['id']}",
         "supplier_invoice_id": payment.get("supplier_invoice_id"),
@@ -365,7 +400,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
     border_color = "D1D5DB"
     thin = Side(style="thin", color=border_color)
 
-    sheet.merge_cells("A1:J1")
+    sheet.merge_cells("A1:M1")
     sheet["A1"] = "LA CASA DEL CARPINTERO - REPORTE DIARIO DE CAJA"
     sheet["A1"].font = Font(size=16, bold=True, color="FFFFFF")
     sheet["A1"].fill = PatternFill("solid", fgColor=dark_green)
@@ -391,12 +426,12 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
         ("Salidas efectivo", cash_expenses),
         ("Saldo final efectivo", closing_balance),
     ]
-    for index, (label, amount) in enumerate(summary):
-        start_col = 1 + index * 2
+    summary_spans = [(1, 3), (4, 6), (7, 9), (10, 13)]
+    for (label, amount), (start_col, end_col) in zip(summary, summary_spans, strict=True):
         label_cell = sheet.cell(row=5, column=start_col, value=label)
         value_cell = sheet.cell(row=6, column=start_col, value=amount)
-        sheet.merge_cells(start_row=5, start_column=start_col, end_row=5, end_column=start_col + 1)
-        sheet.merge_cells(start_row=6, start_column=start_col, end_row=6, end_column=start_col + 1)
+        sheet.merge_cells(start_row=5, start_column=start_col, end_row=5, end_column=end_col)
+        sheet.merge_cells(start_row=6, start_column=start_col, end_row=6, end_column=end_col)
         label_cell.fill = PatternFill("solid", fgColor=pale_green)
         label_cell.font = Font(size=10, bold=True, color=dark_green)
         label_cell.alignment = Alignment(horizontal="center")
@@ -404,10 +439,10 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
         value_cell.alignment = Alignment(horizontal="center")
         value_cell.number_format = '[$$-es-UY] #,##0.00'
         for row in (5, 6):
-            for column in range(start_col, start_col + 2):
+            for column in range(start_col, end_col + 1):
                 sheet.cell(row=row, column=column).border = Border(top=thin, bottom=thin, left=thin, right=thin)
 
-    headers = ["Hora", "Tipo", "Categoria", "Subcategoria", "Medio", "Descripcion", "Referencia", "Moneda", "Entrada", "Salida"]
+    headers = ["Hora", "Tipo", "Categoria", "Subcategoria", "Medio", "Factura", "Emision", "Vencimiento", "Descripcion", "Referencia", "Moneda", "Entrada", "Salida"]
     sheet.append([])
     sheet.append(headers)
     header_row = sheet.max_row
@@ -428,6 +463,9 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
             movement.get("category", ""),
             movement.get("subcategory", ""),
             movement.get("payment_method", ""),
+            movement.get("invoice_number", ""),
+            movement.get("issue_date", ""),
+            movement.get("due_date", ""),
             movement.get("description", ""),
             movement.get("reference", ""),
             movement.get("currency", "UYU"),
@@ -436,45 +474,45 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
         ])
         row = sheet.max_row
         sheet.cell(row=row, column=1).number_format = "hh:mm"
-        sheet.cell(row=row, column=9).number_format = '#,##0.00'
-        sheet.cell(row=row, column=10).number_format = '#,##0.00'
+        sheet.cell(row=row, column=12).number_format = '#,##0.00'
+        sheet.cell(row=row, column=13).number_format = '#,##0.00'
         fill = PatternFill("solid", fgColor="FFFFFF" if row % 2 else light_gray)
         for cell in sheet[row]:
             cell.fill = fill
             cell.border = Border(bottom=Side(style="hair", color=border_color))
-            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {4, 6, 7})
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {4, 6, 9, 10})
 
     if not report_movements:
-        sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 2, end_column=10)
+        sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 2, end_column=13)
         empty_cell = sheet.cell(row=header_row + 1, column=1, value="Sin movimientos operativos registrados para esta fecha.")
         empty_cell.alignment = Alignment(horizontal="center", vertical="center")
         empty_cell.font = Font(italic=True, color="6B7280")
 
     totals_row = max(sheet.max_row + 2, header_row + 4)
-    sheet.merge_cells(start_row=totals_row, start_column=1, end_row=totals_row, end_column=8)
+    sheet.merge_cells(start_row=totals_row, start_column=1, end_row=totals_row, end_column=11)
     sheet.cell(row=totals_row, column=1, value="TOTALES DEL DIA").font = Font(bold=True, color=dark_green)
     income_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") != "expense" and m.get("currency") == "UYU"]
     expense_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") == "expense" and m.get("currency") == "UYU"]
-    sheet.cell(row=totals_row, column=9, value=sum(income_rows)).number_format = '#,##0.00'
-    sheet.cell(row=totals_row, column=10, value=sum(expense_rows)).number_format = '#,##0.00'
+    sheet.cell(row=totals_row, column=12, value=sum(income_rows)).number_format = '#,##0.00'
+    sheet.cell(row=totals_row, column=13, value=sum(expense_rows)).number_format = '#,##0.00'
     for cell in sheet[totals_row]:
         cell.fill = PatternFill("solid", fgColor=pale_green)
         cell.font = Font(bold=True, color=dark_green)
         cell.border = Border(top=Side(style="medium", color=dark_green))
 
     signature_row = totals_row + 4
-    sheet.merge_cells(start_row=signature_row, start_column=1, end_row=signature_row, end_column=4)
-    sheet.merge_cells(start_row=signature_row, start_column=7, end_row=signature_row, end_column=10)
+    sheet.merge_cells(start_row=signature_row, start_column=1, end_row=signature_row, end_column=5)
+    sheet.merge_cells(start_row=signature_row, start_column=9, end_row=signature_row, end_column=13)
     sheet.cell(row=signature_row, column=1, value="Firma del cajero: __________________________________")
-    sheet.cell(row=signature_row, column=7, value="Firma del responsable: ____________________________")
+    sheet.cell(row=signature_row, column=9, value="Firma del responsable: ____________________________")
     sheet.cell(row=signature_row + 2, column=1, value="Aclaracion: ______________________________________")
-    sheet.cell(row=signature_row + 2, column=7, value="Aclaracion: ______________________________________")
+    sheet.cell(row=signature_row + 2, column=9, value="Aclaracion: ______________________________________")
 
-    widths = [10, 14, 18, 18, 16, 34, 22, 10, 15, 15]
+    widths = [9, 13, 16, 16, 14, 16, 13, 13, 28, 18, 9, 14, 14]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
-    sheet.auto_filter.ref = f"A{header_row}:J{max(header_row, totals_row - 2)}"
-    sheet.print_area = f"A1:J{signature_row + 3}"
+    sheet.auto_filter.ref = f"A{header_row}:M{max(header_row, totals_row - 2)}"
+    sheet.print_area = f"A1:M{signature_row + 3}"
 
     path = Path(gettempdir()) / f"reporte-caja-{selected_date.isoformat()}-{uuid4().hex[:8]}.xlsx"
     workbook.save(path)
@@ -494,6 +532,7 @@ def monthly_results(year: int) -> list[dict]:
         supplier_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"proveedores", "costo_venta"})
         payroll = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") == "sueldos")
         fixed_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"impuestos", "servicios", "costos_fijos"})
+        other_costs = expenses - supplier_costs - payroll - fixed_costs
         rows.append({
             "year": year,
             "month": month,
@@ -502,6 +541,7 @@ def monthly_results(year: int) -> list[dict]:
             "card_sales": round(card_sales, 2),
             "credit_sales": round(credit_sales, 2),
             "fixed_costs": round(fixed_costs, 2),
+            "other_costs": round(other_costs, 2),
             "payroll": round(payroll, 2),
             "supplier_costs": round(supplier_costs, 2),
             "total_costs": round(expenses, 2),
@@ -513,5 +553,5 @@ def monthly_results(year: int) -> list[dict]:
 
 def annual_result(year: int) -> dict:
     rows = monthly_results(year)
-    keys = ["gross_sales", "cash_sales", "card_sales", "credit_sales", "fixed_costs", "payroll", "supplier_costs", "total_costs", "operating_result"]
+    keys = ["gross_sales", "cash_sales", "card_sales", "credit_sales", "fixed_costs", "other_costs", "payroll", "supplier_costs", "total_costs", "operating_result"]
     return {"year": year, **{key: round(sum(float(row[key]) for row in rows), 2) for key in keys}}

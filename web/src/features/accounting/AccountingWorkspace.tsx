@@ -29,6 +29,9 @@ interface Movement {
   currency: string;
   description: string;
   reference: string;
+  invoice_number: string;
+  issue_date: string;
+  due_date: string;
   supplier_invoice_id?: string;
   reconciled: boolean;
 }
@@ -64,6 +67,7 @@ interface MonthlyResult {
   card_sales: number;
   credit_sales: number;
   fixed_costs: number;
+  other_costs: number;
   payroll: number;
   supplier_costs: number;
   total_costs: number;
@@ -86,22 +90,11 @@ const tabs: Array<{ id: Tab; label: string; icon: typeof CalendarDays }> = [
   { id: "payables", label: "Facturas a pagar", icon: FileText },
   { id: "annual", label: "Contabilidad anual", icon: Landmark },
 ];
-const categories = [
-  "facturas",
-  "factura_credito",
-  "aportes",
-  "depositos",
-  "tarjetas",
-  "impuestos",
-  "servicios",
-  "costos_fijos",
-  "sueldos",
-  "proveedores",
-  "costo_venta",
-  "retiros",
-  "devoluciones",
-  "otros",
-];
+const categoriesByDirection: Record<Direction, string[]> = {
+  income: ["facturas", "factura_credito", "aportes", "depositos", "tarjetas", "devoluciones", "otros"],
+  expense: ["otros", "proveedores", "costo_venta", "impuestos", "servicios", "costos_fijos", "sueldos", "retiros", "devoluciones"],
+  transfer: ["depositos", "retiros", "otros"],
+};
 const paymentMethods = ["efectivo", "cheque", "deposito", "transferencia", "visa", "master", "maestro", "mercadolibre", "otro"];
 
 function currentYear() { return new Date().getFullYear(); }
@@ -137,7 +130,7 @@ export function AccountingWorkspace() {
     queryKey: ["accounting", year, month, tab === "annual" ? "annual" : "monthly"],
     queryFn: () => api<AccountingData>(`/api/contabilidad?year=${year}&month=${month}&view=${tab === "annual" ? "annual" : "monthly"}`),
   });
-  const invalidate = () => client.invalidateQueries({ queryKey: ["accounting"] });
+  const invalidate = () => client.refetchQueries({ queryKey: ["accounting"], type: "active" });
   const mutation = useMutation({
     mutationFn: post,
     onSuccess: async () => { toast.success("Contabilidad actualizada"); await invalidate(); },
@@ -192,11 +185,16 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
     currency: "UYU",
     description: "",
     reference: "",
+    invoice_number: "",
+    issue_date: today(),
+    due_date: "",
     supplier_invoice_id: "",
   });
   const openInvoices = data.supplier_invoices.filter((item) => item.status !== "pagada" && item.status !== "no_aplica");
   const selectedInvoice = openInvoices.find((item) => item.id === draft.supplier_invoice_id);
   const isSupplierPayment = draft.direction === "expense" && draft.category === "proveedores";
+  const isSalesInvoice = draft.direction === "income" && ["facturas", "factura_credito"].includes(draft.category);
+  const invoiceComplete = !isSalesInvoice || !!(draft.invoice_number.trim() && draft.issue_date && draft.due_date && draft.due_date >= draft.issue_date);
   const totals = useMemo(() => {
     const income = data.movements.filter((m) => m.direction === "income").reduce((sum, m) => sum + m.amount, 0);
     const expenses = data.movements.filter((m) => m.direction === "expense").reduce((sum, m) => sum + m.amount, 0);
@@ -204,6 +202,10 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
     return { income, expenses, cash };
   }, [data.movements]);
   function save() {
+    if (isSalesInvoice && !invoiceComplete) {
+      toast.error("Completa numero, fecha de emision y vencimiento de la factura");
+      return;
+    }
     if (isSupplierPayment) {
       if (!selectedInvoice) {
         toast.error("Selecciona la factura del proveedor que se esta cancelando");
@@ -229,11 +231,11 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
         month,
         workday_number: Number(draft.workday_number),
       });
-      setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", supplier_invoice_id: "" }));
+      setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", invoice_number: "", due_date: "", supplier_invoice_id: "" }));
       return;
     }
     onSave({ ...draft, year, month, amount: Number(draft.amount) });
-    setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", supplier_invoice_id: "" }));
+    setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", invoice_number: "", due_date: "", supplier_invoice_id: "" }));
   }
   async function downloadDailyReport() {
     setExporting(true);
@@ -270,24 +272,35 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
           </Button>
         </div>
       </div>
-      {canEdit ? <><div className="mt-4 grid gap-3 md:grid-cols-4">
+      {canEdit ? <><div className="mt-4 grid gap-4 lg:grid-cols-2">
+        <fieldset className="rounded-md border p-4"><legend className="px-1 text-sm font-semibold">Datos del movimiento</legend><div className="grid gap-3 sm:grid-cols-2">
         <Field label="Dia trabajado"><Input type="number" min="1" value={draft.workday_number} onChange={(e) => setDraft({ ...draft, workday_number: e.target.value })} /></Field>
-        <Field label="Fecha"><Input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} /></Field>
-        <Field label="Tipo"><select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value, supplier_invoice_id: "" })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="income">Entrada</option><option value="expense">Salida</option><option value="transfer">Transferencia</option></select></Field>
-        <Field label="Categoria"><select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value, supplier_invoice_id: "" })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{categories.map((category) => <option key={category} value={category}>{category}</option>)}</select></Field>
+        <Field label="Fecha"><Input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value, issue_date: e.target.value })} /></Field>
+        <Field label="Tipo"><select value={draft.direction} onChange={(e) => { const direction = e.target.value as Direction; setDraft({ ...draft, direction, category: categoriesByDirection[direction][0], supplier_invoice_id: "" }); }} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="income">Entrada</option><option value="expense">Salida</option><option value="transfer">Transferencia</option></select></Field>
+        <Field label="Categoria"><select value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value, supplier_invoice_id: "" })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{categoriesByDirection[draft.direction as Direction].map((category) => <option key={category} value={category}>{category}</option>)}</select></Field>
+        </div></fieldset>
+        <fieldset className="rounded-md border p-4"><legend className="px-1 text-sm font-semibold">Importe y medio</legend><div className="grid gap-3 sm:grid-cols-2">
         <Field label="Medio"><select value={draft.payment_method} onChange={(e) => setDraft({ ...draft, payment_method: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{paymentMethods.map((method) => <option key={method} value={method}>{method}</option>)}</select></Field>
         <Field label="Importe"><Input type="number" min="0" step="0.01" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} /></Field>
         <Field label="Moneda"><select value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="UYU">UYU</option><option value="USD">USD</option></select></Field>
         <Field label="Subcategoria"><Input value={draft.subcategory} onChange={(e) => setDraft({ ...draft, subcategory: e.target.value })} /></Field>
-        {isSupplierPayment ? <Field label="Factura proveedor"><select value={draft.supplier_invoice_id} onChange={(e) => {
+        </div></fieldset>
+        {isSalesInvoice ? <fieldset className="rounded-md border border-primary/30 bg-primary/5 p-4 lg:col-span-2"><legend className="px-1 text-sm font-semibold text-primary">Factura de venta</legend><div className="grid gap-3 md:grid-cols-3">
+          <Field label="Numero de factura *"><Input required value={draft.invoice_number} onChange={(e) => setDraft({ ...draft, invoice_number: e.target.value })} /></Field>
+          <Field label="Fecha de emision *"><Input required type="date" value={draft.issue_date} onChange={(e) => setDraft({ ...draft, issue_date: e.target.value })} /></Field>
+          <Field label="Fecha de vencimiento *"><Input required type="date" min={draft.issue_date} value={draft.due_date} onChange={(e) => setDraft({ ...draft, due_date: e.target.value })} /></Field>
+        </div></fieldset> : null}
+        {isSupplierPayment ? <fieldset className="rounded-md border border-primary/30 bg-primary/5 p-4 lg:col-span-2"><legend className="px-1 text-sm font-semibold text-primary">Cancelacion de factura de compra</legend><Field label="Factura que se cancela *"><select value={draft.supplier_invoice_id} onChange={(e) => {
           const invoice = openInvoices.find((item) => item.id === e.target.value);
           setDraft({ ...draft, supplier_invoice_id: e.target.value, currency: invoice?.currency || draft.currency, amount: invoice ? String(invoice.balance) : draft.amount, subcategory: invoice?.supplier || draft.subcategory });
-        }} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="">Seleccionar factura</option>{openInvoices.map((item) => <option key={item.id} value={item.id}>{item.supplier} - {item.invoice_number || "sin numero"} - saldo {money(item.balance, item.currency)}</option>)}</select></Field> : null}
-        <Field label="Descripcion"><Input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></Field>
-        <Field label={isSupplierPayment ? "Recibo / referencia" : "Referencia"}><Input value={draft.reference} onChange={(e) => setDraft({ ...draft, reference: e.target.value })} /></Field>
+        }} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="">Seleccionar factura</option>{openInvoices.map((item) => <option key={item.id} value={item.id}>{item.supplier} - factura {item.invoice_number || "sin numero"} - saldo {money(item.balance, item.currency)}</option>)}</select></Field></fieldset> : null}
+        <fieldset className="rounded-md border p-4 lg:col-span-2"><legend className="px-1 text-sm font-semibold">Detalle y comprobante</legend><div className="grid gap-3 md:grid-cols-2">
+          <Field label="Descripcion"><Input value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} /></Field>
+          <Field label={isSupplierPayment ? "Recibo / referencia" : "Referencia adicional"}><Input value={draft.reference} onChange={(e) => setDraft({ ...draft, reference: e.target.value })} /></Field>
+        </div></fieldset>
       </div>
       {isSupplierPayment && selectedInvoice ? <div className="mt-3 text-sm text-muted-foreground">Factura {selectedInvoice.invoice_number || "sin numero"} de {selectedInvoice.supplier}. Saldo pendiente: <span className="font-medium text-foreground">{money(selectedInvoice.balance, selectedInvoice.currency)}</span>.</div> : null}
-      <Button className="mt-4" disabled={saving || !(Number(draft.amount) > 0) || (isSupplierPayment && !draft.supplier_invoice_id)} onClick={save}><CirclePlus /> {isSupplierPayment ? "Registrar pago a proveedor" : "Registrar movimiento"}</Button></> : <div className="mt-4 rounded-md bg-muted/50 px-4 py-3 text-sm text-muted-foreground">Esta sección es de solo lectura. Solo Juan Pirone puede cargar o modificar movimientos contables.</div>}
+      <Button className="mt-4" disabled={saving || !(Number(draft.amount) > 0) || !invoiceComplete || (isSupplierPayment && !draft.supplier_invoice_id)} onClick={save}><CirclePlus /> {isSupplierPayment ? "Registrar pago a proveedor" : "Registrar movimiento"}</Button></> : <div className="mt-4 rounded-md bg-muted/50 px-4 py-3 text-sm text-muted-foreground">Esta sección es de solo lectura. Solo Juan Pirone puede cargar o modificar movimientos contables.</div>}
     </section>
     <MovementTable movements={data.movements} />
   </div>;
@@ -297,7 +310,7 @@ function MonthlyResultPanel({ data, month }: { data: AccountingData; month: numb
   const row = data.monthly_results.find((item) => item.month === month);
   return <div className="space-y-5">
     <section className="grid gap-3 sm:grid-cols-4"><Metric label="Ventas brutas" value={money(row?.gross_sales)} /><Metric label="Costos" value={money(row?.total_costs)} /><Metric label="Resultado" value={money(row?.operating_result)} tone={(row?.operating_result || 0) >= 0 ? "good" : "bad"} /><Metric label="Movimientos" value={row?.movement_count || 0} /></section>
-    <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Estado de resultados mensual</h2></div><table className="w-full text-sm"><tbody className="divide-y"><ResultLine label="Ventas efectivo" value={row?.cash_sales} /><ResultLine label="Ventas tarjetas" value={row?.card_sales} /><ResultLine label="Ventas a credito" value={row?.credit_sales} /><ResultLine label="Costos fijos" value={row?.fixed_costs} negative /><ResultLine label="Sueldos" value={row?.payroll} negative /><ResultLine label="Proveedores / costo de venta" value={row?.supplier_costs} negative /><ResultLine label="Resultado operativo" value={row?.operating_result} strong /></tbody></table></section>
+    <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Estado de resultados mensual</h2></div><table className="w-full text-sm"><tbody className="divide-y"><ResultLine label="Ventas efectivo" value={row?.cash_sales} /><ResultLine label="Ventas tarjetas" value={row?.card_sales} /><ResultLine label="Ventas a credito" value={row?.credit_sales} /><ResultLine label="Costos fijos" value={row?.fixed_costs} negative /><ResultLine label="Sueldos" value={row?.payroll} negative /><ResultLine label="Proveedores / costo de venta" value={row?.supplier_costs} negative /><ResultLine label="Otros costos" value={row?.other_costs} negative /><ResultLine label="Resultado operativo" value={row?.operating_result} strong /></tbody></table></section>
   </div>;
 }
 
@@ -307,9 +320,10 @@ function PayablesPanel({ data, saving, canEdit, onInvoice, onSyncUcfe }: { data:
   return <div className="space-y-5">
     <section className="grid gap-3 sm:grid-cols-4"><Metric label="Facturas pendientes" value={open.length} /><Metric label="Saldo UYU" value={money(open.filter((i) => i.currency === "UYU").reduce((sum, i) => sum + i.balance, 0))} /><Metric label="Saldo USD" value={money(open.filter((i) => i.currency === "USD").reduce((sum, i) => sum + i.balance, 0), "USD")} /><div className="border bg-card p-4"><div className="text-sm text-muted-foreground">{canEdit ? "UCFE recibidos" : "Permisos"}</div>{canEdit ? <Button className="mt-2 w-full" variant="outline" disabled={saving} onClick={onSyncUcfe}><RefreshCw /> Sincronizar</Button> : <div className="mt-2 text-sm font-medium">Solo lectura</div>}</div></section>
     {canEdit ? <section className="border bg-card p-4">
-      <h2 className="font-semibold">Nueva factura a pagar</h2>
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Proveedor"><Input value={invoice.supplier} onChange={(e) => setInvoice({ ...invoice, supplier: e.target.value })} /></Field><Field label="RUT"><Input value={invoice.rut} onChange={(e) => setInvoice({ ...invoice, rut: e.target.value })} /></Field><Field label="Factura"><Input value={invoice.invoice_number} onChange={(e) => setInvoice({ ...invoice, invoice_number: e.target.value })} /></Field><Field label="Monto"><Input type="number" min="0" step="0.01" value={invoice.amount} onChange={(e) => setInvoice({ ...invoice, amount: e.target.value })} /></Field><Field label="Moneda"><select value={invoice.currency} onChange={(e) => setInvoice({ ...invoice, currency: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="UYU">UYU</option><option value="USD">USD</option></select></Field><Field label="Fecha compra"><Input type="date" value={invoice.purchase_date} onChange={(e) => setInvoice({ ...invoice, purchase_date: e.target.value })} /></Field><Field label="Vencimiento"><Input type="date" value={invoice.due_date} onChange={(e) => setInvoice({ ...invoice, due_date: e.target.value })} /></Field><Field label="Notas"><Input value={invoice.notes} onChange={(e) => setInvoice({ ...invoice, notes: e.target.value })} /></Field></div>
-      <Button className="mt-4" disabled={saving || !invoice.supplier || !(Number(invoice.amount) > 0)} onClick={() => onInvoice({ ...invoice, amount: Number(invoice.amount), paid_amount: 0 })}>Guardar factura</Button>
+      <h2 className="font-semibold">Nueva factura de compra</h2>
+      <p className="mt-1 text-xs text-muted-foreground">El numero, la fecha de emision y el vencimiento son obligatorios.</p>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Proveedor *"><Input required value={invoice.supplier} onChange={(e) => setInvoice({ ...invoice, supplier: e.target.value })} /></Field><Field label="RUT"><Input value={invoice.rut} onChange={(e) => setInvoice({ ...invoice, rut: e.target.value })} /></Field><Field label="Numero de factura *"><Input required value={invoice.invoice_number} onChange={(e) => setInvoice({ ...invoice, invoice_number: e.target.value })} /></Field><Field label="Monto *"><Input required type="number" min="0" step="0.01" value={invoice.amount} onChange={(e) => setInvoice({ ...invoice, amount: e.target.value })} /></Field><Field label="Moneda"><select value={invoice.currency} onChange={(e) => setInvoice({ ...invoice, currency: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="UYU">UYU</option><option value="USD">USD</option></select></Field><Field label="Fecha de emision *"><Input required type="date" value={invoice.purchase_date} onChange={(e) => setInvoice({ ...invoice, purchase_date: e.target.value })} /></Field><Field label="Fecha de vencimiento *"><Input required type="date" min={invoice.purchase_date} value={invoice.due_date} onChange={(e) => setInvoice({ ...invoice, due_date: e.target.value })} /></Field><Field label="Notas"><Input value={invoice.notes} onChange={(e) => setInvoice({ ...invoice, notes: e.target.value })} /></Field></div>
+      <Button className="mt-4" disabled={saving || !invoice.supplier.trim() || !invoice.invoice_number.trim() || !invoice.purchase_date || !invoice.due_date || invoice.due_date < invoice.purchase_date || !(Number(invoice.amount) > 0)} onClick={() => onInvoice({ ...invoice, amount: Number(invoice.amount), paid_amount: 0 })}>Guardar factura</Button>
     </section> : null}
     <PayablesTable invoices={data.supplier_invoices} />
   </div>;
@@ -324,7 +338,7 @@ function AnnualPanel({ data }: { data: AccountingData }) {
 }
 
 function MovementTable({ movements }: { movements: Movement[] }) {
-  return <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Movimientos cargados</h2></div>{movements.length === 0 ? <Empty text="Todavia no hay movimientos en este mes." /> : <div className="overflow-x-auto"><table className="w-full min-w-[860px] text-sm"><thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Dia</th><th className="px-4 py-3">Tipo</th><th className="px-4 py-3">Categoria</th><th className="px-4 py-3">Medio</th><th className="px-4 py-3">Detalle</th><th className="px-4 py-3 text-right">Importe</th></tr></thead><tbody className="divide-y">{movements.map((m) => <tr key={m.id}><td className="px-4 py-3">{m.workday_number}</td><td className="px-4 py-3"><Badge variant={m.direction === "income" ? "default" : m.direction === "expense" ? "secondary" : "outline"}>{m.direction === "income" ? "Entrada" : m.direction === "expense" ? "Salida" : "Transferencia"}</Badge></td><td className="px-4 py-3">{m.category}</td><td className="px-4 py-3">{m.payment_method}</td><td className="px-4 py-3">{m.description || m.reference || "-"}</td><td className="px-4 py-3 text-right font-medium">{money(m.amount, m.currency)}</td></tr>)}</tbody></table></div>}</section>;
+  return <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Movimientos cargados</h2></div>{movements.length === 0 ? <Empty text="Todavia no hay movimientos en este mes." /> : <div className="overflow-x-auto"><table className="w-full min-w-[1120px] text-sm"><thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Dia</th><th className="px-4 py-3">Tipo</th><th className="px-4 py-3">Categoria</th><th className="px-4 py-3">Factura</th><th className="px-4 py-3">Emision</th><th className="px-4 py-3">Vencimiento</th><th className="px-4 py-3">Medio</th><th className="px-4 py-3">Detalle</th><th className="px-4 py-3 text-right">Importe</th></tr></thead><tbody className="divide-y">{movements.map((m) => <tr key={m.id}><td className="px-4 py-3">{m.workday_number}</td><td className="px-4 py-3"><Badge variant={m.direction === "income" ? "default" : m.direction === "expense" ? "secondary" : "outline"}>{m.direction === "income" ? "Entrada" : m.direction === "expense" ? "Salida" : "Transferencia"}</Badge></td><td className="px-4 py-3">{m.category}</td><td className="px-4 py-3 font-medium">{m.invoice_number || "-"}</td><td className="px-4 py-3">{m.issue_date || "-"}</td><td className="px-4 py-3">{m.due_date || "-"}</td><td className="px-4 py-3">{m.payment_method}</td><td className="px-4 py-3">{m.description || m.reference || "-"}</td><td className="px-4 py-3 text-right font-medium">{money(m.amount, m.currency)}</td></tr>)}</tbody></table></div>}</section>;
 }
 
 function PayablesTable({ invoices }: { invoices: SupplierInvoice[] }) {
@@ -339,7 +353,19 @@ function PayablesTable({ invoices }: { invoices: SupplierInvoice[] }) {
     map.set(key, current);
     return map;
   }, new Map<string, { supplier: string; invoices: SupplierInvoice[]; uyu: number; usd: number }>()).values()).sort((a, b) => a.supplier.localeCompare(b.supplier));
-  return <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Saldos por proveedor</h2></div>{providers.length === 0 ? <Empty text="No hay saldos pendientes con proveedores." /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-sm"><thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Proveedor</th><th className="px-4 py-3 text-right">Facturas</th><th className="px-4 py-3 text-right">Saldo UYU</th><th className="px-4 py-3 text-right">Saldo USD</th><th className="px-4 py-3 text-right">Detalle</th></tr></thead><tbody className="divide-y">{providers.map((provider) => <tr key={provider.supplier} className="align-top"><td className="px-4 py-3 font-medium">{provider.supplier}{expanded === provider.supplier ? <div className="mt-3 overflow-hidden border"><table className="w-full text-xs"><thead className="bg-muted/50 text-left uppercase text-muted-foreground"><tr><th className="px-3 py-2">Factura</th><th className="px-3 py-2">Compra</th><th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-right">Pagado</th><th className="px-3 py-2 text-right">Saldo</th><th className="px-3 py-2">Estado</th></tr></thead><tbody className="divide-y">{provider.invoices.map((invoice) => <tr key={invoice.id}><td className="px-3 py-2">{invoice.invoice_number || "-"}</td><td className="px-3 py-2">{invoice.purchase_date || "-"}</td><td className="px-3 py-2 text-right">{money(invoice.amount, invoice.currency)}</td><td className="px-3 py-2 text-right">{money(invoice.paid_amount, invoice.currency)}</td><td className="px-3 py-2 text-right font-semibold">{money(invoice.balance, invoice.currency)}</td><td className="px-3 py-2"><Badge variant={invoice.status === "parcial" ? "secondary" : "outline"}>{invoice.status}</Badge></td></tr>)}</tbody></table></div> : null}</td><td className="px-4 py-3 text-right tabular-nums">{provider.invoices.length}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{money(provider.uyu)}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{money(provider.usd, "USD")}</td><td className="px-4 py-3 text-right"><Button type="button" variant="outline" size="sm" onClick={() => setExpanded(expanded === provider.supplier ? null : provider.supplier)}><ChevronDown className={`transition-transform ${expanded === provider.supplier ? "rotate-180" : ""}`} /> Ver facturas</Button></td></tr>)}</tbody></table></div>}</section>;
+  return <section className="overflow-hidden border bg-card">
+    <div className="border-b px-4 py-3"><h2 className="font-semibold">Saldos por proveedor</h2></div>
+    {providers.length === 0 ? <Empty text="No hay saldos pendientes con proveedores." /> : <div className="overflow-x-auto"><table className="w-full min-w-[920px] text-sm">
+      <thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Proveedor</th><th className="px-4 py-3 text-right">Facturas</th><th className="px-4 py-3 text-right">Saldo UYU</th><th className="px-4 py-3 text-right">Saldo USD</th><th className="px-4 py-3 text-right">Detalle</th></tr></thead>
+      <tbody className="divide-y">{providers.map((provider) => <tr key={provider.supplier} className="align-top">
+        <td className="px-4 py-3 font-medium">{provider.supplier}{expanded === provider.supplier ? <div className="mt-3 overflow-hidden border"><table className="w-full text-xs">
+          <thead className="bg-muted/50 text-left uppercase text-muted-foreground"><tr><th className="px-3 py-2">Factura</th><th className="px-3 py-2">Emision</th><th className="px-3 py-2">Vencimiento</th><th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-right">Pagado</th><th className="px-3 py-2 text-right">Saldo</th><th className="px-3 py-2">Estado</th></tr></thead>
+          <tbody className="divide-y">{provider.invoices.map((invoice) => <tr key={invoice.id}><td className="px-3 py-2">{invoice.invoice_number || "-"}</td><td className="px-3 py-2">{invoice.purchase_date || "-"}</td><td className="px-3 py-2">{invoice.due_date || "-"}</td><td className="px-3 py-2 text-right">{money(invoice.amount, invoice.currency)}</td><td className="px-3 py-2 text-right">{money(invoice.paid_amount, invoice.currency)}</td><td className="px-3 py-2 text-right font-semibold">{money(invoice.balance, invoice.currency)}</td><td className="px-3 py-2"><Badge variant={invoice.status === "parcial" ? "secondary" : "outline"}>{invoice.status}</Badge></td></tr>)}</tbody>
+        </table></div> : null}</td>
+        <td className="px-4 py-3 text-right tabular-nums">{provider.invoices.length}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{money(provider.uyu)}</td><td className="px-4 py-3 text-right font-semibold tabular-nums">{money(provider.usd, "USD")}</td><td className="px-4 py-3 text-right"><Button type="button" variant="outline" size="sm" onClick={() => setExpanded(expanded === provider.supplier ? null : provider.supplier)}><ChevronDown className={`transition-transform ${expanded === provider.supplier ? "rotate-180" : ""}`} /> Ver facturas</Button></td>
+      </tr>)}</tbody>
+    </table></div>}
+  </section>;
 }
 
 function ResultLine({ label, value, negative, strong }: { label: string; value?: number; negative?: boolean; strong?: boolean }) {
