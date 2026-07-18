@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from pathlib import Path
+from tempfile import gettempdir
 from uuid import uuid4
 
 from pymongo import ReturnDocument
@@ -312,6 +314,171 @@ def list_accounting(year: int | None = None, month: int | None = None) -> dict:
         "monthly_results": monthly_results(year),
         "annual_result": annual_result(year),
     }
+
+
+def export_daily_report(report_date: str, cashier: str) -> dict:
+    _ensure_storage()
+    try:
+        selected_date = date.fromisoformat(_clean(report_date))
+    except ValueError as exc:
+        raise ValueError("Fecha de reporte invalida") from exc
+
+    all_movements = list(collection("accounting_movements").find(
+        {"brand_id": "casa", "date": {"$lte": selected_date.isoformat()}},
+        {"_id": 0},
+    ).sort([("date", 1), ("created_at", 1)]))
+    day_movements = [movement for movement in all_movements if movement.get("date") == selected_date.isoformat()]
+
+    def cash_effect(movement: dict) -> float:
+        if movement.get("currency") != "UYU" or movement.get("payment_method") != "efectivo":
+            return 0.0
+        amount = float(movement.get("amount") or 0)
+        return -amount if movement.get("direction") == "expense" else amount
+
+    opening_balance = sum(cash_effect(movement) for movement in all_movements if movement.get("date", "") < selected_date.isoformat())
+    opening_movements = [movement for movement in day_movements if movement.get("source") == "opening_balance"]
+    opening_balance += sum(cash_effect(movement) for movement in opening_movements)
+    report_movements = [movement for movement in day_movements if movement.get("source") != "opening_balance"]
+    cash_income = sum(cash_effect(movement) for movement in report_movements if cash_effect(movement) > 0)
+    cash_expenses = -sum(cash_effect(movement) for movement in report_movements if cash_effect(movement) < 0)
+    closing_balance = opening_balance + cash_income - cash_expenses
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Reporte diario"
+    sheet.sheet_view.showGridLines = False
+    sheet.freeze_panes = "A10"
+    sheet.page_setup.orientation = "landscape"
+    sheet.page_setup.fitToWidth = 1
+    sheet.page_setup.fitToHeight = 0
+    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    sheet.print_title_rows = "1:9"
+    sheet.oddFooter.center.text = "Pagina &P de &N"
+    sheet.oddFooter.right.text = "Firma cajero: ____________________"
+
+    dark_green = "174C45"
+    pale_green = "E8F3EF"
+    light_gray = "F3F4F6"
+    border_color = "D1D5DB"
+    thin = Side(style="thin", color=border_color)
+
+    sheet.merge_cells("A1:J1")
+    sheet["A1"] = "LA CASA DEL CARPINTERO - REPORTE DIARIO DE CAJA"
+    sheet["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+    sheet["A1"].fill = PatternFill("solid", fgColor=dark_green)
+    sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
+    sheet.row_dimensions[1].height = 30
+
+    sheet["A3"] = "Fecha"
+    sheet["B3"] = selected_date
+    sheet["B3"].number_format = "dd/mm/yyyy"
+    sheet["D3"] = "Cajero"
+    sheet.merge_cells("E3:F3")
+    sheet["E3"] = _clean(cashier) or "Sin identificar"
+    sheet["H3"] = "Emitido"
+    sheet.merge_cells("I3:J3")
+    sheet["I3"] = _now().astimezone().replace(tzinfo=None)
+    sheet["I3"].number_format = "dd/mm/yyyy hh:mm"
+    for cell in ("A3", "D3", "H3"):
+        sheet[cell].font = Font(bold=True, color=dark_green)
+
+    summary = [
+        ("Saldo inicial efectivo", opening_balance),
+        ("Entradas efectivo", cash_income),
+        ("Salidas efectivo", cash_expenses),
+        ("Saldo final efectivo", closing_balance),
+    ]
+    for index, (label, amount) in enumerate(summary):
+        start_col = 1 + index * 2
+        label_cell = sheet.cell(row=5, column=start_col, value=label)
+        value_cell = sheet.cell(row=6, column=start_col, value=amount)
+        sheet.merge_cells(start_row=5, start_column=start_col, end_row=5, end_column=start_col + 1)
+        sheet.merge_cells(start_row=6, start_column=start_col, end_row=6, end_column=start_col + 1)
+        label_cell.fill = PatternFill("solid", fgColor=pale_green)
+        label_cell.font = Font(size=10, bold=True, color=dark_green)
+        label_cell.alignment = Alignment(horizontal="center")
+        value_cell.font = Font(size=15, bold=True, color=dark_green)
+        value_cell.alignment = Alignment(horizontal="center")
+        value_cell.number_format = '[$$-es-UY] #,##0.00'
+        for row in (5, 6):
+            for column in range(start_col, start_col + 2):
+                sheet.cell(row=row, column=column).border = Border(top=thin, bottom=thin, left=thin, right=thin)
+
+    headers = ["Hora", "Tipo", "Categoria", "Subcategoria", "Medio", "Descripcion", "Referencia", "Moneda", "Entrada", "Salida"]
+    sheet.append([])
+    sheet.append(headers)
+    header_row = sheet.max_row
+    for cell in sheet[header_row]:
+        cell.fill = PatternFill("solid", fgColor=dark_green)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    direction_labels = {"income": "Entrada", "expense": "Salida", "transfer": "Transferencia"}
+    for movement in report_movements:
+        created_at = movement.get("created_at")
+        time_value = created_at.astimezone().replace(tzinfo=None) if isinstance(created_at, datetime) else None
+        amount = float(movement.get("amount") or 0)
+        is_expense = movement.get("direction") == "expense"
+        sheet.append([
+            time_value,
+            direction_labels.get(movement.get("direction"), movement.get("direction", "")),
+            movement.get("category", ""),
+            movement.get("subcategory", ""),
+            movement.get("payment_method", ""),
+            movement.get("description", ""),
+            movement.get("reference", ""),
+            movement.get("currency", "UYU"),
+            None if is_expense else amount,
+            amount if is_expense else None,
+        ])
+        row = sheet.max_row
+        sheet.cell(row=row, column=1).number_format = "hh:mm"
+        sheet.cell(row=row, column=9).number_format = '#,##0.00'
+        sheet.cell(row=row, column=10).number_format = '#,##0.00'
+        fill = PatternFill("solid", fgColor="FFFFFF" if row % 2 else light_gray)
+        for cell in sheet[row]:
+            cell.fill = fill
+            cell.border = Border(bottom=Side(style="hair", color=border_color))
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {4, 6, 7})
+
+    if not report_movements:
+        sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 2, end_column=10)
+        empty_cell = sheet.cell(row=header_row + 1, column=1, value="Sin movimientos operativos registrados para esta fecha.")
+        empty_cell.alignment = Alignment(horizontal="center", vertical="center")
+        empty_cell.font = Font(italic=True, color="6B7280")
+
+    totals_row = max(sheet.max_row + 2, header_row + 4)
+    sheet.merge_cells(start_row=totals_row, start_column=1, end_row=totals_row, end_column=8)
+    sheet.cell(row=totals_row, column=1, value="TOTALES DEL DIA").font = Font(bold=True, color=dark_green)
+    income_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") != "expense" and m.get("currency") == "UYU"]
+    expense_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") == "expense" and m.get("currency") == "UYU"]
+    sheet.cell(row=totals_row, column=9, value=sum(income_rows)).number_format = '#,##0.00'
+    sheet.cell(row=totals_row, column=10, value=sum(expense_rows)).number_format = '#,##0.00'
+    for cell in sheet[totals_row]:
+        cell.fill = PatternFill("solid", fgColor=pale_green)
+        cell.font = Font(bold=True, color=dark_green)
+        cell.border = Border(top=Side(style="medium", color=dark_green))
+
+    signature_row = totals_row + 4
+    sheet.merge_cells(start_row=signature_row, start_column=1, end_row=signature_row, end_column=4)
+    sheet.merge_cells(start_row=signature_row, start_column=7, end_row=signature_row, end_column=10)
+    sheet.cell(row=signature_row, column=1, value="Firma del cajero: __________________________________")
+    sheet.cell(row=signature_row, column=7, value="Firma del responsable: ____________________________")
+    sheet.cell(row=signature_row + 2, column=1, value="Aclaracion: ______________________________________")
+    sheet.cell(row=signature_row + 2, column=7, value="Aclaracion: ______________________________________")
+
+    widths = [10, 14, 18, 18, 16, 34, 22, 10, 15, 15]
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[chr(64 + index)].width = width
+    sheet.auto_filter.ref = f"A{header_row}:J{max(header_row, totals_row - 2)}"
+    sheet.print_area = f"A1:J{signature_row + 3}"
+
+    path = Path(gettempdir()) / f"reporte-caja-{selected_date.isoformat()}-{uuid4().hex[:8]}.xlsx"
+    workbook.save(path)
+    return {"excel_path": str(path), "filename": f"reporte-caja-{selected_date.isoformat()}.xlsx"}
 
 
 def monthly_results(year: int) -> list[dict]:

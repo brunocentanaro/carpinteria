@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { BarChart3, CalendarDays, ChevronDown, CirclePlus, FileText, Landmark, RefreshCw } from "lucide-react";
+import { BarChart3, CalendarDays, ChevronDown, CirclePlus, Download, FileText, Landmark, RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -177,6 +177,7 @@ export function AccountingWorkspace() {
 }
 
 function DailySheet({ data, year, month, saving, onSave, onSupplierPayment }: { data: AccountingData; year: number; month: number; saving: boolean; onSave: (movement: Record<string, unknown>) => void; onSupplierPayment: (payment: Record<string, unknown>) => void }) {
+  const [exporting, setExporting] = useState(false);
   const [draft, setDraft] = useState({
     workday_number: "1",
     date: today(),
@@ -231,10 +232,38 @@ function DailySheet({ data, year, month, saving, onSave, onSupplierPayment }: { 
     onSave({ ...draft, year, month, amount: Number(draft.amount) });
     setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", supplier_invoice_id: "" }));
   }
+  async function downloadDailyReport() {
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/contabilidad/reporte-diario?date=${encodeURIComponent(draft.date)}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "No se pudo generar el reporte diario");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `reporte-caja-${draft.date}.xlsx`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo generar el reporte diario");
+    } finally {
+      setExporting(false);
+    }
+  }
   return <div className="space-y-5">
     <section className="grid gap-3 sm:grid-cols-3"><Metric label="Entradas del mes" value={money(totals.income)} /><Metric label="Salidas del mes" value={money(totals.expenses)} /><Metric label="Caja neta efectivo" value={money(totals.cash)} /></section>
     <section className="border bg-card p-4">
-      <h2 className="font-semibold">Movimiento diario</h2>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div><h2 className="font-semibold">Movimiento diario</h2><p className="text-xs text-muted-foreground">El reporte se genera para la fecha seleccionada e incluye espacio para firmas.</p></div>
+        <Button type="button" variant="outline" disabled={exporting || !draft.date} onClick={downloadDailyReport}>
+          <Download /> {exporting ? "Generando..." : "Descargar reporte Excel"}
+        </Button>
+      </div>
       <div className="mt-4 grid gap-3 md:grid-cols-4">
         <Field label="Dia trabajado"><Input type="number" min="1" value={draft.workday_number} onChange={(e) => setDraft({ ...draft, workday_number: e.target.value })} /></Field>
         <Field label="Fecha"><Input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} /></Field>

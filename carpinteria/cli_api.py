@@ -3073,6 +3073,11 @@ def handle_accounting_supplier_sync(data: dict) -> dict:
     return sync_ucfe_supplier_invoices(str(data.get("updated_by", "")) or "ucfe")
 
 
+def handle_accounting_daily_report(data: dict) -> dict:
+    from .accounting import export_daily_report
+    return export_daily_report(str(data.get("date", "")), str(data.get("cashier", "")))
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -3179,6 +3184,8 @@ def main() -> None:
             result = handle_accounting_daily_supplier_payment(data)
         elif action == "accounting_supplier_sync":
             result = handle_accounting_supplier_sync(data)
+        elif action == "accounting_daily_report":
+            result = handle_accounting_daily_report(data)
         elif action == "session_update":
             result = handle_session_update(data)
         elif action == "session_delete":
