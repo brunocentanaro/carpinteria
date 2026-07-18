@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { AUTH_COOKIE, readSessionToken } from "@/lib/auth";
+import { AUTH_COOKIE, canEditAccounting, readSessionToken } from "@/lib/auth";
 import { callPython } from "@/lib/python";
 
 export const runtime = "nodejs";
@@ -38,6 +38,9 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const session = casaSession(req);
   if (!session) return NextResponse.json({ error: "Acceso de La Casa requerido" }, { status: 403 });
+  if (!canEditAccounting(session)) {
+    return NextResponse.json({ error: "Solo Juan Pirone puede editar la contabilidad" }, { status: 403 });
+  }
   try {
     const body = await req.json();
     const operation = String(body?.operation || "");

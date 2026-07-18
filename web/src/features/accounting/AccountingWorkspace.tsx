@@ -9,11 +9,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { canEditAccounting } from "@/lib/auth";
 
 type Tab = "daily" | "monthly" | "payables" | "annual";
 type Direction = "income" | "expense" | "transfer";
 
-interface AuthSession { area: string; allAccess?: boolean }
+interface AuthSession { user: string; area: string; allAccess?: boolean }
 interface Movement {
   id: string;
   year: number;
@@ -143,6 +144,7 @@ export function AccountingWorkspace() {
     onError: (error) => toast.error(error instanceof Error ? error.message : "No se pudo guardar"),
   });
   const isAdmin = auth.data?.area === "administracion" || !!auth.data?.allAccess;
+  const canEdit = canEditAccounting(auth.data);
   const data = dataQuery.data;
 
   return <main className="mx-auto max-w-7xl space-y-5 p-4 md:p-8">
@@ -151,6 +153,7 @@ export function AccountingWorkspace() {
         <div className="text-xs font-semibold uppercase tracking-wider text-primary">La Casa del Carpintero</div>
         <h1 className="mt-1 text-2xl font-semibold">Contabilidad</h1>
         <p className="mt-1 text-sm text-muted-foreground">Caja diaria, facturas a pagar y resultados del negocio.</p>
+        {auth.data ? <Badge className="mt-2" variant={canEdit ? "default" : "secondary"}>{canEdit ? "Edición habilitada para Juan" : "Solo lectura"}</Badge> : null}
       </div>
       <div className="flex flex-wrap items-end gap-2">
         <Field label="Ano"><Input type="number" value={year} onChange={(event) => setYear(Number(event.target.value) || currentYear())} className="w-24" /></Field>
@@ -168,15 +171,15 @@ export function AccountingWorkspace() {
     {dataQuery.isLoading ? <div className="border bg-card p-10 text-center text-sm text-muted-foreground">Cargando contabilidad...</div> : null}
     {dataQuery.error ? <div className="border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{dataQuery.error.message}</div> : null}
     {data ? <>
-      {tab === "daily" ? <DailySheet data={data} year={year} month={month} saving={mutation.isPending} onSave={(movement) => mutation.mutate({ operation: "movement", movement })} onSupplierPayment={(payment) => mutation.mutate({ operation: "daily_supplier_payment", payment })} /> : null}
+      {tab === "daily" ? <DailySheet data={data} year={year} month={month} saving={mutation.isPending} canEdit={canEdit} onSave={(movement) => mutation.mutate({ operation: "movement", movement })} onSupplierPayment={(payment) => mutation.mutate({ operation: "daily_supplier_payment", payment })} /> : null}
       {tab === "monthly" ? <MonthlyResultPanel data={data} month={month} /> : null}
-      {tab === "payables" ? <PayablesPanel data={data} saving={mutation.isPending} onInvoice={(invoice) => mutation.mutate({ operation: "supplier_invoice", invoice })} onSyncUcfe={() => mutation.mutate({ operation: "supplier_sync" })} /> : null}
+      {tab === "payables" ? <PayablesPanel data={data} saving={mutation.isPending} canEdit={canEdit} onInvoice={(invoice) => mutation.mutate({ operation: "supplier_invoice", invoice })} onSyncUcfe={() => mutation.mutate({ operation: "supplier_sync" })} /> : null}
       {tab === "annual" && isAdmin ? <AnnualPanel data={data} /> : null}
     </> : null}
   </main>;
 }
 
-function DailySheet({ data, year, month, saving, onSave, onSupplierPayment }: { data: AccountingData; year: number; month: number; saving: boolean; onSave: (movement: Record<string, unknown>) => void; onSupplierPayment: (payment: Record<string, unknown>) => void }) {
+function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPayment }: { data: AccountingData; year: number; month: number; saving: boolean; canEdit: boolean; onSave: (movement: Record<string, unknown>) => void; onSupplierPayment: (payment: Record<string, unknown>) => void }) {
   const [exporting, setExporting] = useState(false);
   const [draft, setDraft] = useState({
     workday_number: "1",
@@ -260,11 +263,14 @@ function DailySheet({ data, year, month, saving, onSave, onSupplierPayment }: { 
     <section className="border bg-card p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div><h2 className="font-semibold">Movimiento diario</h2><p className="text-xs text-muted-foreground">El reporte se genera para la fecha seleccionada e incluye espacio para firmas.</p></div>
-        <Button type="button" variant="outline" disabled={exporting || !draft.date} onClick={downloadDailyReport}>
-          <Download /> {exporting ? "Generando..." : "Descargar reporte Excel"}
-        </Button>
+        <div className="flex flex-wrap items-end gap-2">
+          {!canEdit ? <Field label="Fecha del reporte"><Input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} /></Field> : null}
+          <Button type="button" variant="outline" disabled={exporting || !draft.date} onClick={downloadDailyReport}>
+            <Download /> {exporting ? "Generando..." : "Descargar reporte Excel"}
+          </Button>
+        </div>
       </div>
-      <div className="mt-4 grid gap-3 md:grid-cols-4">
+      {canEdit ? <><div className="mt-4 grid gap-3 md:grid-cols-4">
         <Field label="Dia trabajado"><Input type="number" min="1" value={draft.workday_number} onChange={(e) => setDraft({ ...draft, workday_number: e.target.value })} /></Field>
         <Field label="Fecha"><Input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value })} /></Field>
         <Field label="Tipo"><select value={draft.direction} onChange={(e) => setDraft({ ...draft, direction: e.target.value, supplier_invoice_id: "" })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="income">Entrada</option><option value="expense">Salida</option><option value="transfer">Transferencia</option></select></Field>
@@ -281,7 +287,7 @@ function DailySheet({ data, year, month, saving, onSave, onSupplierPayment }: { 
         <Field label={isSupplierPayment ? "Recibo / referencia" : "Referencia"}><Input value={draft.reference} onChange={(e) => setDraft({ ...draft, reference: e.target.value })} /></Field>
       </div>
       {isSupplierPayment && selectedInvoice ? <div className="mt-3 text-sm text-muted-foreground">Factura {selectedInvoice.invoice_number || "sin numero"} de {selectedInvoice.supplier}. Saldo pendiente: <span className="font-medium text-foreground">{money(selectedInvoice.balance, selectedInvoice.currency)}</span>.</div> : null}
-      <Button className="mt-4" disabled={saving || !(Number(draft.amount) > 0) || (isSupplierPayment && !draft.supplier_invoice_id)} onClick={save}><CirclePlus /> {isSupplierPayment ? "Registrar pago a proveedor" : "Registrar movimiento"}</Button>
+      <Button className="mt-4" disabled={saving || !(Number(draft.amount) > 0) || (isSupplierPayment && !draft.supplier_invoice_id)} onClick={save}><CirclePlus /> {isSupplierPayment ? "Registrar pago a proveedor" : "Registrar movimiento"}</Button></> : <div className="mt-4 rounded-md bg-muted/50 px-4 py-3 text-sm text-muted-foreground">Esta sección es de solo lectura. Solo Juan Pirone puede cargar o modificar movimientos contables.</div>}
     </section>
     <MovementTable movements={data.movements} />
   </div>;
@@ -295,16 +301,16 @@ function MonthlyResultPanel({ data, month }: { data: AccountingData; month: numb
   </div>;
 }
 
-function PayablesPanel({ data, saving, onInvoice, onSyncUcfe }: { data: AccountingData; saving: boolean; onInvoice: (invoice: Record<string, unknown>) => void; onSyncUcfe: () => void }) {
+function PayablesPanel({ data, saving, canEdit, onInvoice, onSyncUcfe }: { data: AccountingData; saving: boolean; canEdit: boolean; onInvoice: (invoice: Record<string, unknown>) => void; onSyncUcfe: () => void }) {
   const [invoice, setInvoice] = useState({ supplier: "", rut: "", invoice_number: "", currency: "UYU", amount: "", purchase_date: today(), due_date: "", notes: "" });
   const open = data.supplier_invoices.filter((item) => item.status !== "pagada" && item.status !== "no_aplica");
   return <div className="space-y-5">
-    <section className="grid gap-3 sm:grid-cols-4"><Metric label="Facturas pendientes" value={open.length} /><Metric label="Saldo UYU" value={money(open.filter((i) => i.currency === "UYU").reduce((sum, i) => sum + i.balance, 0))} /><Metric label="Saldo USD" value={money(open.filter((i) => i.currency === "USD").reduce((sum, i) => sum + i.balance, 0), "USD")} /><div className="border bg-card p-4"><div className="text-sm text-muted-foreground">UCFE recibidos</div><Button className="mt-2 w-full" variant="outline" disabled={saving} onClick={onSyncUcfe}><RefreshCw /> Sincronizar</Button></div></section>
-    <section className="border bg-card p-4">
+    <section className="grid gap-3 sm:grid-cols-4"><Metric label="Facturas pendientes" value={open.length} /><Metric label="Saldo UYU" value={money(open.filter((i) => i.currency === "UYU").reduce((sum, i) => sum + i.balance, 0))} /><Metric label="Saldo USD" value={money(open.filter((i) => i.currency === "USD").reduce((sum, i) => sum + i.balance, 0), "USD")} /><div className="border bg-card p-4"><div className="text-sm text-muted-foreground">{canEdit ? "UCFE recibidos" : "Permisos"}</div>{canEdit ? <Button className="mt-2 w-full" variant="outline" disabled={saving} onClick={onSyncUcfe}><RefreshCw /> Sincronizar</Button> : <div className="mt-2 text-sm font-medium">Solo lectura</div>}</div></section>
+    {canEdit ? <section className="border bg-card p-4">
       <h2 className="font-semibold">Nueva factura a pagar</h2>
       <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4"><Field label="Proveedor"><Input value={invoice.supplier} onChange={(e) => setInvoice({ ...invoice, supplier: e.target.value })} /></Field><Field label="RUT"><Input value={invoice.rut} onChange={(e) => setInvoice({ ...invoice, rut: e.target.value })} /></Field><Field label="Factura"><Input value={invoice.invoice_number} onChange={(e) => setInvoice({ ...invoice, invoice_number: e.target.value })} /></Field><Field label="Monto"><Input type="number" min="0" step="0.01" value={invoice.amount} onChange={(e) => setInvoice({ ...invoice, amount: e.target.value })} /></Field><Field label="Moneda"><select value={invoice.currency} onChange={(e) => setInvoice({ ...invoice, currency: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="UYU">UYU</option><option value="USD">USD</option></select></Field><Field label="Fecha compra"><Input type="date" value={invoice.purchase_date} onChange={(e) => setInvoice({ ...invoice, purchase_date: e.target.value })} /></Field><Field label="Vencimiento"><Input type="date" value={invoice.due_date} onChange={(e) => setInvoice({ ...invoice, due_date: e.target.value })} /></Field><Field label="Notas"><Input value={invoice.notes} onChange={(e) => setInvoice({ ...invoice, notes: e.target.value })} /></Field></div>
       <Button className="mt-4" disabled={saving || !invoice.supplier || !(Number(invoice.amount) > 0)} onClick={() => onInvoice({ ...invoice, amount: Number(invoice.amount), paid_amount: 0 })}>Guardar factura</Button>
-    </section>
+    </section> : null}
     <PayablesTable invoices={data.supplier_invoices} />
   </div>;
 }

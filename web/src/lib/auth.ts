@@ -10,6 +10,10 @@ export interface AuthSession {
   mustChangePassword?: boolean;
 }
 
+export function canEditAccounting(session: Pick<AuthSession, "user"> | null | undefined) {
+  return session?.user.trim().toLocaleLowerCase("es") === "juan pirone";
+}
+
 export type AuthArea = "personal" | "administracion";
 
 export const AUTH_AREAS: Record<AuthArea, { id: AuthArea; name: string }> = {
