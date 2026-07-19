@@ -14,8 +14,10 @@ MOVEMENT_DIRECTIONS = {"income", "expense", "transfer"}
 PAYMENT_METHODS = {
     "efectivo",
     "cheque",
+    "credito",
     "deposito",
     "transferencia",
+    "tarjeta",
     "visa",
     "master",
     "maestro",
@@ -23,6 +25,9 @@ PAYMENT_METHODS = {
     "otro",
 }
 INVOICE_STATUSES = {"pendiente", "parcial", "pagada", "no_aplica"}
+CARD_PAYMENT_METHODS = {"tarjeta", "visa", "master", "maestro", "mercadolibre"}
+BANK_PAYMENT_METHODS = {"deposito", "transferencia"}
+CARD_SETTLEMENT_CATEGORY = "acreditacion_tarjeta"
 
 
 def _now() -> datetime:
@@ -79,6 +84,55 @@ def _safe_currency(value: object) -> str:
         return "UYU"
 
 
+def _destination_account(category: object, payment_method: object) -> str:
+    category_value = _clean(category).lower()
+    method = _clean(payment_method).lower()
+    if category_value == CARD_SETTLEMENT_CATEGORY:
+        return "banco"
+    if category_value == "factura_credito" or method == "credito":
+        return "cuentas_por_cobrar"
+    if method == "efectivo":
+        return "caja"
+    if method in BANK_PAYMENT_METHODS:
+        return "banco"
+    if method in CARD_PAYMENT_METHODS:
+        return "financiera"
+    if method == "cheque":
+        return "cheques"
+    return "por_clasificar"
+
+
+def _account_balances(movements: list[dict]) -> dict:
+    balances = {
+        "cash": 0.0,
+        "bank": 0.0,
+        "card_receivables": 0.0,
+        "accounts_receivable": 0.0,
+    }
+    balance_key = {
+        "caja": "cash",
+        "banco": "bank",
+        "financiera": "card_receivables",
+        "cuentas_por_cobrar": "accounts_receivable",
+    }
+    for movement in movements:
+        if _safe_currency(movement.get("currency")) != "UYU":
+            continue
+        destination = _clean(movement.get("destination_account")) or _destination_account(
+            movement.get("category"), movement.get("payment_method")
+        )
+        key = balance_key.get(destination)
+        if not key:
+            continue
+        amount = float(movement.get("amount") or 0)
+        if movement.get("direction") == "transfer" and _clean(movement.get("category")) == CARD_SETTLEMENT_CATEGORY:
+            balances["card_receivables"] -= amount
+            balances["bank"] += amount
+            continue
+        balances[key] += -amount if movement.get("direction") == "expense" else amount
+    return {key: round(value, 2) for key, value in balances.items()}
+
+
 def _ensure_storage() -> None:
     collection("accounting_movements").create_index("id", unique=True)
     collection("accounting_movements").create_index([("brand_id", 1), ("year", 1), ("month", 1), ("workday_number", 1)])
@@ -132,10 +186,30 @@ def register_movement(data: dict, user: str) -> dict:
     direction = _clean(data.get("direction")).lower()
     if direction not in MOVEMENT_DIRECTIONS:
         raise ValueError("Direccion de movimiento invalida")
-    payment_method = _clean(data.get("payment_method")).lower() or "efectivo"
+    category = _clean(data.get("category")).lower() or "general"
+    supplied_payment_method = _clean(data.get("payment_method")).lower()
+    if direction == "income" and category in {"facturas", "factura_credito"} and not supplied_payment_method:
+        raise ValueError("Falta medio de cobro de la factura de venta")
+    payment_method = supplied_payment_method or "efectivo"
     if payment_method not in PAYMENT_METHODS:
         raise ValueError("Medio de pago invalido")
+    if direction == "income" and category == "factura_credito" and payment_method != "credito":
+        raise ValueError("Las facturas a credito deben quedar en cuentas por cobrar")
+    if direction == "income" and category == "facturas" and payment_method == "credito":
+        raise ValueError("Usa la categoria factura_credito para una venta a credito")
+    if direction == "transfer" and category == CARD_SETTLEMENT_CATEGORY and payment_method not in CARD_PAYMENT_METHODS:
+        raise ValueError("Selecciona la tarjeta o financiera que realizo la acreditacion")
     amount = _positive_money(data.get("amount"))
+    currency = _currency(data.get("currency"))
+    if direction == "transfer" and category == CARD_SETTLEMENT_CATEGORY:
+        if currency != "UYU":
+            raise ValueError("Las acreditaciones de tarjeta se registran en UYU")
+        existing_movements = list(collection("accounting_movements").find(
+            {"brand_id": "casa"},
+            {"_id": 0, "direction": 1, "category": 1, "payment_method": 1, "destination_account": 1, "amount": 1, "currency": 1},
+        ))
+        if amount > _account_balances(existing_movements)["card_receivables"]:
+            raise ValueError("La acreditacion no puede superar el saldo pendiente en financieras")
     year = int(data.get("year") or datetime.now().year)
     month = int(data.get("month") or datetime.now().month)
     if not 1 <= month <= 12:
@@ -143,8 +217,8 @@ def register_movement(data: dict, user: str) -> dict:
     workday_number = int(data.get("workday_number") or 1)
     if workday_number <= 0:
         raise ValueError("Dia trabajado invalido")
-    category = _clean(data.get("category")) or "general"
     invoice_number = _clean(data.get("invoice_number"))
+    source_key = _clean(data.get("source_key"))
     issue_date = _clean(data.get("issue_date"))
     due_date = _clean(data.get("due_date"))
     if direction == "income" and category in {"facturas", "factura_credito"}:
@@ -165,15 +239,16 @@ def register_movement(data: dict, user: str) -> dict:
         "category": category,
         "subcategory": _clean(data.get("subcategory")),
         "payment_method": payment_method,
+        "origin_account": "financiera" if category == CARD_SETTLEMENT_CATEGORY else "",
+        "destination_account": _destination_account(category, payment_method),
         "amount": amount,
-        "currency": _currency(data.get("currency")),
+        "currency": currency,
         "description": _clean(data.get("description")),
         "reference": _clean(data.get("reference")) or invoice_number,
         "invoice_number": invoice_number,
         "issue_date": issue_date,
         "due_date": due_date,
         "source": _clean(data.get("source")) or "manual",
-        "source_key": _clean(data.get("source_key")) or None,
         "supplier_invoice_id": _clean(data.get("supplier_invoice_id")),
         "reconciled": bool(data.get("reconciled", False)),
         "created_at": _now(),
@@ -181,8 +256,9 @@ def register_movement(data: dict, user: str) -> dict:
         "updated_at": _now(),
         "updated_by": user,
     }
-    if movement["source_key"]:
-        existing = collection("accounting_movements").find_one({"source_key": movement["source_key"]}, {"_id": 0})
+    if source_key:
+        movement["source_key"] = source_key
+        existing = collection("accounting_movements").find_one({"source_key": source_key}, {"_id": 0})
         if existing:
             return {"movement": existing, "already_registered": True}
     collection("accounting_movements").insert_one(movement)
@@ -194,6 +270,7 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
     if ensure_storage:
         _ensure_storage()
     invoice_id = _clean(data.get("id"))
+    source_key = _clean(data.get("source_key"))
     supplier = _clean(data.get("supplier"))
     invoice_number = _clean(data.get("invoice_number"))
     if not supplier:
@@ -227,14 +304,15 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
         "due_date": due_date,
         "status": status,
         "ucfe_cfe_id": _clean(data.get("ucfe_cfe_id")),
-        "source_key": _clean(data.get("source_key")) or None,
         "notes": _clean(data.get("notes")),
         "updated_at": now,
         "updated_by": user,
     }
+    if source_key:
+        invoice["source_key"] = source_key
     query = {"id": invoice_id} if invoice_id else None
-    if query is None and invoice["source_key"]:
-        query = {"source_key": invoice["source_key"]}
+    if query is None and source_key:
+        query = {"source_key": source_key}
     if query is None and supplier and invoice_number:
         query = {"brand_id": "casa", "supplier": supplier, "invoice_number": invoice_number}
     existing = collection("supplier_invoices").find_one(query or {"id": "__none__"}, {"_id": 0})
@@ -338,12 +416,24 @@ def list_accounting(year: int | None = None, month: int | None = None) -> dict:
     if month:
         movement_query["month"] = month
     movements = list(collection("accounting_movements").find(movement_query, {"_id": 0}).sort([("year", -1), ("month", -1), ("workday_number", -1), ("created_at", -1)]).limit(500))
+    for movement in movements:
+        movement["destination_account"] = _clean(movement.get("destination_account")) or _destination_account(
+            movement.get("category"), movement.get("payment_method")
+        )
+    balance_movements = list(collection("accounting_movements").find({
+        "brand_id": "casa",
+        "$or": [
+            {"year": {"$lt": year}},
+            {"year": year, "month": {"$lte": month}},
+        ],
+    }, {"_id": 0, "direction": 1, "category": 1, "payment_method": 1, "destination_account": 1, "amount": 1, "currency": 1}))
     invoices = list(collection("supplier_invoices").find({"brand_id": "casa"}, {"_id": 0}).sort([("status", 1), ("supplier", 1), ("purchase_date", -1)]).limit(500))
     payments = list(collection("supplier_payments").find({"brand_id": "casa"}, {"_id": 0}).sort("created_at", -1).limit(250))
     return {
         "year": year,
         "month": month,
         "movements": movements,
+        "account_balances": _account_balances(balance_movements),
         "supplier_invoices": invoices,
         "supplier_payments": payments,
         "monthly_results": monthly_results(year),
@@ -400,7 +490,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
     border_color = "D1D5DB"
     thin = Side(style="thin", color=border_color)
 
-    sheet.merge_cells("A1:M1")
+    sheet.merge_cells("A1:N1")
     sheet["A1"] = "LA CASA DEL CARPINTERO - REPORTE DIARIO DE CAJA"
     sheet["A1"].font = Font(size=16, bold=True, color="FFFFFF")
     sheet["A1"].fill = PatternFill("solid", fgColor=dark_green)
@@ -426,7 +516,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
         ("Salidas efectivo", cash_expenses),
         ("Saldo final efectivo", closing_balance),
     ]
-    summary_spans = [(1, 3), (4, 6), (7, 9), (10, 13)]
+    summary_spans = [(1, 3), (4, 6), (7, 9), (10, 14)]
     for (label, amount), (start_col, end_col) in zip(summary, summary_spans, strict=True):
         label_cell = sheet.cell(row=5, column=start_col, value=label)
         value_cell = sheet.cell(row=6, column=start_col, value=amount)
@@ -442,7 +532,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
             for column in range(start_col, end_col + 1):
                 sheet.cell(row=row, column=column).border = Border(top=thin, bottom=thin, left=thin, right=thin)
 
-    headers = ["Hora", "Tipo", "Categoria", "Subcategoria", "Medio", "Factura", "Emision", "Vencimiento", "Descripcion", "Referencia", "Moneda", "Entrada", "Salida"]
+    headers = ["Hora", "Tipo", "Categoria", "Subcategoria", "Medio", "Destino", "Factura", "Emision", "Vencimiento", "Descripcion", "Referencia", "Moneda", "Entrada", "Salida"]
     sheet.append([])
     sheet.append(headers)
     header_row = sheet.max_row
@@ -457,44 +547,46 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
         time_value = created_at.astimezone().replace(tzinfo=None) if isinstance(created_at, datetime) else None
         amount = float(movement.get("amount") or 0)
         is_expense = movement.get("direction") == "expense"
+        is_transfer = movement.get("direction") == "transfer"
         sheet.append([
             time_value,
             direction_labels.get(movement.get("direction"), movement.get("direction", "")),
             movement.get("category", ""),
             movement.get("subcategory", ""),
             movement.get("payment_method", ""),
+            "financiera -> banco" if movement.get("category") == CARD_SETTLEMENT_CATEGORY else _clean(movement.get("destination_account")) or _destination_account(movement.get("category"), movement.get("payment_method")),
             movement.get("invoice_number", ""),
             movement.get("issue_date", ""),
             movement.get("due_date", ""),
             movement.get("description", ""),
             movement.get("reference", ""),
             movement.get("currency", "UYU"),
-            None if is_expense else amount,
-            amount if is_expense else None,
+            amount if not is_expense else None,
+            amount if is_expense or is_transfer else None,
         ])
         row = sheet.max_row
         sheet.cell(row=row, column=1).number_format = "hh:mm"
-        sheet.cell(row=row, column=12).number_format = '#,##0.00'
         sheet.cell(row=row, column=13).number_format = '#,##0.00'
+        sheet.cell(row=row, column=14).number_format = '#,##0.00'
         fill = PatternFill("solid", fgColor="FFFFFF" if row % 2 else light_gray)
         for cell in sheet[row]:
             cell.fill = fill
             cell.border = Border(bottom=Side(style="hair", color=border_color))
-            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {4, 6, 9, 10})
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {4, 7, 10, 11})
 
     if not report_movements:
-        sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 2, end_column=13)
+        sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 2, end_column=14)
         empty_cell = sheet.cell(row=header_row + 1, column=1, value="Sin movimientos operativos registrados para esta fecha.")
         empty_cell.alignment = Alignment(horizontal="center", vertical="center")
         empty_cell.font = Font(italic=True, color="6B7280")
 
     totals_row = max(sheet.max_row + 2, header_row + 4)
-    sheet.merge_cells(start_row=totals_row, start_column=1, end_row=totals_row, end_column=11)
+    sheet.merge_cells(start_row=totals_row, start_column=1, end_row=totals_row, end_column=12)
     sheet.cell(row=totals_row, column=1, value="TOTALES DEL DIA").font = Font(bold=True, color=dark_green)
-    income_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") != "expense" and m.get("currency") == "UYU"]
-    expense_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") == "expense" and m.get("currency") == "UYU"]
-    sheet.cell(row=totals_row, column=12, value=sum(income_rows)).number_format = '#,##0.00'
-    sheet.cell(row=totals_row, column=13, value=sum(expense_rows)).number_format = '#,##0.00'
+    income_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") in {"income", "transfer"} and m.get("currency") == "UYU"]
+    expense_rows = [float(m.get("amount") or 0) for m in report_movements if m.get("direction") in {"expense", "transfer"} and m.get("currency") == "UYU"]
+    sheet.cell(row=totals_row, column=13, value=sum(income_rows)).number_format = '#,##0.00'
+    sheet.cell(row=totals_row, column=14, value=sum(expense_rows)).number_format = '#,##0.00'
     for cell in sheet[totals_row]:
         cell.fill = PatternFill("solid", fgColor=pale_green)
         cell.font = Font(bold=True, color=dark_green)
@@ -502,17 +594,17 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
 
     signature_row = totals_row + 4
     sheet.merge_cells(start_row=signature_row, start_column=1, end_row=signature_row, end_column=5)
-    sheet.merge_cells(start_row=signature_row, start_column=9, end_row=signature_row, end_column=13)
+    sheet.merge_cells(start_row=signature_row, start_column=9, end_row=signature_row, end_column=14)
     sheet.cell(row=signature_row, column=1, value="Firma del cajero: __________________________________")
     sheet.cell(row=signature_row, column=9, value="Firma del responsable: ____________________________")
     sheet.cell(row=signature_row + 2, column=1, value="Aclaracion: ______________________________________")
     sheet.cell(row=signature_row + 2, column=9, value="Aclaracion: ______________________________________")
 
-    widths = [9, 13, 16, 16, 14, 16, 13, 13, 28, 18, 9, 14, 14]
+    widths = [9, 13, 16, 16, 14, 18, 16, 13, 13, 28, 18, 9, 14, 14]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
-    sheet.auto_filter.ref = f"A{header_row}:M{max(header_row, totals_row - 2)}"
-    sheet.print_area = f"A1:M{signature_row + 3}"
+    sheet.auto_filter.ref = f"A{header_row}:N{max(header_row, totals_row - 2)}"
+    sheet.print_area = f"A1:N{signature_row + 3}"
 
     path = Path(gettempdir()) / f"reporte-caja-{selected_date.isoformat()}-{uuid4().hex[:8]}.xlsx"
     workbook.save(path)
@@ -524,11 +616,13 @@ def monthly_results(year: int) -> list[dict]:
     rows: list[dict] = []
     for month in range(1, 13):
         movements = list(collection("accounting_movements").find({"brand_id": "casa", "year": year, "month": month}, {"_id": 0}))
-        income = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income")
+        sales = [m for m in movements if m.get("direction") == "income" and m.get("category") in {"facturas", "factura_credito"}]
+        income = sum(float(m.get("amount") or 0) for m in sales)
         expenses = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense")
-        card_sales = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income" and m.get("payment_method") in {"visa", "master", "maestro"})
-        credit_sales = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income" and m.get("category") == "factura_credito")
-        cash_sales = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "income" and m.get("payment_method") == "efectivo")
+        card_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("payment_method") in CARD_PAYMENT_METHODS)
+        bank_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("payment_method") in BANK_PAYMENT_METHODS)
+        credit_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("category") == "factura_credito")
+        cash_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("payment_method") == "efectivo")
         supplier_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"proveedores", "costo_venta"})
         payroll = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") == "sueldos")
         fixed_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"impuestos", "servicios", "costos_fijos"})
@@ -539,6 +633,7 @@ def monthly_results(year: int) -> list[dict]:
             "gross_sales": round(income, 2),
             "cash_sales": round(cash_sales, 2),
             "card_sales": round(card_sales, 2),
+            "bank_sales": round(bank_sales, 2),
             "credit_sales": round(credit_sales, 2),
             "fixed_costs": round(fixed_costs, 2),
             "other_costs": round(other_costs, 2),
@@ -553,5 +648,5 @@ def monthly_results(year: int) -> list[dict]:
 
 def annual_result(year: int) -> dict:
     rows = monthly_results(year)
-    keys = ["gross_sales", "cash_sales", "card_sales", "credit_sales", "fixed_costs", "other_costs", "payroll", "supplier_costs", "total_costs", "operating_result"]
+    keys = ["gross_sales", "cash_sales", "card_sales", "bank_sales", "credit_sales", "fixed_costs", "other_costs", "payroll", "supplier_costs", "total_costs", "operating_result"]
     return {"year": year, **{key: round(sum(float(row[key]) for row in rows), 2) for key in keys}}
