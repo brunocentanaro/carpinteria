@@ -28,6 +28,12 @@ INVOICE_STATUSES = {"pendiente", "parcial", "pagada", "no_aplica"}
 CARD_PAYMENT_METHODS = {"tarjeta", "visa", "master", "maestro", "mercadolibre"}
 BANK_PAYMENT_METHODS = {"deposito", "transferencia"}
 CARD_SETTLEMENT_CATEGORY = "acreditacion_tarjeta"
+CARD_PAYMENT_PLANS = {
+    "debito": ("debito", 1),
+    "credito_1": ("credito", 1),
+    "credito_2": ("credito", 2),
+    "credito_3": ("credito", 3),
+}
 
 
 def _now() -> datetime:
@@ -133,6 +139,18 @@ def _account_balances(movements: list[dict]) -> dict:
     return {key: round(value, 2) for key, value in balances.items()}
 
 
+def _payment_method_detail(movement: dict) -> str:
+    method = _clean(movement.get("payment_method"))
+    card_type = _clean(movement.get("card_payment_type"))
+    installments = int(movement.get("card_installments") or 0)
+    if method not in CARD_PAYMENT_METHODS or not card_type:
+        return method
+    if card_type == "debito":
+        return f"{method} - debito"
+    installment_label = "cuota" if installments == 1 else "cuotas"
+    return f"{method} - credito {installments} {installment_label}"
+
+
 def _ensure_storage() -> None:
     collection("accounting_movements").create_index("id", unique=True)
     collection("accounting_movements").create_index([("brand_id", 1), ("year", 1), ("month", 1), ("workday_number", 1)])
@@ -197,6 +215,13 @@ def register_movement(data: dict, user: str) -> dict:
         raise ValueError("Las facturas a credito deben quedar en cuentas por cobrar")
     if direction == "income" and category == "facturas" and payment_method == "credito":
         raise ValueError("Usa la categoria factura_credito para una venta a credito")
+    card_plan = _clean(data.get("card_plan")).lower()
+    card_payment_type = ""
+    card_installments = 0
+    if direction == "income" and category == "facturas" and payment_method in CARD_PAYMENT_METHODS:
+        if card_plan not in CARD_PAYMENT_PLANS:
+            raise ValueError("Selecciona debito o credito en 1, 2 o 3 cuotas")
+        card_payment_type, card_installments = CARD_PAYMENT_PLANS[card_plan]
     if direction == "transfer" and category == CARD_SETTLEMENT_CATEGORY and payment_method not in CARD_PAYMENT_METHODS:
         raise ValueError("Selecciona la tarjeta o financiera que realizo la acreditacion")
     amount = _positive_money(data.get("amount"))
@@ -239,6 +264,8 @@ def register_movement(data: dict, user: str) -> dict:
         "category": category,
         "subcategory": _clean(data.get("subcategory")),
         "payment_method": payment_method,
+        "card_payment_type": card_payment_type,
+        "card_installments": card_installments,
         "origin_account": "financiera" if category == CARD_SETTLEMENT_CATEGORY else "",
         "destination_account": _destination_account(category, payment_method),
         "amount": amount,
@@ -553,7 +580,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
             direction_labels.get(movement.get("direction"), movement.get("direction", "")),
             movement.get("category", ""),
             movement.get("subcategory", ""),
-            movement.get("payment_method", ""),
+            _payment_method_detail(movement),
             "financiera -> banco" if movement.get("category") == CARD_SETTLEMENT_CATEGORY else _clean(movement.get("destination_account")) or _destination_account(movement.get("category"), movement.get("payment_method")),
             movement.get("invoice_number", ""),
             movement.get("issue_date", ""),
@@ -572,7 +599,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
         for cell in sheet[row]:
             cell.fill = fill
             cell.border = Border(bottom=Side(style="hair", color=border_color))
-            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {4, 7, 10, 11})
+            cell.alignment = Alignment(vertical="top", wrap_text=cell.column in {4, 5, 6, 7, 10, 11})
 
     if not report_movements:
         sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 2, end_column=14)
@@ -600,7 +627,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
     sheet.cell(row=signature_row + 2, column=1, value="Aclaracion: ______________________________________")
     sheet.cell(row=signature_row + 2, column=9, value="Aclaracion: ______________________________________")
 
-    widths = [9, 13, 16, 16, 14, 18, 16, 13, 13, 28, 18, 9, 14, 14]
+    widths = [9, 13, 16, 16, 26, 20, 16, 13, 13, 28, 18, 9, 14, 14]
     for index, width in enumerate(widths, start=1):
         sheet.column_dimensions[chr(64 + index)].width = width
     sheet.auto_filter.ref = f"A{header_row}:N{max(header_row, totals_row - 2)}"

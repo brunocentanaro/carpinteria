@@ -126,6 +126,30 @@ class AccountingDestinationTests(unittest.TestCase):
         self.assertEqual(result["movement"]["origin_account"], "financiera")
         self.assertEqual(result["movement"]["destination_account"], "banco")
 
+    def test_card_sale_requires_debit_or_credit_installments(self) -> None:
+        sale = {
+            "direction": "income",
+            "category": "facturas",
+            "payment_method": "master",
+            "amount": 2400,
+            "currency": "UYU",
+            "invoice_number": "A105",
+            "issue_date": "2026-07-04",
+            "due_date": "2026-07-04",
+            "date": "2026-07-04",
+            "year": 2026,
+            "month": 7,
+            "workday_number": 4,
+        }
+
+        with patch.object(accounting, "collection", return_value=FakeCollection()):
+            with self.assertRaisesRegex(ValueError, "debito o credito"):
+                accounting.register_movement(sale, "Juan Pirone")
+            result = accounting.register_movement({**sale, "card_plan": "credito_3"}, "Juan Pirone")
+
+        self.assertEqual(result["movement"]["card_payment_type"], "credito")
+        self.assertEqual(result["movement"]["card_installments"], 3)
+
 
 if __name__ == "__main__":
     unittest.main()

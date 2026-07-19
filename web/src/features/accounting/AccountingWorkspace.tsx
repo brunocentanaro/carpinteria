@@ -25,6 +25,8 @@ interface Movement {
   category: string;
   subcategory: string;
   payment_method: string;
+  card_payment_type?: string;
+  card_installments?: number;
   origin_account?: string;
   destination_account: string;
   amount: number;
@@ -108,6 +110,12 @@ const paymentMethods = ["efectivo", "cheque", "deposito", "transferencia", "tarj
 const cardPaymentMethods = new Set(["tarjeta", "visa", "master", "maestro", "mercadolibre"]);
 const bankPaymentMethods = new Set(["deposito", "transferencia"]);
 const salePaymentMethods = ["efectivo", "transferencia", "deposito", "tarjeta", "visa", "master", "maestro", "mercadolibre"];
+const cardPaymentPlans = [
+  { value: "debito", label: "Debito" },
+  { value: "credito_1", label: "Credito - 1 cuota" },
+  { value: "credito_2", label: "Credito - 2 cuotas" },
+  { value: "credito_3", label: "Credito - 3 cuotas" },
+];
 const paymentMethodLabels: Record<string, string> = {
   efectivo: "Efectivo",
   cheque: "Cheque",
@@ -137,6 +145,14 @@ function destinationFor(category: string, paymentMethod: string) {
   if (cardPaymentMethods.has(paymentMethod)) return "financiera";
   if (paymentMethod === "cheque") return "cheques";
   return "por_clasificar";
+}
+
+function movementPaymentLabel(movement: Movement) {
+  const method = paymentMethodLabels[movement.payment_method] || movement.payment_method;
+  if (!movement.card_payment_type) return method;
+  if (movement.card_payment_type === "debito") return `${method} · Debito`;
+  const installments = movement.card_installments || 1;
+  return `${method} · Credito ${installments} ${installments === 1 ? "cuota" : "cuotas"}`;
 }
 
 function currentYear() { return new Date().getFullYear(); }
@@ -223,6 +239,7 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
     category: "facturas",
     subcategory: "",
     payment_method: "efectivo",
+    card_plan: "",
     amount: "",
     currency: "UYU",
     description: "",
@@ -238,8 +255,9 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
   const isSalesInvoice = draft.direction === "income" && ["facturas", "factura_credito"].includes(draft.category);
   const isCardSettlement = draft.direction === "transfer" && draft.category === "acreditacion_tarjeta";
   const isCreditSalesInvoice = isSalesInvoice && draft.category === "factura_credito";
+  const isCardSale = isSalesInvoice && cardPaymentMethods.has(draft.payment_method);
   const saleDestination = destinationFor(draft.category, draft.payment_method);
-  const invoiceComplete = !isSalesInvoice || !!(draft.invoice_number.trim() && draft.issue_date && draft.due_date && draft.due_date >= draft.issue_date);
+  const invoiceComplete = !isSalesInvoice || !!(draft.invoice_number.trim() && draft.issue_date && draft.due_date && draft.due_date >= draft.issue_date && (!isCardSale || draft.card_plan));
   const totals = useMemo(() => {
     const uyuMovements = data.movements.filter((m) => m.currency === "UYU");
     const income = uyuMovements.filter((m) => m.direction === "income").reduce((sum, m) => sum + m.amount, 0);
@@ -247,6 +265,10 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
     return { income, expenses };
   }, [data.movements]);
   function save() {
+    if (isCardSale && !draft.card_plan) {
+      toast.error("Selecciona debito o credito en 1, 2 o 3 cuotas");
+      return;
+    }
     if (isSalesInvoice && !invoiceComplete) {
       toast.error("Completa numero, fecha de emision y vencimiento de la factura");
       return;
@@ -280,11 +302,11 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
         month,
         workday_number: Number(draft.workday_number),
       });
-      setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", invoice_number: "", due_date: "", supplier_invoice_id: "" }));
+      setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", invoice_number: "", due_date: "", card_plan: "", supplier_invoice_id: "" }));
       return;
     }
     onSave({ ...draft, year, month, amount: Number(draft.amount) });
-    setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", invoice_number: "", due_date: "", supplier_invoice_id: "" }));
+    setDraft((prev) => ({ ...prev, amount: "", description: "", reference: "", invoice_number: "", due_date: "", card_plan: "", supplier_invoice_id: "" }));
   }
   async function downloadDailyReport() {
     setExporting(true);
@@ -325,8 +347,8 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
         <fieldset className="rounded-md border p-4"><legend className="px-1 text-sm font-semibold">Datos del movimiento</legend><div className="grid gap-3 sm:grid-cols-2">
         <Field label="Dia trabajado"><Input type="number" min="1" value={draft.workday_number} onChange={(e) => setDraft({ ...draft, workday_number: e.target.value })} /></Field>
         <Field label="Fecha"><Input type="date" value={draft.date} onChange={(e) => setDraft({ ...draft, date: e.target.value, issue_date: e.target.value })} /></Field>
-        <Field label="Tipo"><select value={draft.direction} onChange={(e) => { const direction = e.target.value as Direction; const category = categoriesByDirection[direction][0]; setDraft({ ...draft, direction, category, payment_method: direction === "income" && category === "factura_credito" ? "credito" : "efectivo", supplier_invoice_id: "" }); }} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="income">Entrada</option><option value="expense">Salida</option><option value="transfer">Transferencia</option></select></Field>
-        <Field label="Categoria"><select value={draft.category} onChange={(e) => { const category = e.target.value; setDraft({ ...draft, category, payment_method: category === "factura_credito" ? "credito" : category === "acreditacion_tarjeta" ? "tarjeta" : draft.payment_method === "credito" ? "efectivo" : draft.payment_method, currency: category === "acreditacion_tarjeta" ? "UYU" : draft.currency, supplier_invoice_id: "" }); }} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{categoriesByDirection[draft.direction as Direction].map((category) => <option key={category} value={category}>{category === "acreditacion_tarjeta" ? "Acreditacion de tarjeta" : category}</option>)}</select></Field>
+        <Field label="Tipo"><select value={draft.direction} onChange={(e) => { const direction = e.target.value as Direction; const category = categoriesByDirection[direction][0]; setDraft({ ...draft, direction, category, payment_method: direction === "income" && category === "factura_credito" ? "credito" : "efectivo", card_plan: "", supplier_invoice_id: "" }); }} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="income">Entrada</option><option value="expense">Salida</option><option value="transfer">Transferencia</option></select></Field>
+        <Field label="Categoria"><select value={draft.category} onChange={(e) => { const category = e.target.value; setDraft({ ...draft, category, payment_method: category === "factura_credito" ? "credito" : category === "acreditacion_tarjeta" ? "tarjeta" : draft.payment_method === "credito" ? "efectivo" : draft.payment_method, card_plan: "", currency: category === "acreditacion_tarjeta" ? "UYU" : draft.currency, supplier_invoice_id: "" }); }} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{categoriesByDirection[draft.direction as Direction].map((category) => <option key={category} value={category}>{category === "acreditacion_tarjeta" ? "Acreditacion de tarjeta" : category}</option>)}</select></Field>
         </div></fieldset>
         <fieldset className="rounded-md border p-4"><legend className="px-1 text-sm font-semibold">Importe y medio</legend><div className="grid gap-3 sm:grid-cols-2">
         {!isSalesInvoice && !isCardSettlement ? <Field label="Medio"><select value={draft.payment_method} onChange={(e) => setDraft({ ...draft, payment_method: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{paymentMethods.map((method) => <option key={method} value={method}>{paymentMethodLabels[method]}</option>)}</select></Field> : null}
@@ -338,7 +360,8 @@ function DailySheet({ data, year, month, saving, canEdit, onSave, onSupplierPaym
           <Field label="Numero de factura *"><Input required value={draft.invoice_number} onChange={(e) => setDraft({ ...draft, invoice_number: e.target.value })} /></Field>
           <Field label="Fecha de emision *"><Input required type="date" value={draft.issue_date} onChange={(e) => setDraft({ ...draft, issue_date: e.target.value })} /></Field>
           <Field label="Fecha de vencimiento *"><Input required type="date" min={draft.issue_date} value={draft.due_date} onChange={(e) => setDraft({ ...draft, due_date: e.target.value })} /></Field>
-          <Field label="Medio de cobro *"><select required disabled={isCreditSalesInvoice} value={draft.payment_method} onChange={(e) => setDraft({ ...draft, payment_method: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{(isCreditSalesInvoice ? ["credito"] : salePaymentMethods).map((method) => <option key={method} value={method}>{paymentMethodLabels[method]}</option>)}</select></Field>
+          <Field label="Medio de cobro *"><select required disabled={isCreditSalesInvoice} value={draft.payment_method} onChange={(e) => { const payment_method = e.target.value; setDraft({ ...draft, payment_method, card_plan: cardPaymentMethods.has(payment_method) ? draft.card_plan : "" }); }} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{(isCreditSalesInvoice ? ["credito"] : salePaymentMethods).map((method) => <option key={method} value={method}>{paymentMethodLabels[method]}</option>)}</select></Field>
+          {isCardSale ? <Field label="Modalidad de tarjeta *"><select required value={draft.card_plan} onChange={(e) => setDraft({ ...draft, card_plan: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm"><option value="">Seleccionar modalidad</option>{cardPaymentPlans.map((plan) => <option key={plan.value} value={plan.value}>{plan.label}</option>)}</select></Field> : null}
         </div><div className="mt-3 rounded-md border border-primary/20 bg-background/70 px-3 py-2 text-sm"><span className="text-muted-foreground">Destino contable:</span> <span className="font-medium">{destinationLabels[saleDestination]}</span>. {saleDestination === "caja" ? "Este cobro aumenta el saldo en caja." : saleDestination === "banco" ? "Este cobro aumenta el saldo bancario registrado." : saleDestination === "financiera" ? "Queda pendiente en la financiera hasta que sea depositado en el banco." : "Queda registrado como una cuenta pendiente de cobro."}</div></fieldset> : null}
         {isCardSettlement ? <fieldset className="rounded-md border border-primary/30 bg-primary/5 p-4 lg:col-span-2"><legend className="px-1 text-sm font-semibold text-primary">Acreditacion de tarjeta en banco</legend><div className="grid gap-3 md:grid-cols-2"><Field label="Tarjeta / financiera *"><select required value={draft.payment_method} onChange={(e) => setDraft({ ...draft, payment_method: e.target.value })} className="h-9 w-full rounded-md border bg-background px-3 text-sm">{["tarjeta", "visa", "master", "maestro", "mercadolibre"].map((method) => <option key={method} value={method}>{paymentMethodLabels[method]}</option>)}</select></Field><div className="rounded-md border border-primary/20 bg-background/70 px-3 py-2 text-sm"><span className="font-medium">Financiera → Banco</span><p className="text-muted-foreground">Resta el importe pendiente de la financiera y lo suma al banco, sin registrar una venta nueva.</p></div></div></fieldset> : null}
         {isSupplierPayment ? <fieldset className="rounded-md border border-primary/30 bg-primary/5 p-4 lg:col-span-2"><legend className="px-1 text-sm font-semibold text-primary">Cancelacion de factura de compra</legend><Field label="Factura que se cancela *"><select value={draft.supplier_invoice_id} onChange={(e) => {
@@ -389,7 +412,7 @@ function AnnualPanel({ data }: { data: AccountingData }) {
 }
 
 function MovementTable({ movements }: { movements: Movement[] }) {
-  return <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Movimientos cargados</h2></div>{movements.length === 0 ? <Empty text="Todavia no hay movimientos en este mes." /> : <div className="overflow-x-auto"><table className="w-full min-w-[1240px] text-sm"><thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Dia</th><th className="px-4 py-3">Tipo</th><th className="px-4 py-3">Categoria</th><th className="px-4 py-3">Factura</th><th className="px-4 py-3">Emision</th><th className="px-4 py-3">Vencimiento</th><th className="px-4 py-3">Medio</th><th className="px-4 py-3">Destino</th><th className="px-4 py-3">Detalle</th><th className="px-4 py-3 text-right">Importe</th></tr></thead><tbody className="divide-y">{movements.map((m) => <tr key={m.id}><td className="px-4 py-3">{m.workday_number}</td><td className="px-4 py-3"><Badge variant={m.direction === "income" ? "default" : m.direction === "expense" ? "secondary" : "outline"}>{m.direction === "income" ? "Entrada" : m.direction === "expense" ? "Salida" : "Transferencia"}</Badge></td><td className="px-4 py-3">{m.category === "acreditacion_tarjeta" ? "Acreditacion de tarjeta" : m.category}</td><td className="px-4 py-3 font-medium">{m.invoice_number || "-"}</td><td className="px-4 py-3">{m.issue_date || "-"}</td><td className="px-4 py-3">{m.due_date || "-"}</td><td className="px-4 py-3">{paymentMethodLabels[m.payment_method] || m.payment_method}</td><td className="px-4 py-3"><Badge variant="outline">{m.origin_account ? `${destinationLabels[m.origin_account] || m.origin_account} → ${destinationLabels[m.destination_account] || m.destination_account}` : destinationLabels[m.destination_account] || m.destination_account || "-"}</Badge></td><td className="px-4 py-3">{m.description || m.reference || "-"}</td><td className="px-4 py-3 text-right font-medium">{money(m.amount, m.currency)}</td></tr>)}</tbody></table></div>}</section>;
+  return <section className="overflow-hidden border bg-card"><div className="border-b px-4 py-3"><h2 className="font-semibold">Movimientos cargados</h2></div>{movements.length === 0 ? <Empty text="Todavia no hay movimientos en este mes." /> : <div className="overflow-x-auto"><table className="w-full min-w-[1240px] text-sm"><thead className="bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-3">Dia</th><th className="px-4 py-3">Tipo</th><th className="px-4 py-3">Categoria</th><th className="px-4 py-3">Factura</th><th className="px-4 py-3">Emision</th><th className="px-4 py-3">Vencimiento</th><th className="px-4 py-3">Medio</th><th className="px-4 py-3">Destino</th><th className="px-4 py-3">Detalle</th><th className="px-4 py-3 text-right">Importe</th></tr></thead><tbody className="divide-y">{movements.map((m) => <tr key={m.id}><td className="px-4 py-3">{m.workday_number}</td><td className="px-4 py-3"><Badge variant={m.direction === "income" ? "default" : m.direction === "expense" ? "secondary" : "outline"}>{m.direction === "income" ? "Entrada" : m.direction === "expense" ? "Salida" : "Transferencia"}</Badge></td><td className="px-4 py-3">{m.category === "acreditacion_tarjeta" ? "Acreditacion de tarjeta" : m.category}</td><td className="px-4 py-3 font-medium">{m.invoice_number || "-"}</td><td className="px-4 py-3">{m.issue_date || "-"}</td><td className="px-4 py-3">{m.due_date || "-"}</td><td className="px-4 py-3">{movementPaymentLabel(m)}</td><td className="px-4 py-3"><Badge variant="outline">{m.origin_account ? `${destinationLabels[m.origin_account] || m.origin_account} → ${destinationLabels[m.destination_account] || m.destination_account}` : destinationLabels[m.destination_account] || m.destination_account || "-"}</Badge></td><td className="px-4 py-3">{m.description || m.reference || "-"}</td><td className="px-4 py-3 text-right font-medium">{money(m.amount, m.currency)}</td></tr>)}</tbody></table></div>}</section>;
 }
 
 function PayablesTable({ invoices }: { invoices: SupplierInvoice[] }) {
