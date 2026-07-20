@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import xml.etree.ElementTree as ET
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ USD_CODE = "2225"
 FALLBACK_USD_UYU = 40.0
 USD_UYU_COVERAGE = 2.0
 CACHE_PATH = Path(__file__).resolve().parents[1] / ".cache" / "bcu_usd.json"
+BCU_SOAP_ACTION = "Cotizaaction/AWSBCUCOTIZACIONES.Execute"
 
 
 def _read_cached_usd() -> tuple[float, str] | None:
@@ -115,3 +117,61 @@ def fetch_bcu_usd(strict: bool = False) -> tuple[float, str]:
     tc = float(last.group(2))
     _write_cached_usd(tc, fecha)
     return _with_coverage(tc, fecha)
+
+
+def fetch_bcu_accounting_usd(transaction_date: date | str) -> dict:
+    """Return the official BCU USD-billete buying rate immediately preceding a transaction.
+
+    Accounting never uses the commercial coverage or a fallback value. Querying a
+    calendar window and selecting the latest published observation strictly before
+    the transaction date also handles weekends and BCU non-publishing days.
+    """
+    if isinstance(transaction_date, str):
+        transaction_date = date.fromisoformat(transaction_date)
+    end_date = transaction_date - timedelta(days=1)
+    start_date = end_date - timedelta(days=14)
+    soap = f'''<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cot="Cotiza">
+  <soapenv:Body><cot:wsbcucotizaciones.Execute><cot:Entrada>
+    <cot:Moneda><cot:item>{USD_CODE}</cot:item></cot:Moneda>
+    <cot:FechaDesde>{start_date.isoformat()}</cot:FechaDesde>
+    <cot:FechaHasta>{end_date.isoformat()}</cot:FechaHasta>
+    <cot:Grupo>0</cot:Grupo>
+  </cot:Entrada></cot:wsbcucotizaciones.Execute></soapenv:Body>
+</soapenv:Envelope>'''
+    response = requests.post(
+        BCU_URL,
+        data=soap.encode("utf-8"),
+        headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": BCU_SOAP_ACTION},
+        timeout=(5, 15),
+    )
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+
+    def child_text(element: ET.Element, local_name: str) -> str:
+        for child in element.iter():
+            if child.tag.rsplit("}", 1)[-1] == local_name:
+                return (child.text or "").strip()
+        return ""
+
+    observations = []
+    for element in root.iter():
+        if element.tag.rsplit("}", 1)[-1] != "datoscotizaciones.dato":
+            continue
+        observed_date = date.fromisoformat(child_text(element, "Fecha")[:10])
+        rate = float(child_text(element, "TCC"))
+        if observed_date < transaction_date and rate > 0:
+            observations.append((observed_date, rate))
+    if not observations:
+        raise RuntimeError(f"BCU no devolvio una cotizacion USD anterior a {transaction_date.isoformat()}")
+    observed_date, rate = max(observations, key=lambda item: item[0])
+    return {
+        "currency": "USD",
+        "functional_currency": "UYU",
+        "presentation_currency": "UYU",
+        "rate": round(rate, 6),
+        "rate_date": observed_date.isoformat(),
+        "transaction_date": transaction_date.isoformat(),
+        "source": "BCU DLS. USA BILLETE TCC",
+        "bcu_currency_code": USD_CODE,
+    }

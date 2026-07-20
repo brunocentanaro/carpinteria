@@ -3053,6 +3053,50 @@ def handle_accounting_movement(data: dict) -> dict:
     return register_movement(data.get("movement", {}), str(data.get("updated_by", "")))
 
 
+def handle_accounting_replace_movement(data: dict) -> dict:
+    from .accounting import replace_movement
+    return replace_movement(
+        str(data.get("movement_id") or ""),
+        list(data.get("replacements") or []),
+        str(data.get("updated_by", "")),
+    )
+
+
+def handle_accounting_correct_movement(data: dict) -> dict:
+    from .accounting import correct_movement_direction
+    return correct_movement_direction(
+        str(data.get("movement_id") or ""),
+        str(data.get("direction") or ""),
+        str(data.get("updated_by", "")),
+    )
+
+
+def handle_accounting_correct_movement_amount(data: dict) -> dict:
+    from .accounting import correct_movement_amount
+    return correct_movement_amount(
+        str(data.get("movement_id") or ""),
+        data.get("amount"),
+        str(data.get("updated_by", "")),
+    )
+
+
+def handle_accounting_correct_movement_date(data: dict) -> dict:
+    from .accounting import correct_movement_date
+    return correct_movement_date(
+        str(data.get("movement_id") or ""),
+        str(data.get("date") or ""),
+        str(data.get("updated_by", "")),
+    )
+
+
+def handle_accounting_delete_movement(data: dict) -> dict:
+    from .accounting import delete_duplicate_movement
+    return delete_duplicate_movement(
+        str(data.get("movement_id") or ""),
+        str(data.get("updated_by", "")),
+    )
+
+
 def handle_accounting_supplier_invoice(data: dict) -> dict:
     from .accounting import upsert_supplier_invoice
     return upsert_supplier_invoice(data.get("invoice", {}), str(data.get("updated_by", "")))
@@ -3066,6 +3110,30 @@ def handle_accounting_supplier_payment(data: dict) -> dict:
 def handle_accounting_daily_supplier_payment(data: dict) -> dict:
     from .accounting import register_daily_supplier_payment
     return register_daily_supplier_payment(data.get("payment", {}), str(data.get("updated_by", "")))
+
+
+def handle_accounting_labor_provision(data: dict) -> dict:
+    from .accounting import register_labor_provision
+    return register_labor_provision(data.get("provision", {}), str(data.get("updated_by", "")))
+
+
+def handle_accounting_sale_cost(data: dict) -> dict:
+    from .accounting import register_sale_cost
+    return register_sale_cost(data.get("sale_cost", {}), str(data.get("updated_by", "")))
+
+
+def handle_accounting_close_day(data: dict) -> dict:
+    from .accounting import close_accounting_day
+    return close_accounting_day(str(data.get("date") or ""), str(data.get("updated_by", "")))
+
+
+def handle_accounting_classify_supplier_invoice(data: dict) -> dict:
+    from .accounting import classify_supplier_invoice
+    return classify_supplier_invoice(
+        str(data.get("invoice_id") or ""),
+        str(data.get("classification") or ""),
+        str(data.get("updated_by", "")),
+    )
 
 
 def handle_accounting_supplier_sync(data: dict) -> dict:
@@ -3176,12 +3244,30 @@ def main() -> None:
             result = handle_accounting_list(data)
         elif action == "accounting_movement":
             result = handle_accounting_movement(data)
+        elif action == "accounting_replace_movement":
+            result = handle_accounting_replace_movement(data)
+        elif action == "accounting_correct_movement":
+            result = handle_accounting_correct_movement(data)
+        elif action == "accounting_correct_movement_amount":
+            result = handle_accounting_correct_movement_amount(data)
+        elif action == "accounting_correct_movement_date":
+            result = handle_accounting_correct_movement_date(data)
+        elif action == "accounting_delete_movement":
+            result = handle_accounting_delete_movement(data)
         elif action == "accounting_supplier_invoice":
             result = handle_accounting_supplier_invoice(data)
         elif action == "accounting_supplier_payment":
             result = handle_accounting_supplier_payment(data)
         elif action == "accounting_daily_supplier_payment":
             result = handle_accounting_daily_supplier_payment(data)
+        elif action == "accounting_labor_provision":
+            result = handle_accounting_labor_provision(data)
+        elif action == "accounting_sale_cost":
+            result = handle_accounting_sale_cost(data)
+        elif action == "accounting_close_day":
+            result = handle_accounting_close_day(data)
+        elif action == "accounting_classify_supplier_invoice":
+            result = handle_accounting_classify_supplier_invoice(data)
         elif action == "accounting_supplier_sync":
             result = handle_accounting_supplier_sync(data)
         elif action == "accounting_daily_report":

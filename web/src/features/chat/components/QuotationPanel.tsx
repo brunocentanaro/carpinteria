@@ -181,15 +181,7 @@ export function QuotationPanel({ session }: { session: Session | null }) {
 
       <OrderProgress session={session} grand={grand} />
       <OrderPaperPanel
-        key={[
-          session.id,
-          session.client_name,
-          session.client_phone,
-          session.order_summary,
-          session.payment_status,
-          session.payment_notes,
-          session.client_details_confirmed,
-        ].join("|")}
+        key={session.id}
         session={session}
       />
       {session.order_number && <FactoryOrderHeader session={session} grand={grand} />}
@@ -630,6 +622,29 @@ function OrderPaperPanel({ session }: { session: Session }) {
     });
   };
 
+  const saveText = (
+    field: "client_name" | "client_phone" | "order_summary" | "payment_notes",
+    value: string,
+    restore: (value: string) => void,
+  ) => {
+    const normalized = value.trim();
+    if (!normalized) {
+      restore(session[field]);
+      return;
+    }
+    if (normalized && normalized !== session[field]) {
+      mutation.mutate({ [field]: normalized });
+    }
+  };
+
+  const changePaymentStatus = (value: Session["payment_status"]) => {
+    if (session.client_details_confirmed && value === "unknown") return;
+    setPaymentStatus(value);
+    if (value !== "unknown" && value !== session.payment_status) {
+      mutation.mutate({ payment_status: value });
+    }
+  };
+
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 pb-3">
@@ -642,16 +657,13 @@ function OrderPaperPanel({ session }: { session: Session }) {
           </Badge>
         </div>
         {session.client_details_confirmed ? (
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            disabled={mutation.isPending}
-            onClick={() => mutation.mutate({ client_details_confirmed: false })}
+          <div
+            className="flex size-9 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
+            aria-label="Datos del cliente guardados"
+            title="Datos guardados"
           >
-            <Check className="text-emerald-600" />
-            Datos confirmados · Editar
-          </Button>
+            <Check />
+          </div>
         ) : (
           <Button
             type="button"
@@ -666,7 +678,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
           </Button>
         )}
       </CardHeader>
-      {!session.client_details_confirmed && (
+      {!draftComplete && (
         <div className="px-4 pb-3 text-xs text-amber-700">
           Complete todos los campos y confirme con el tick para guardar la solicitud.
         </div>
@@ -676,9 +688,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Cliente *
           <Input
             required
-            disabled={session.client_details_confirmed}
             value={clientName}
             onChange={(e) => setClientName(e.target.value)}
+            onBlur={() => saveText("client_name", clientName, setClientName)}
             placeholder="Nombre del cliente"
           />
         </Label>
@@ -686,9 +698,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Telefono *
           <Input
             required
-            disabled={session.client_details_confirmed}
             value={clientPhone}
             onChange={(e) => setClientPhone(e.target.value)}
+            onBlur={() => saveText("client_phone", clientPhone, setClientPhone)}
             placeholder="Telefono"
           />
         </Label>
@@ -696,18 +708,17 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Pedido segun papel *
           <Input
             required
-            disabled={session.client_details_confirmed}
             value={orderSummary}
             onChange={(e) => setOrderSummary(e.target.value)}
+            onBlur={() => saveText("order_summary", orderSummary, setOrderSummary)}
             placeholder="Resumen del pedido"
           />
         </Label>
         <Label className="space-y-1 text-xs">
           Estado de pago *
           <Select
-            disabled={session.client_details_confirmed}
             value={paymentStatus}
-            onValueChange={(value) => setPaymentStatus(value as Session["payment_status"])}
+            onValueChange={(value) => changePaymentStatus(value as Session["payment_status"])}
           >
             <SelectTrigger>
               <SelectValue />
@@ -724,9 +735,9 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Nota de pago *
           <Input
             required
-            disabled={session.client_details_confirmed}
             value={paymentNotes}
             onChange={(e) => setPaymentNotes(e.target.value)}
+            onBlur={() => saveText("payment_notes", paymentNotes, setPaymentNotes)}
             placeholder="Ej: seña en efectivo"
           />
         </Label>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
 from tempfile import gettempdir
@@ -8,6 +9,7 @@ from uuid import uuid4
 from pymongo import ReturnDocument
 
 from .db import collection
+from .exchange_rate import fetch_bcu_accounting_usd
 
 
 MOVEMENT_DIRECTIONS = {"income", "expense", "transfer"}
@@ -33,6 +35,63 @@ CARD_PAYMENT_PLANS = {
     "credito_1": ("credito", 1),
     "credito_2": ("credito", 2),
     "credito_3": ("credito", 3),
+}
+
+CHART_OF_ACCOUNTS = [
+    {"code": "1111", "name": "Caja", "class": "activo", "group": "Disponibilidades", "nature": "debit"},
+    {"code": "1112", "name": "Cheques recibidos", "class": "activo", "group": "Disponibilidades", "nature": "debit"},
+    {"code": "1113", "name": "Banco BROU", "class": "activo", "group": "Disponibilidades", "nature": "debit"},
+    {"code": "1119", "name": "Otros bancos", "class": "activo", "group": "Disponibilidades", "nature": "debit"},
+    {"code": "1120", "name": "Creditos por ventas", "class": "activo", "group": "Creditos", "nature": "debit"},
+    {"code": "1131", "name": "Visa a cobrar", "class": "activo", "group": "Financieras", "nature": "debit"},
+    {"code": "1132", "name": "Mastercard a cobrar", "class": "activo", "group": "Financieras", "nature": "debit"},
+    {"code": "1139", "name": "Otras financieras a cobrar", "class": "activo", "group": "Financieras", "nature": "debit"},
+    {"code": "1140", "name": "Mercaderias e inventarios", "class": "activo", "group": "Inventarios", "nature": "debit"},
+    {"code": "1190", "name": "Otros activos corrientes", "class": "activo", "group": "Otros activos", "nature": "debit"},
+    {"code": "1210", "name": "Propiedad, planta y equipo", "class": "activo", "group": "Activo no corriente", "nature": "debit"},
+    {"code": "2110", "name": "Proveedores", "class": "pasivo", "group": "Deudas comerciales", "nature": "credit"},
+    {"code": "2121", "name": "DGI a pagar", "class": "pasivo", "group": "Deuda fiscal", "nature": "credit"},
+    {"code": "2122", "name": "BPS a pagar", "class": "pasivo", "group": "Deuda fiscal", "nature": "credit"},
+    {"code": "2123", "name": "IMM a pagar", "class": "pasivo", "group": "Deuda fiscal", "nature": "credit"},
+    {"code": "2129", "name": "Otros impuestos a pagar", "class": "pasivo", "group": "Deuda fiscal", "nature": "credit"},
+    {"code": "2131", "name": "Sueldos a pagar", "class": "pasivo", "group": "Deudas laborales", "nature": "credit"},
+    {"code": "2132", "name": "Provision para aguinaldo", "class": "pasivo", "group": "Provisiones laborales", "nature": "credit"},
+    {"code": "2133", "name": "Provision para licencia", "class": "pasivo", "group": "Provisiones laborales", "nature": "credit"},
+    {"code": "2134", "name": "Provision para salario vacacional", "class": "pasivo", "group": "Provisiones laborales", "nature": "credit"},
+    {"code": "2140", "name": "Tarjetas a pagar", "class": "pasivo", "group": "Deudas financieras", "nature": "credit"},
+    {"code": "2190", "name": "Otros pasivos corrientes", "class": "pasivo", "group": "Otros pasivos", "nature": "credit"},
+    {"code": "2210", "name": "Pasivos no corrientes", "class": "pasivo", "group": "Pasivo no corriente", "nature": "credit"},
+    {"code": "3110", "name": "Capital y aportes", "class": "patrimonio", "group": "Capital", "nature": "credit"},
+    {"code": "3210", "name": "Reservas", "class": "patrimonio", "group": "Reservas", "nature": "credit"},
+    {"code": "3310", "name": "Resultados acumulados", "class": "patrimonio", "group": "Resultados acumulados", "nature": "credit"},
+    {"code": "3510", "name": "Retiros de propietarios", "class": "patrimonio", "group": "Retiros", "nature": "debit"},
+    {"code": "4110", "name": "Ventas", "class": "ingreso", "group": "Ingresos operativos", "nature": "credit"},
+    {"code": "4210", "name": "Otros ingresos", "class": "ingreso", "group": "Otros ingresos", "nature": "credit"},
+    {"code": "4220", "name": "Ganancias por diferencia de cambio", "class": "ingreso", "group": "Resultados financieros", "nature": "credit"},
+    {"code": "5110", "name": "Costo de ventas", "class": "gasto", "group": "Costo de ventas", "nature": "debit"},
+    {"code": "5210", "name": "Sueldos y jornales", "class": "gasto", "group": "Gastos de personal", "nature": "debit"},
+    {"code": "5220", "name": "Gasto de aguinaldo", "class": "gasto", "group": "Gastos de personal", "nature": "debit"},
+    {"code": "5230", "name": "Gasto de licencia", "class": "gasto", "group": "Gastos de personal", "nature": "debit"},
+    {"code": "5240", "name": "Gasto de salario vacacional", "class": "gasto", "group": "Gastos de personal", "nature": "debit"},
+    {"code": "5310", "name": "Impuestos y tasas", "class": "gasto", "group": "Impuestos", "nature": "debit"},
+    {"code": "5410", "name": "Servicios y costos fijos", "class": "gasto", "group": "Gastos operativos", "nature": "debit"},
+    {"code": "5420", "name": "Marketing y publicidad", "class": "gasto", "group": "Gastos operativos", "nature": "debit"},
+    {"code": "5510", "name": "Comisiones de tarjetas", "class": "gasto", "group": "Gastos financieros", "nature": "debit"},
+    {"code": "5520", "name": "Perdidas por diferencia de cambio", "class": "gasto", "group": "Gastos financieros", "nature": "debit"},
+    {"code": "5530", "name": "Mantenimiento de cuentas y comisiones bancarias", "class": "gasto", "group": "Gastos financieros", "nature": "debit"},
+    {"code": "5910", "name": "Otros gastos y perdidas", "class": "gasto", "group": "Otros gastos", "nature": "debit"},
+]
+ACCOUNT_BY_CODE = {account["code"]: account for account in CHART_OF_ACCOUNTS}
+SUPPLIER_CLASSIFICATION_ACCOUNTS = {
+    "inventory": "1140",
+    "cost_of_sales": "5110",
+    "marketing": "5420",
+    "services": "5410",
+    "taxes": "5310",
+    "property_plant_equipment": "1210",
+    "other_asset": "1190",
+    "other_expense": "5910",
+    "bank_fees": "5530",
 }
 
 
@@ -90,21 +149,59 @@ def _safe_currency(value: object) -> str:
         return "UYU"
 
 
-def _destination_account(category: object, payment_method: object) -> str:
+def _day_key(value: object) -> str:
+    return _clean(value)[:10]
+
+
+def _functional_currency_fields(currency: str, amount: float, transaction_date: str) -> dict:
+    if currency == "UYU":
+        return {
+            "functional_currency": "UYU",
+            "presentation_currency": "UYU",
+            "functional_amount": amount,
+            "exchange_rate": 1.0,
+            "exchange_rate_date": transaction_date,
+            "exchange_rate_source": "Moneda funcional UYU",
+        }
+    cached = collection("accounting_exchange_rates").find_one(
+        {"currency": "USD", "transaction_date": transaction_date}, {"_id": 0}
+    )
+    rate_data = cached or fetch_bcu_accounting_usd(transaction_date)
+    if not cached:
+        collection("accounting_exchange_rates").update_one(
+            {"currency": "USD", "transaction_date": transaction_date},
+            {"$set": {**rate_data, "created_at": _now()}},
+            upsert=True,
+        )
+    rate = float(rate_data["rate"])
+    return {
+        "functional_currency": "UYU",
+        "presentation_currency": "UYU",
+        "foreign_amount": amount,
+        "functional_amount": round(amount * rate, 2),
+        "exchange_rate": rate,
+        "exchange_rate_date": rate_data["rate_date"],
+        "exchange_rate_source": rate_data["source"],
+        "bcu_currency_code": rate_data.get("bcu_currency_code", "2225"),
+    }
+
+
+def _destination_account(category: object, payment_method: object, direction: object = "income") -> str:
     category_value = _clean(category).lower()
     method = _clean(payment_method).lower()
+    direction_value = _clean(direction).lower()
     if category_value == CARD_SETTLEMENT_CATEGORY:
         return "banco"
-    if category_value == "factura_credito" or method == "credito":
+    if direction_value == "income" and (category_value == "factura_credito" or method == "credito"):
         return "cuentas_por_cobrar"
     if method == "efectivo":
         return "caja"
     if method in BANK_PAYMENT_METHODS:
         return "banco"
     if method in CARD_PAYMENT_METHODS:
-        return "financiera"
+        return "tarjetas_por_pagar" if direction_value == "expense" else "financiera"
     if method == "cheque":
-        return "cheques"
+        return "banco" if direction_value == "expense" else "caja"
     return "por_clasificar"
 
 
@@ -122,15 +219,23 @@ def _account_balances(movements: list[dict]) -> dict:
         "cuentas_por_cobrar": "accounts_receivable",
     }
     for movement in movements:
-        if _safe_currency(movement.get("currency")) != "UYU":
+        amount = float(movement.get("functional_amount") or (movement.get("amount") if _safe_currency(movement.get("currency")) == "UYU" else 0) or 0)
+        if amount <= 0:
             continue
         destination = _clean(movement.get("destination_account")) or _destination_account(
-            movement.get("category"), movement.get("payment_method")
+            movement.get("category"), movement.get("payment_method"), movement.get("direction")
         )
+        # Legacy expense movements could have been stored as accounts receivable
+        # solely because their category was "factura_credito".  Their payment
+        # method determines the real cash/bank destination, just as it does in
+        # the journal entry.
+        if movement.get("direction") == "expense" and _clean(movement.get("category")) == "factura_credito":
+            destination = _destination_account(
+                movement.get("category"), movement.get("payment_method"), movement.get("direction")
+            )
         key = balance_key.get(destination)
         if not key:
             continue
-        amount = float(movement.get("amount") or 0)
         if movement.get("direction") == "transfer" and _clean(movement.get("category")) == CARD_SETTLEMENT_CATEGORY:
             balances["card_receivables"] -= amount
             balances["bank"] += amount
@@ -160,12 +265,94 @@ def _ensure_storage() -> None:
     collection("supplier_invoices").create_index([("brand_id", 1), ("supplier", 1), ("status", 1)])
     collection("supplier_payments").create_index("id", unique=True)
     collection("supplier_payments").create_index("supplier_invoice_id")
+    collection("accounting_adjustments").create_index("id", unique=True)
+    collection("accounting_adjustments").create_index([("brand_id", 1), ("date", 1)])
+    collection("accounting_sale_costs").create_index([("brand_id", 1), ("date", 1)], unique=True)
+    collection("accounting_exchange_rates").create_index([("currency", 1), ("transaction_date", 1)], unique=True)
+    collection("accounting_day_closures").create_index([("brand_id", 1), ("date", 1)], unique=True)
+
+
+def _last_closed_date() -> str:
+    closure = collection("accounting_day_closures").find_one(
+        {"brand_id": "casa"}, {"_id": 0, "date": 1}, sort=[("date", -1)]
+    )
+    return _day_key(closure.get("date")) if closure else ""
+
+
+def _assert_date_open(transaction_date: str) -> None:
+    last_closed = _last_closed_date()
+    if last_closed and transaction_date <= last_closed:
+        raise ValueError(f"El dia contable {transaction_date} esta cerrado. Ultimo cierre: {last_closed}")
+
+
+def _daily_control(invoices: list[dict], movements: list[dict], adjustments: list[dict], sale_costs: list[dict], cutoff: str) -> dict:
+    last_closed = _last_closed_date()
+    activity_dates = {
+        _day_key(movement.get("date")) for movement in movements if _day_key(movement.get("date")) <= cutoff
+    }
+    activity_dates.update(
+        _day_key(invoice.get("purchase_date")) for invoice in invoices
+        if _clean(invoice.get("status")) != "no_aplica" and _day_key(invoice.get("purchase_date")) <= cutoff
+    )
+    activity_dates.update(
+        _day_key(adjustment.get("date")) for adjustment in adjustments if _day_key(adjustment.get("date")) <= cutoff
+    )
+    activity_dates.discard("")
+    next_open_date = next((item for item in sorted(activity_dates) if not last_closed or item > last_closed), "")
+    blockers: list[dict] = []
+    if next_open_date:
+        day_invoices = [invoice for invoice in invoices if _day_key(invoice.get("purchase_date")) == next_open_date and _clean(invoice.get("status")) != "no_aplica"]
+        for invoice in day_invoices:
+            classification = _clean(invoice.get("accounting_classification")).lower()
+            if classification not in SUPPLIER_CLASSIFICATION_ACCOUNTS:
+                blockers.append({"type": "supplier_classification", "id": invoice.get("id"), "label": f"Factura {invoice.get('invoice_number', '')} de {invoice.get('supplier', '')} sin clasificar"})
+            if _safe_currency(invoice.get("currency")) == "USD" and not invoice.get("functional_amount"):
+                blockers.append({"type": "exchange_rate", "id": invoice.get("id"), "label": f"Factura {invoice.get('invoice_number', '')} sin conversion BCU"})
+        has_sales = any(
+            _day_key(movement.get("date")) == next_open_date
+            and _clean(movement.get("direction")) == "income"
+            and _clean(movement.get("category")) in {"facturas", "factura_credito"}
+            for movement in movements
+        )
+        has_sale_cost_resolution = any(_day_key(record.get("date")) == next_open_date for record in sale_costs)
+        if has_sales and not has_sale_cost_resolution:
+            blockers.append({"type": "sale_cost", "id": next_open_date, "label": "Costo de ventas o confirmacion sin inventario pendiente"})
+    return {
+        "last_closed_date": last_closed,
+        "next_open_date": next_open_date,
+        "blockers": blockers,
+        "can_close": bool(next_open_date) and not blockers,
+        "remaining_activity_days": sum(1 for item in activity_dates if not last_closed or item > last_closed),
+    }
+
+
+def close_accounting_day(close_date: str, user: str) -> dict:
+    _ensure_storage()
+    close_date = _required_date(close_date, "fecha de cierre")
+    invoices = list(collection("supplier_invoices").find({"brand_id": "casa"}, {"_id": 0}))
+    movements = list(collection("accounting_movements").find({"brand_id": "casa"}, {"_id": 0}))
+    adjustments = list(collection("accounting_adjustments").find({"brand_id": "casa"}, {"_id": 0}))
+    sale_costs = list(collection("accounting_sale_costs").find({"brand_id": "casa"}, {"_id": 0}))
+    control = _daily_control(invoices, movements, adjustments, sale_costs, date.today().isoformat())
+    if close_date != control["next_open_date"]:
+        raise ValueError(f"El siguiente dia contable a cerrar es {control['next_open_date'] or 'ninguno'}")
+    if control["blockers"]:
+        raise ValueError("El dia tiene pendientes y no puede cerrarse")
+    closure = {
+        "id": str(uuid4()), "brand_id": "casa", "date": close_date,
+        "closed_at": _now(), "closed_by": user,
+    }
+    collection("accounting_day_closures").insert_one(closure)
+    closure.pop("_id", None)
+    return {"closure": closure}
 
 
 def sync_ucfe_supplier_invoices(user: str = "ucfe") -> dict:
     _ensure_storage()
     created = 0
     updated = 0
+    skipped_closed = 0
+    last_closed = _last_closed_date()
     for cfe in collection("ucfe_received_cfe").find({}, {"_id": 0, "xml": 0}):
         ucfe_id = _clean(cfe.get("ucfe_id"))
         if not ucfe_id:
@@ -177,6 +364,10 @@ def sync_ucfe_supplier_invoices(user: str = "ucfe") -> dict:
         supplier = _clean(cfe.get("supplier_name")) or _clean(cfe.get("supplier_rut")) or "Proveedor UCFE"
         source_key = f"UCFE_CFE:{ucfe_id}"
         existing = collection("supplier_invoices").find_one({"source_key": source_key}, {"_id": 0})
+        document_date = _clean(cfe.get("document_date"))[:10]
+        if existing and last_closed and document_date <= last_closed:
+            skipped_closed += 1
+            continue
         payload = {
             "supplier": supplier,
             "rut": _clean(cfe.get("supplier_rut")),
@@ -184,19 +375,20 @@ def sync_ucfe_supplier_invoices(user: str = "ucfe") -> dict:
             "currency": _safe_currency(cfe.get("currency") or "UYU"),
             "amount": amount,
             "paid_amount": float(existing.get("paid_amount") or 0) if existing else 0,
-            "purchase_date": _clean(cfe.get("document_date")),
-            "due_date": _clean(existing.get("due_date") or cfe.get("document_date")) if existing else _clean(cfe.get("document_date")),
+            "purchase_date": document_date,
+            "due_date": (_clean(existing.get("due_date"))[:10] or document_date) if existing else document_date,
             "status": existing.get("status") if existing and existing.get("paid_amount") else "pendiente",
             "ucfe_cfe_id": ucfe_id,
             "source_key": source_key,
             "notes": "Factura recibida desde UCFE",
+            "accounting_classification": _clean(existing.get("accounting_classification")) if existing else "",
         }
         upsert_supplier_invoice(payload, user, ensure_storage=False)
         if existing:
             updated += 1
         else:
             created += 1
-    return {"created": created, "updated": updated}
+    return {"created": created, "updated": updated, "skipped_closed": skipped_closed}
 
 
 def register_movement(data: dict, user: str) -> dict:
@@ -253,13 +445,16 @@ def register_movement(data: dict, user: str) -> dict:
         due_date = _required_date(due_date, "fecha de vencimiento")
         if due_date < issue_date:
             raise ValueError("El vencimiento no puede ser anterior a la emision")
+    movement_date = _required_date(data.get("date"), "fecha del movimiento")
+    _assert_date_open(movement_date)
+    functional_fields = _functional_currency_fields(currency, amount, movement_date)
     movement = {
         "id": str(uuid4()),
         "brand_id": "casa",
         "year": year,
         "month": month,
         "workday_number": workday_number,
-        "date": _clean(data.get("date")),
+        "date": movement_date,
         "direction": direction,
         "category": category,
         "subcategory": _clean(data.get("subcategory")),
@@ -267,9 +462,10 @@ def register_movement(data: dict, user: str) -> dict:
         "card_payment_type": card_payment_type,
         "card_installments": card_installments,
         "origin_account": "financiera" if category == CARD_SETTLEMENT_CATEGORY else "",
-        "destination_account": _destination_account(category, payment_method),
+        "destination_account": _destination_account(category, payment_method, direction),
         "amount": amount,
         "currency": currency,
+        **functional_fields,
         "description": _clean(data.get("description")),
         "reference": _clean(data.get("reference")) or invoice_number,
         "invoice_number": invoice_number,
@@ -293,6 +489,179 @@ def register_movement(data: dict, user: str) -> dict:
     return {"movement": movement, "already_registered": False}
 
 
+def replace_movement(movement_id: str, replacements: list[dict], user: str) -> dict:
+    _ensure_storage()
+    movement_id = _clean(movement_id)
+    original = collection("accounting_movements").find_one(
+        {"id": movement_id, "brand_id": "casa"}, {"_id": 0}
+    )
+    if not original:
+        raise ValueError("El movimiento a reemplazar no existe")
+    if original.get("direction") != "income" or original.get("category") != "facturas":
+        raise ValueError("Solo se pueden desglosar movimientos de ventas")
+    if not replacements:
+        raise ValueError("Falta el detalle que reemplaza al movimiento")
+    replacement_total = round(sum(_positive_money(item.get("amount")) for item in replacements), 2)
+    if replacement_total != round(float(original.get("amount") or 0), 2):
+        raise ValueError("El detalle debe sumar exactamente el importe original")
+
+    created_ids: list[str] = []
+    try:
+        created = []
+        for index, item in enumerate(replacements, start=1):
+            payload = {
+                **item,
+                "year": original.get("year"),
+                "month": original.get("month"),
+                "workday_number": original.get("workday_number"),
+                "date": original.get("date"),
+                "direction": "income",
+                "category": "facturas",
+                "currency": original.get("currency"),
+                "issue_date": original.get("issue_date") or original.get("date"),
+                "due_date": original.get("due_date") or original.get("date"),
+                "source": "sales_breakdown",
+                "source_key": f"SALES_BREAKDOWN:{movement_id}:{index}",
+            }
+            result = register_movement(payload, user)
+            created.append(result["movement"])
+            if not result.get("already_registered"):
+                created_ids.append(result["movement"]["id"])
+        collection("accounting_movements").delete_one({"id": movement_id, "brand_id": "casa"})
+        return {"replaced_movement_id": movement_id, "movements": created, "total": replacement_total}
+    except Exception:
+        if created_ids:
+            collection("accounting_movements").delete_many({"id": {"$in": created_ids}})
+        raise
+
+
+def correct_movement_direction(movement_id: str, direction: str, user: str) -> dict:
+    _ensure_storage()
+    direction = _clean(direction).lower()
+    if direction not in {"income", "expense"}:
+        raise ValueError("La correccion debe ser entrada o salida")
+    movement = collection("accounting_movements").find_one({"id": _clean(movement_id), "brand_id": "casa"}, {"_id": 0})
+    if not movement:
+        raise ValueError("El movimiento no existe")
+    if _clean(movement.get("category")) in {"facturas", "factura_credito", "proveedores", CARD_SETTLEMENT_CATEGORY}:
+        raise ValueError("Este tipo de movimiento requiere una correccion contable especifica")
+    _assert_date_open(_day_key(movement.get("date")))
+    if _clean(movement.get("direction")) == direction:
+        return {"movement": movement, "already_corrected": True}
+    correction = {
+        "id": str(uuid4()), "brand_id": "casa", "movement_id": movement["id"],
+        "date": _day_key(movement.get("date")), "previous_direction": movement.get("direction"),
+        "new_direction": direction, "created_at": _now(), "created_by": user,
+    }
+    collection("accounting_movement_corrections").insert_one(correction)
+    updated = collection("accounting_movements").find_one_and_update(
+        {"id": movement["id"], "brand_id": "casa"},
+        {"$set": {
+            "direction": direction,
+            "destination_account": _destination_account(movement.get("category"), movement.get("payment_method"), direction),
+            "corrected_at": _now(), "corrected_by": user, "updated_at": _now(), "updated_by": user,
+        }},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    correction.pop("_id", None)
+    return {"movement": updated, "correction": correction}
+
+
+def correct_movement_amount(movement_id: str, amount: object, user: str) -> dict:
+    _ensure_storage()
+    new_amount = _positive_money(amount)
+    movement = collection("accounting_movements").find_one(
+        {"id": _clean(movement_id), "brand_id": "casa"}, {"_id": 0}
+    )
+    if not movement:
+        raise ValueError("El movimiento no existe")
+    _assert_date_open(_day_key(movement.get("date")))
+    if _safe_currency(movement.get("currency")) != "UYU":
+        raise ValueError("La correccion directa de importe solo admite movimientos en UYU")
+    previous_amount = round(float(movement.get("amount") or 0), 2)
+    if previous_amount == new_amount:
+        return {"movement": movement, "already_corrected": True}
+    now = _now()
+    correction = {
+        "id": str(uuid4()), "brand_id": "casa", "movement_id": movement["id"],
+        "date": _day_key(movement.get("date")), "field": "amount",
+        "previous_amount": previous_amount, "new_amount": new_amount,
+        "created_at": now, "created_by": user,
+    }
+    collection("accounting_movement_corrections").insert_one(correction)
+    updated = collection("accounting_movements").find_one_and_update(
+        {"id": movement["id"], "brand_id": "casa"},
+        {"$set": {
+            "amount": new_amount, "functional_amount": new_amount,
+            "corrected_at": now, "corrected_by": user,
+            "updated_at": now, "updated_by": user,
+        }},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    correction.pop("_id", None)
+    return {"movement": updated, "correction": correction}
+
+
+def correct_movement_date(movement_id: str, new_date: str, user: str) -> dict:
+    _ensure_storage()
+    corrected_date = _required_date(new_date, "fecha corregida")
+    movement = collection("accounting_movements").find_one(
+        {"id": _clean(movement_id), "brand_id": "casa"}, {"_id": 0}
+    )
+    if not movement:
+        raise ValueError("El movimiento no existe")
+    previous_date = _day_key(movement.get("date"))
+    _assert_date_open(previous_date)
+    _assert_date_open(corrected_date)
+    if previous_date == corrected_date:
+        return {"movement": movement, "already_corrected": True}
+    now = _now()
+    correction = {
+        "id": str(uuid4()), "brand_id": "casa", "movement_id": movement["id"],
+        "date": previous_date, "field": "date", "previous_date": previous_date,
+        "new_date": corrected_date, "created_at": now, "created_by": user,
+    }
+    collection("accounting_movement_corrections").insert_one(correction)
+    updated = collection("accounting_movements").find_one_and_update(
+        {"id": movement["id"], "brand_id": "casa"},
+        {"$set": {
+            "date": corrected_date, "year": int(corrected_date[:4]),
+            "month": int(corrected_date[5:7]), "corrected_at": now,
+            "corrected_by": user, "updated_at": now, "updated_by": user,
+        }},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    correction.pop("_id", None)
+    return {"movement": updated, "correction": correction}
+
+
+def delete_duplicate_movement(movement_id: str, user: str) -> dict:
+    _ensure_storage()
+    movement = collection("accounting_movements").find_one(
+        {"id": _clean(movement_id), "brand_id": "casa"}, {"_id": 0}
+    )
+    if not movement:
+        raise ValueError("El movimiento no existe")
+    _assert_date_open(_day_key(movement.get("date")))
+    audit = {
+        "id": str(uuid4()), "brand_id": "casa", "movement_id": movement["id"],
+        "date": _day_key(movement.get("date")), "field": "deleted_duplicate",
+        "previous_movement": movement, "created_at": _now(), "created_by": user,
+    }
+    collection("accounting_movement_corrections").insert_one(audit)
+    deleted = collection("accounting_movements").delete_one(
+        {"id": movement["id"], "brand_id": "casa"}
+    )
+    if deleted.deleted_count != 1:
+        collection("accounting_movement_corrections").delete_one({"id": audit["id"]})
+        raise ValueError("No se pudo eliminar el movimiento duplicado")
+    audit.pop("_id", None)
+    return {"deleted_movement": movement, "correction": audit}
+
+
 def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = True) -> dict:
     if ensure_storage:
         _ensure_storage()
@@ -305,6 +674,7 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
     if not invoice_number:
         raise ValueError("Falta numero de factura de compra")
     purchase_date = _required_date(data.get("purchase_date"), "fecha de emision")
+    _assert_date_open(purchase_date)
     due_date = _required_date(data.get("due_date"), "fecha de vencimiento")
     if due_date < purchase_date:
         raise ValueError("El vencimiento no puede ser anterior a la emision")
@@ -318,13 +688,16 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
     if status not in INVOICE_STATUSES:
         raise ValueError("Estado de factura invalido")
     now = _now()
+    currency = _currency(data.get("currency"))
+    functional_fields = _functional_currency_fields(currency, amount, purchase_date)
     invoice = {
         "brand_id": "casa",
         "supplier": supplier,
         "rut": _clean(data.get("rut")),
         "invoice_number": invoice_number,
-        "currency": _currency(data.get("currency")),
+        "currency": currency,
         "amount": amount,
+        **functional_fields,
         "paid_amount": paid_amount,
         "balance": round(max(0, amount - paid_amount), 2),
         "purchase_date": purchase_date,
@@ -332,6 +705,7 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
         "status": status,
         "ucfe_cfe_id": _clean(data.get("ucfe_cfe_id")),
         "notes": _clean(data.get("notes")),
+        "accounting_classification": _clean(data.get("accounting_classification")),
         "updated_at": now,
         "updated_by": user,
     }
@@ -360,20 +734,52 @@ def upsert_supplier_invoice(data: dict, user: str, *, ensure_storage: bool = Tru
 def register_supplier_payment(data: dict, user: str) -> dict:
     _ensure_storage()
     invoice_id = _clean(data.get("supplier_invoice_id"))
-    invoice = collection("supplier_invoices").find_one({"id": invoice_id}, {"_id": 0})
-    if not invoice:
-        raise ValueError("La factura no existe")
+    invoice = None
+    if invoice_id:
+        invoice = collection("supplier_invoices").find_one({"id": invoice_id}, {"_id": 0})
+        if not invoice:
+            raise ValueError("La factura no existe")
     amount = _positive_money(data.get("amount"))
-    if amount > float(invoice.get("balance") or 0):
-        raise ValueError("El pago supera el saldo pendiente")
+    payment_date = _required_date(data.get("payment_date"), "fecha de pago")
+    _assert_date_open(payment_date)
+    payment_currency = _currency(data.get("currency") or (invoice or {}).get("currency"))
+    functional_fields = _functional_currency_fields(payment_currency, amount, payment_date)
+    invoice_currency = ""
+    invoice_currency_amount = None
+    settlement_exchange_rate = None
+    if invoice:
+        invoice_currency = _currency(invoice.get("currency"))
+        settlement_exchange_rate = 1.0
+        if payment_currency == invoice_currency:
+            invoice_currency_amount = amount
+            if invoice_currency == "USD":
+                settlement_exchange_rate = float(functional_fields.get("exchange_rate") or 0)
+        elif {payment_currency, invoice_currency} == {"UYU", "USD"}:
+            invoice_currency_amount = _positive_money(data.get("invoice_currency_amount"))
+            if payment_currency == "UYU":
+                settlement_exchange_rate = round(amount / invoice_currency_amount, 6)
+            else:
+                settlement_exchange_rate = round(invoice_currency_amount / amount, 6)
+        else:
+            raise ValueError("No se puede convertir la moneda del pago a la moneda de la factura")
+        invoice_balance = round(float(invoice.get("balance") or 0), 2)
+        if invoice_currency_amount > invoice_balance + 0.01:
+            raise ValueError("El pago supera el saldo pendiente convertido de la factura")
+    supplier = _clean((invoice or {}).get("supplier") or data.get("supplier"))
+    if not supplier:
+        raise ValueError("Indica el proveedor del pago")
     payment = {
         "id": str(uuid4()),
         "brand_id": "casa",
         "supplier_invoice_id": invoice_id,
-        "supplier": invoice["supplier"],
-        "payment_date": _clean(data.get("payment_date")),
+        "supplier": supplier,
+        "payment_date": payment_date,
         "amount": amount,
-        "currency": _currency(data.get("currency") or invoice.get("currency")),
+        "currency": payment_currency,
+        "invoice_currency": invoice_currency,
+        "invoice_currency_amount": invoice_currency_amount,
+        "settlement_exchange_rate": settlement_exchange_rate,
+        **functional_fields,
         "receipt_number": _clean(data.get("receipt_number")),
         "payment_method": _clean(data.get("payment_method")).lower() or "transferencia",
         "bank_reference": _clean(data.get("bank_reference")),
@@ -381,8 +787,13 @@ def register_supplier_payment(data: dict, user: str) -> dict:
         "created_at": _now(),
         "created_by": user,
     }
+    if payment["payment_method"] not in PAYMENT_METHODS - {"credito"}:
+        raise ValueError("Medio de pago invalido")
     collection("supplier_payments").insert_one(payment)
-    paid = round(float(invoice.get("paid_amount") or 0) + amount, 2)
+    if not invoice:
+        payment.pop("_id", None)
+        return {"payment": payment, "invoice": None}
+    paid = round(float(invoice.get("paid_amount") or 0) + invoice_currency_amount, 2)
     balance = round(max(0, float(invoice.get("amount") or 0) - paid), 2)
     status = "pagada" if balance == 0 else "parcial"
     updated = collection("supplier_invoices").find_one_and_update(
@@ -402,7 +813,7 @@ def register_daily_supplier_payment(data: dict, user: str) -> dict:
     invoice_number = _clean(invoice.get("invoice_number"))
     description = _clean(data.get("description"))
     if not description:
-        description = f"Pago proveedor {invoice.get('supplier', '')}".strip()
+        description = f"Pago proveedor {payment.get('supplier', '')}".strip()
         if invoice_number:
             description = f"{description} factura {invoice_number}"
     reference = _clean(data.get("reference")) or _clean(data.get("receipt_number")) or _clean(data.get("bank_reference")) or invoice_number
@@ -413,7 +824,7 @@ def register_daily_supplier_payment(data: dict, user: str) -> dict:
         "date": data.get("payment_date") or data.get("date"),
         "direction": "expense",
         "category": "proveedores",
-        "subcategory": invoice.get("supplier", ""),
+        "subcategory": payment.get("supplier", ""),
         "payment_method": data.get("payment_method"),
         "amount": payment.get("amount"),
         "currency": payment.get("currency"),
@@ -434,6 +845,457 @@ def register_daily_supplier_payment(data: dict, user: str) -> dict:
     return {**result, "movement": movement_result["movement"]}
 
 
+def register_labor_provision(data: dict, user: str) -> dict:
+    _ensure_storage()
+    provision_type = _clean(data.get("provision_type")).lower()
+    if provision_type not in {"aguinaldo", "licencia", "salario_vacacional"}:
+        raise ValueError("Tipo de provision invalido")
+    provision_date = _required_date(data.get("date"), "fecha de provision")
+    _assert_date_open(provision_date)
+    amount = _positive_money(data.get("amount"))
+    adjustment = {
+        "id": str(uuid4()),
+        "brand_id": "casa",
+        "type": "labor_provision",
+        "provision_type": provision_type,
+        "date": provision_date,
+        "amount": amount,
+        "currency": "UYU",
+        "description": _clean(data.get("description")) or f"Provision de {provision_type.replace('_', ' ')}",
+        "created_at": _now(),
+        "created_by": user,
+    }
+    collection("accounting_adjustments").insert_one(adjustment)
+    adjustment.pop("_id", None)
+    return {"adjustment": adjustment}
+
+
+def register_sale_cost(data: dict, user: str) -> dict:
+    _ensure_storage()
+    cost_date = _required_date(data.get("date"), "fecha del costo de ventas")
+    _assert_date_open(cost_date)
+    treatment = _clean(data.get("treatment")).lower()
+    if treatment not in {"inventory", "not_applicable"}:
+        raise ValueError("Tratamiento de costo de venta invalido")
+    amount = _positive_money(data.get("amount")) if treatment == "inventory" else 0.0
+    record = {
+        "id": _clean(data.get("id")) or str(uuid4()),
+        "brand_id": "casa",
+        "date": cost_date,
+        "treatment": treatment,
+        "amount": amount,
+        "currency": "UYU",
+        "functional_currency": "UYU",
+        "presentation_currency": "UYU",
+        "description": _clean(data.get("description")) or ("Costo real de mercaderias vendidas" if treatment == "inventory" else "Venta sin efecto en inventarios"),
+        "source": _clean(data.get("source")) or "determinacion_administrativa",
+        "updated_at": _now(),
+        "updated_by": user,
+    }
+    existing = collection("accounting_sale_costs").find_one({"brand_id": "casa", "date": cost_date}, {"_id": 0})
+    if existing:
+        record["id"] = existing["id"]
+    collection("accounting_sale_costs").update_one(
+        {"brand_id": "casa", "date": cost_date},
+        {"$set": record, "$setOnInsert": {"created_at": _now(), "created_by": user}},
+        upsert=True,
+    )
+    return {"sale_cost": collection("accounting_sale_costs").find_one({"brand_id": "casa", "date": cost_date}, {"_id": 0})}
+
+
+def classify_supplier_invoice(invoice_id: str, classification: str, user: str) -> dict:
+    classification = _clean(classification).lower()
+    if classification not in SUPPLIER_CLASSIFICATION_ACCOUNTS:
+        raise ValueError("Clasificacion contable invalida")
+    existing = collection("supplier_invoices").find_one({"id": _clean(invoice_id), "brand_id": "casa"}, {"_id": 0})
+    if not existing:
+        raise ValueError("La factura no existe")
+    _assert_date_open(_day_key(existing.get("purchase_date")))
+    invoice = collection("supplier_invoices").find_one_and_update(
+        {"id": _clean(invoice_id), "brand_id": "casa"},
+        {"$set": {"accounting_classification": classification, "classified_at": _now(), "classified_by": user, "updated_at": _now(), "updated_by": user}},
+        return_document=ReturnDocument.AFTER,
+        projection={"_id": 0},
+    )
+    return {"invoice": invoice}
+
+
+def _financial_account(payment_method: object) -> str:
+    method = _clean(payment_method).lower()
+    if method == "visa":
+        return "1131"
+    if method in {"master", "maestro"}:
+        return "1132"
+    return "1139"
+
+
+def _cash_account(payment_method: object, *, incoming: bool) -> str:
+    method = _clean(payment_method).lower()
+    if method == "efectivo":
+        return "1111"
+    if method == "cheque":
+        return "1112" if incoming else "1113"
+    if method in BANK_PAYMENT_METHODS:
+        return "1113"
+    if method in CARD_PAYMENT_METHODS:
+        return _financial_account(method) if incoming else "2140"
+    if method == "credito":
+        return "1120"
+    return "1190" if incoming else "2190"
+
+
+def _expense_account(movement: dict) -> str:
+    category = _clean(movement.get("category")).lower()
+    if category == "proveedores" and _clean(movement.get("supplier_invoice_id")):
+        return "2110"
+    if category in {"costo_venta", "proveedores"}:
+        return "5110"
+    if category == "impuestos":
+        return "5310"
+    if category == "sueldos":
+        return "5210"
+    if category in {"servicios", "costos_fijos"}:
+        return "5410"
+    if category == "retiros":
+        return "3510"
+    return "5910"
+
+
+def _entry(entry_id: str, entry_date: str, description: str, reference: str, source: str, lines: list[dict]) -> dict:
+    debit = round(sum(float(line.get("debit") or 0) for line in lines), 2)
+    credit = round(sum(float(line.get("credit") or 0) for line in lines), 2)
+    if debit != credit:
+        raise ValueError(f"El asiento {entry_id} no balancea")
+    enriched = []
+    for line in lines:
+        account = ACCOUNT_BY_CODE[line["account_code"]]
+        enriched.append({**line, "account_name": account["name"], "account_class": account["class"]})
+    return {
+        "id": entry_id,
+        "date": entry_date,
+        "description": description,
+        "reference": reference,
+        "source": source,
+        "currency": "UYU",
+        "debit": debit,
+        "credit": credit,
+        "balanced": True,
+        "lines": enriched,
+    }
+
+
+def _movement_entry(movement: dict, classified_invoice_ids: set[str], invoices_by_id: dict[str, dict] | None = None) -> dict | None:
+    currency = _safe_currency(movement.get("currency"))
+    amount = round(float(movement.get("functional_amount") or (movement.get("amount") if currency == "UYU" else 0) or 0), 2)
+    if amount <= 0:
+        return None
+    direction = _clean(movement.get("direction")).lower()
+    category = _clean(movement.get("category")).lower()
+    if category == "proveedores" and _clean(movement.get("supplier_invoice_id")) not in classified_invoice_ids:
+        return None
+    method = _clean(movement.get("payment_method")).lower()
+    entry_date = _clean(movement.get("date")) or f"{movement.get('year')}-{int(movement.get('month') or 1):02d}-01"
+    description = _clean(movement.get("description")) or category or "Movimiento contable"
+    reference = _clean(movement.get("reference")) or _clean(movement.get("invoice_number"))
+
+    if direction == "expense" and category == "proveedores" and _clean(movement.get("supplier_invoice_id")):
+        invoice = (invoices_by_id or {}).get(_clean(movement.get("supplier_invoice_id")), {})
+        if currency == "USD" and invoice:
+            historical_rate = float(invoice.get("exchange_rate") or 0)
+            if historical_rate <= 0:
+                return None
+            carrying_amount = round(float(movement.get("amount") or 0) * historical_rate, 2)
+            lines = [{"account_code": "2110", "debit": carrying_amount, "credit": 0.0}]
+            if amount > carrying_amount:
+                lines.append({"account_code": "5520", "debit": round(amount - carrying_amount, 2), "credit": 0.0})
+            lines.append({"account_code": _cash_account(method, incoming=False), "debit": 0.0, "credit": amount})
+            if amount < carrying_amount:
+                lines.append({"account_code": "4220", "debit": 0.0, "credit": round(carrying_amount - amount, 2)})
+            return _entry(f"MOV:{movement.get('id')}", entry_date, description, reference, "pago_proveedor_moneda_extranjera", lines)
+
+    if direction == "transfer":
+        if category == CARD_SETTLEMENT_CATEGORY:
+            debit_code, credit_code = "1113", _financial_account(method)
+        elif _clean(movement.get("source")) == "opening_balance" or category == "saldo_inicial":
+            debit_code = _cash_account(method, incoming=True)
+            credit_code = "3110"
+        elif category == "depositos":
+            debit_code, credit_code = "1113", "1111"
+        else:
+            debit_code = _cash_account(method, incoming=True)
+            credit_code = "1190"
+    elif direction == "income":
+        debit_code = _cash_account(method, incoming=True)
+        credit_code = "3110" if category == "aportes" else "4110" if category in {"facturas", "factura_credito", "tarjetas"} else "4210"
+    elif direction == "expense":
+        debit_code = _expense_account(movement)
+        credit_code = _cash_account(method, incoming=False)
+    else:
+        return None
+    return _entry(
+        f"MOV:{movement.get('id')}", entry_date, description, reference, "movimiento_diario",
+        [
+            {"account_code": debit_code, "debit": amount, "credit": 0.0},
+            {"account_code": credit_code, "debit": 0.0, "credit": amount},
+        ],
+    )
+
+
+def _supplier_invoice_entry(invoice: dict) -> dict | None:
+    if _clean(invoice.get("status")) == "no_aplica":
+        return None
+    currency = _safe_currency(invoice.get("currency"))
+    amount = round(float(invoice.get("functional_amount") or (invoice.get("amount") if currency == "UYU" else 0) or 0), 2)
+    if amount <= 0:
+        return None
+    debit_account = SUPPLIER_CLASSIFICATION_ACCOUNTS.get(_clean(invoice.get("accounting_classification")).lower())
+    if not debit_account:
+        return None
+    invoice_date = _clean(invoice.get("purchase_date"))[:10]
+    return _entry(
+        f"INV:{invoice.get('id')}", invoice_date,
+        f"Factura de {invoice.get('supplier', 'proveedor')}", _clean(invoice.get("invoice_number")), "factura_proveedor",
+        [
+            {"account_code": debit_account, "debit": amount, "credit": 0.0},
+            {"account_code": "2110", "debit": 0.0, "credit": amount},
+        ],
+    )
+
+
+def _sale_cost_entry(record: dict) -> dict | None:
+    if _clean(record.get("treatment")) != "inventory":
+        return None
+    amount = round(float(record.get("amount") or 0), 2)
+    if amount <= 0:
+        return None
+    return _entry(
+        f"COGS:{record.get('id')}", _clean(record.get("date")), _clean(record.get("description")), "", "costo_de_ventas",
+        [
+            {"account_code": "5110", "debit": amount, "credit": 0.0},
+            {"account_code": "1140", "debit": 0.0, "credit": amount},
+        ],
+    )
+
+
+def _adjustment_entry(adjustment: dict) -> dict | None:
+    if _safe_currency(adjustment.get("currency")) != "UYU" or adjustment.get("type") != "labor_provision":
+        return None
+    provision_accounts = {
+        "aguinaldo": ("5220", "2132"),
+        "licencia": ("5230", "2133"),
+        "salario_vacacional": ("5240", "2134"),
+    }
+    accounts = provision_accounts.get(_clean(adjustment.get("provision_type")))
+    if not accounts:
+        return None
+    amount = round(float(adjustment.get("amount") or 0), 2)
+    return _entry(
+        f"ADJ:{adjustment.get('id')}", _clean(adjustment.get("date")),
+        _clean(adjustment.get("description")), "", "ajuste_contable",
+        [
+            {"account_code": accounts[0], "debit": amount, "credit": 0.0},
+            {"account_code": accounts[1], "debit": 0.0, "credit": amount},
+        ],
+    )
+
+
+def _journal_and_statements(movements: list[dict], invoices: list[dict], adjustments: list[dict], sale_costs: list[dict], year: int, month: int) -> dict:
+    cutoff = date(year, month, monthrange(year, month)[1]).isoformat()
+    period_start = f"{year}-01-01"
+    entries: list[dict] = []
+    pending_currency = 0
+    pending_classification = 0
+    invoices_by_id = {_clean(invoice.get("id")): invoice for invoice in invoices}
+    classified_invoice_ids = {
+        _clean(invoice.get("id"))
+        for invoice in invoices
+        if _clean(invoice.get("accounting_classification")).lower() in SUPPLIER_CLASSIFICATION_ACCOUNTS
+    }
+    for movement in movements:
+        movement_date = _clean(movement.get("date"))
+        if movement_date and movement_date <= cutoff:
+            entry = _movement_entry(movement, classified_invoice_ids, invoices_by_id)
+            if entry:
+                entries.append(entry)
+            elif _safe_currency(movement.get("currency")) != "UYU" and not movement.get("functional_amount"):
+                pending_currency += 1
+    for invoice in invoices:
+        invoice_date = _clean(invoice.get("purchase_date"))[:10]
+        if invoice_date and invoice_date <= cutoff:
+            classification_is_valid = _clean(invoice.get("accounting_classification")).lower() in SUPPLIER_CLASSIFICATION_ACCOUNTS
+            if not classification_is_valid and _clean(invoice.get("status")) != "no_aplica":
+                pending_classification += 1
+            entry = _supplier_invoice_entry(invoice)
+            if entry:
+                entries.append(entry)
+            elif _safe_currency(invoice.get("currency")) != "UYU" and not invoice.get("functional_amount"):
+                pending_currency += 1
+    classified_usd_invoices = [
+        invoice for invoice in invoices
+        if _safe_currency(invoice.get("currency")) == "USD"
+        and _clean(invoice.get("id")) in classified_invoice_ids
+        and _clean(invoice.get("purchase_date"))[:10] <= cutoff
+        and invoice.get("exchange_rate")
+    ]
+    if classified_usd_invoices:
+        try:
+            closing_rate = float(_functional_currency_fields("USD", 1.0, cutoff)["exchange_rate"])
+            for invoice in classified_usd_invoices:
+                invoice_id = _clean(invoice.get("id"))
+                paid_to_cutoff = sum(
+                    float(movement.get("amount") or 0)
+                    for movement in movements
+                    if _clean(movement.get("supplier_invoice_id")) == invoice_id
+                    and _clean(movement.get("direction")) == "expense"
+                    and _clean(movement.get("category")) == "proveedores"
+                    and _clean(movement.get("date")) <= cutoff
+                )
+                remaining_usd = round(max(0.0, float(invoice.get("amount") or 0) - paid_to_cutoff), 2)
+                historical_value = round(remaining_usd * float(invoice.get("exchange_rate") or 0), 2)
+                closing_value = round(remaining_usd * closing_rate, 2)
+                difference = round(closing_value - historical_value, 2)
+                if not remaining_usd or not difference:
+                    continue
+                lines = (
+                    [{"account_code": "5520", "debit": difference, "credit": 0.0}, {"account_code": "2110", "debit": 0.0, "credit": difference}]
+                    if difference > 0 else
+                    [{"account_code": "2110", "debit": -difference, "credit": 0.0}, {"account_code": "4220", "debit": 0.0, "credit": -difference}]
+                )
+                entries.append(_entry(
+                    f"FXR:{invoice_id}:{cutoff}", cutoff,
+                    f"Reexpresion de saldo USD de {invoice.get('supplier', 'proveedor')}",
+                    _clean(invoice.get("invoice_number")), "remeasurement_moneda_extranjera", lines,
+                ))
+        except Exception:
+            pending_currency += len(classified_usd_invoices)
+    for adjustment in adjustments:
+        if _clean(adjustment.get("date")) <= cutoff:
+            entry = _adjustment_entry(adjustment)
+            if entry:
+                entries.append(entry)
+    for record in sale_costs:
+        if _clean(record.get("date")) <= cutoff:
+            entry = _sale_cost_entry(record)
+            if entry:
+                entries.append(entry)
+
+    sales_dates = {
+        _clean(movement.get("date"))
+        for movement in movements
+        if _clean(movement.get("date")) <= cutoff
+        and _clean(movement.get("direction")) == "income"
+        and _clean(movement.get("category")) in {"facturas", "factura_credito"}
+    }
+    resolved_sale_cost_dates = {_clean(record.get("date")) for record in sale_costs}
+    pending_sale_cost_dates = []
+    for sales_date in sorted(sales_dates - resolved_sale_cost_dates):
+        daily_sales = sum(
+            float(movement.get("functional_amount") or (movement.get("amount") if _safe_currency(movement.get("currency")) == "UYU" else 0) or 0)
+            for movement in movements if _clean(movement.get("date")) == sales_date and _clean(movement.get("direction")) == "income" and _clean(movement.get("category")) in {"facturas", "factura_credito"}
+        )
+        pending_sale_cost_dates.append({"date": sales_date, "sales_amount_uyu": round(daily_sales, 2)})
+    entries.sort(key=lambda item: (item["date"], item["id"]))
+
+    balances = {code: 0.0 for code in ACCOUNT_BY_CODE}
+    for entry in entries:
+        for line in entry["lines"]:
+            balances[line["account_code"]] += float(line.get("debit") or 0) - float(line.get("credit") or 0)
+    account_balances = []
+    for account in CHART_OF_ACCOUNTS:
+        raw = round(balances[account["code"]], 2)
+        display = raw if account["nature"] == "debit" else -raw
+        account_balances.append({**account, "balance": round(display, 2)})
+
+    def class_total(account_class: str) -> float:
+        return round(sum(item["balance"] for item in account_balances if item["class"] == account_class), 2)
+
+    assets = class_total("activo")
+    liabilities = class_total("pasivo")
+    equity_accounts = class_total("patrimonio")
+    cumulative_revenue = class_total("ingreso")
+    cumulative_expenses = class_total("gasto")
+    cumulative_result = round(cumulative_revenue - cumulative_expenses, 2)
+    equity = round(equity_accounts + cumulative_result, 2)
+
+    current_year_entries = [entry for entry in entries if period_start <= entry["date"] <= cutoff]
+    current_revenue = 0.0
+    current_expenses = 0.0
+    contributions = 0.0
+    withdrawals = 0.0
+    for entry in current_year_entries:
+        for line in entry["lines"]:
+            account_class = ACCOUNT_BY_CODE[line["account_code"]]["class"]
+            if account_class == "ingreso":
+                current_revenue += float(line.get("credit") or 0) - float(line.get("debit") or 0)
+            elif account_class == "gasto":
+                current_expenses += float(line.get("debit") or 0) - float(line.get("credit") or 0)
+            if line["account_code"] == "3110":
+                contributions += float(line.get("credit") or 0) - float(line.get("debit") or 0)
+            elif line["account_code"] == "3510":
+                withdrawals += float(line.get("debit") or 0) - float(line.get("credit") or 0)
+    current_revenue = round(current_revenue, 2)
+    current_expenses = round(current_expenses, 2)
+    current_result = round(current_revenue - current_expenses, 2)
+
+    cash_flow = {"operating": 0.0, "investing": 0.0, "financing": 0.0}
+    opening_cash = 0.0
+    for entry in entries:
+        if entry["source"] != "movimiento_diario":
+            continue
+        cash_change = 0.0
+        for line in entry["lines"]:
+            if line["account_code"] in {"1111", "1112", "1113", "1119"}:
+                cash_change += float(line.get("debit") or 0) - float(line.get("credit") or 0)
+        if entry["date"] < period_start:
+            opening_cash += cash_change
+            continue
+        if not period_start <= entry["date"] <= cutoff or cash_change == 0:
+            continue
+        codes = {line["account_code"] for line in entry["lines"]}
+        if codes & {"3110", "3510", "2210"}:
+            cash_flow["financing"] += cash_change
+        elif codes & {"1210"}:
+            cash_flow["investing"] += cash_change
+        else:
+            cash_flow["operating"] += cash_change
+    for key in cash_flow:
+        cash_flow[key] = round(cash_flow[key], 2)
+    net_cash = round(sum(cash_flow.values()), 2)
+
+    period_entries = [entry for entry in entries if entry["date"][:7] == f"{year}-{month:02d}"]
+    return {
+        "chart_of_accounts": CHART_OF_ACCOUNTS,
+        "journal_entries": period_entries,
+        "ledger_balances": account_balances,
+        "statement_of_financial_position": {
+            "assets": assets,
+            "liabilities": liabilities,
+            "equity": equity,
+            "liabilities_and_equity": round(liabilities + equity, 2),
+            "balanced": abs(assets - liabilities - equity) < 0.01,
+        },
+        "changes_in_equity": {
+            "opening_equity": round(equity - contributions + withdrawals - current_result, 2),
+            "contributions": round(contributions, 2),
+            "withdrawals": round(withdrawals, 2),
+            "result": current_result,
+            "closing_equity": equity,
+        },
+        "cash_flow": {
+            **cash_flow,
+            "opening_cash": round(opening_cash, 2),
+            "net_change": net_cash,
+            "closing_cash": round(opening_cash + net_cash, 2),
+        },
+        "result_summary": {"revenue": current_revenue, "expenses": current_expenses, "result": current_result},
+        "pending_currency_conversion": pending_currency,
+        "pending_classification": pending_classification,
+        "pending_sale_cost_dates": pending_sale_cost_dates,
+        "sale_cost_records": sorted(sale_costs, key=lambda item: _clean(item.get("date")), reverse=True),
+        "cutoff_date": cutoff,
+    }
+
+
 def list_accounting(year: int | None = None, month: int | None = None) -> dict:
     _ensure_storage()
     now = datetime.now()
@@ -445,26 +1307,33 @@ def list_accounting(year: int | None = None, month: int | None = None) -> dict:
     movements = list(collection("accounting_movements").find(movement_query, {"_id": 0}).sort([("year", -1), ("month", -1), ("workday_number", -1), ("created_at", -1)]).limit(500))
     for movement in movements:
         movement["destination_account"] = _clean(movement.get("destination_account")) or _destination_account(
-            movement.get("category"), movement.get("payment_method")
+            movement.get("category"), movement.get("payment_method"), movement.get("direction")
         )
-    balance_movements = list(collection("accounting_movements").find({
+    statement_movements = list(collection("accounting_movements").find({
         "brand_id": "casa",
         "$or": [
             {"year": {"$lt": year}},
             {"year": year, "month": {"$lte": month}},
         ],
-    }, {"_id": 0, "direction": 1, "category": 1, "payment_method": 1, "destination_account": 1, "amount": 1, "currency": 1}))
+    }, {"_id": 0}))
     invoices = list(collection("supplier_invoices").find({"brand_id": "casa"}, {"_id": 0}).sort([("status", 1), ("supplier", 1), ("purchase_date", -1)]).limit(500))
     payments = list(collection("supplier_payments").find({"brand_id": "casa"}, {"_id": 0}).sort("created_at", -1).limit(250))
+    adjustments = list(collection("accounting_adjustments").find({"brand_id": "casa"}, {"_id": 0}).sort("date", -1).limit(500))
+    sale_costs = list(collection("accounting_sale_costs").find({"brand_id": "casa"}, {"_id": 0}).sort("date", -1).limit(500))
+    reporting = _journal_and_statements(statement_movements, invoices, adjustments, sale_costs, year, month)
+    control_cutoff = min(reporting["cutoff_date"], date.today().isoformat())
     return {
         "year": year,
         "month": month,
         "movements": movements,
-        "account_balances": _account_balances(balance_movements),
+        "account_balances": _account_balances(statement_movements),
         "supplier_invoices": invoices,
         "supplier_payments": payments,
+        "adjustments": adjustments,
         "monthly_results": monthly_results(year),
         "annual_result": annual_result(year),
+        "daily_control": _daily_control(invoices, statement_movements, adjustments, sale_costs, control_cutoff),
+        **reporting,
     }
 
 
@@ -581,7 +1450,7 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
             movement.get("category", ""),
             movement.get("subcategory", ""),
             _payment_method_detail(movement),
-            "financiera -> banco" if movement.get("category") == CARD_SETTLEMENT_CATEGORY else _clean(movement.get("destination_account")) or _destination_account(movement.get("category"), movement.get("payment_method")),
+            "financiera -> banco" if movement.get("category") == CARD_SETTLEMENT_CATEGORY else _clean(movement.get("destination_account")) or _destination_account(movement.get("category"), movement.get("payment_method"), movement.get("direction")),
             movement.get("invoice_number", ""),
             movement.get("issue_date", ""),
             movement.get("due_date", ""),
@@ -640,24 +1509,50 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
 
 def monthly_results(year: int) -> list[dict]:
     _ensure_storage()
+    invoices = list(collection("supplier_invoices").find({"brand_id": "casa"}, {"_id": 0}))
+    adjustments = list(collection("accounting_adjustments").find({"brand_id": "casa"}, {"_id": 0}))
+    sale_costs = list(collection("accounting_sale_costs").find({"brand_id": "casa"}, {"_id": 0}))
+    invoices_by_id = {_clean(invoice.get("id")): invoice for invoice in invoices}
+    classified_invoice_ids = {
+        _clean(invoice.get("id"))
+        for invoice in invoices
+        if _clean(invoice.get("accounting_classification")).lower() in SUPPLIER_CLASSIFICATION_ACCOUNTS
+    }
     rows: list[dict] = []
     for month in range(1, 13):
         movements = list(collection("accounting_movements").find({"brand_id": "casa", "year": year, "month": month}, {"_id": 0}))
+        period = f"{year}-{month:02d}"
+        period_invoices = [invoice for invoice in invoices if _clean(invoice.get("purchase_date"))[:7] == period]
+        period_adjustments = [adjustment for adjustment in adjustments if _clean(adjustment.get("date"))[:7] == period]
+        period_sale_costs = [record for record in sale_costs if _clean(record.get("date"))[:7] == period]
+        entries = [entry for movement in movements if (entry := _movement_entry(movement, classified_invoice_ids, invoices_by_id))]
+        entries.extend(entry for invoice in period_invoices if (entry := _supplier_invoice_entry(invoice)))
+        entries.extend(entry for adjustment in period_adjustments if (entry := _adjustment_entry(adjustment)))
+        entries.extend(entry for record in period_sale_costs if (entry := _sale_cost_entry(record)))
+
         sales = [m for m in movements if m.get("direction") == "income" and m.get("category") in {"facturas", "factura_credito"}]
-        income = sum(float(m.get("amount") or 0) for m in sales)
-        expenses = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense")
-        card_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("payment_method") in CARD_PAYMENT_METHODS)
-        bank_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("payment_method") in BANK_PAYMENT_METHODS)
-        credit_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("category") == "factura_credito")
-        cash_sales = sum(float(m.get("amount") or 0) for m in sales if m.get("payment_method") == "efectivo")
-        supplier_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"proveedores", "costo_venta"})
-        payroll = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") == "sueldos")
-        fixed_costs = sum(float(m.get("amount") or 0) for m in movements if m.get("direction") == "expense" and m.get("category") in {"impuestos", "servicios", "costos_fijos"})
+        functional_value = lambda movement: float(movement.get("functional_amount") or (movement.get("amount") if _safe_currency(movement.get("currency")) == "UYU" else 0) or 0)
+        card_sales = sum(functional_value(m) for m in sales if m.get("payment_method") in CARD_PAYMENT_METHODS)
+        bank_sales = sum(functional_value(m) for m in sales if m.get("payment_method") in BANK_PAYMENT_METHODS)
+        credit_sales = sum(functional_value(m) for m in sales if m.get("category") == "factura_credito")
+        cash_sales = sum(functional_value(m) for m in sales if m.get("payment_method") == "efectivo")
+
+        account_changes: dict[str, float] = {}
+        for entry in entries:
+            for line in entry["lines"]:
+                code = line["account_code"]
+                account_changes[code] = account_changes.get(code, 0.0) + float(line.get("debit") or 0) - float(line.get("credit") or 0)
+        gross_sales = -account_changes.get("4110", 0.0)
+        other_income = -account_changes.get("4210", 0.0)
+        supplier_costs = account_changes.get("5110", 0.0)
+        payroll = sum(account_changes.get(code, 0.0) for code in {"5210", "5220", "5230", "5240"})
+        fixed_costs = sum(account_changes.get(code, 0.0) for code in {"5310", "5410", "5420"})
+        expenses = sum(change for code, change in account_changes.items() if ACCOUNT_BY_CODE[code]["class"] == "gasto")
         other_costs = expenses - supplier_costs - payroll - fixed_costs
         rows.append({
             "year": year,
             "month": month,
-            "gross_sales": round(income, 2),
+            "gross_sales": round(gross_sales, 2),
             "cash_sales": round(cash_sales, 2),
             "card_sales": round(card_sales, 2),
             "bank_sales": round(bank_sales, 2),
@@ -667,8 +1562,8 @@ def monthly_results(year: int) -> list[dict]:
             "payroll": round(payroll, 2),
             "supplier_costs": round(supplier_costs, 2),
             "total_costs": round(expenses, 2),
-            "operating_result": round(income - expenses, 2),
-            "movement_count": len(movements),
+            "operating_result": round(gross_sales + other_income - expenses, 2),
+            "movement_count": len(entries),
         })
     return rows
 

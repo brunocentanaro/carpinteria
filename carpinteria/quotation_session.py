@@ -527,9 +527,16 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
     }
     current = _coll().find_one({"id": session_id}, {"_id": 0}) or {}
     detail_fields = {"client_name", "client_phone", "order_summary", "payment_status", "payment_notes"}
-    unlocking = fields.get("client_details_confirmed") is False
-    if current.get("client_details_confirmed") and detail_fields.intersection(fields) and not unlocking:
-        raise ValueError("Los datos del cliente estan confirmados. Habilite la edicion antes de modificarlos.")
+    if current.get("client_details_confirmed") and detail_fields.intersection(fields):
+        candidate = {field: fields.get(field, current.get(field)) for field in detail_fields}
+        if not all([
+            str(candidate.get("client_name") or "").strip(),
+            str(candidate.get("client_phone") or "").strip(),
+            str(candidate.get("order_summary") or "").strip(),
+            candidate.get("payment_status") != "unknown",
+            str(candidate.get("payment_notes") or "").strip(),
+        ]):
+            raise ValueError("Los datos confirmados no pueden quedar vacios")
     update: dict[str, Any] = {}
     for key, value in fields.items():
         if key not in allowed:

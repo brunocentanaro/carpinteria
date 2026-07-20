@@ -38,21 +38,40 @@ export async function GET(req: NextRequest) {
 export async function POST(req: NextRequest) {
   const session = casaSession(req);
   if (!session) return NextResponse.json({ error: "Acceso de La Casa requerido" }, { status: 403 });
-  if (!canEditAccounting(session)) {
-    return NextResponse.json({ error: "Solo Juan Pirone puede editar la contabilidad" }, { status: 403 });
-  }
   try {
     const body = await req.json();
     const operation = String(body?.operation || "");
+    const accountingOnlyOperations = new Set(["replace_movement", "correct_movement", "correct_movement_amount", "correct_movement_date", "delete_movement", "supplier_invoice", "supplier_payment", "supplier_sync", "labor_provision", "sale_cost", "close_day", "classify_supplier_invoice"]);
+    if (accountingOnlyOperations.has(operation) && !canEditAccounting(session)) {
+      return NextResponse.json({ error: "Solo administracion contable puede realizar esta operacion" }, { status: 403 });
+    }
     let result: Record<string, unknown>;
     if (operation === "movement") {
       result = await callPython({ action: "accounting_movement", movement: body.movement || {}, updated_by: session.user });
+    } else if (operation === "replace_movement") {
+      result = await callPython({ action: "accounting_replace_movement", movement_id: body.movement_id, replacements: body.replacements || [], updated_by: session.user });
+    } else if (operation === "correct_movement") {
+      result = await callPython({ action: "accounting_correct_movement", movement_id: body.movement_id, direction: body.direction, updated_by: session.user });
+    } else if (operation === "correct_movement_amount") {
+      result = await callPython({ action: "accounting_correct_movement_amount", movement_id: body.movement_id, amount: body.amount, updated_by: session.user });
+    } else if (operation === "correct_movement_date") {
+      result = await callPython({ action: "accounting_correct_movement_date", movement_id: body.movement_id, date: body.date, updated_by: session.user });
+    } else if (operation === "delete_movement") {
+      result = await callPython({ action: "accounting_delete_movement", movement_id: body.movement_id, updated_by: session.user });
     } else if (operation === "supplier_invoice") {
       result = await callPython({ action: "accounting_supplier_invoice", invoice: body.invoice || {}, updated_by: session.user });
     } else if (operation === "supplier_payment") {
       result = await callPython({ action: "accounting_supplier_payment", payment: body.payment || {}, updated_by: session.user });
     } else if (operation === "daily_supplier_payment") {
       result = await callPython({ action: "accounting_daily_supplier_payment", payment: body.payment || {}, updated_by: session.user });
+    } else if (operation === "labor_provision") {
+      result = await callPython({ action: "accounting_labor_provision", provision: body.provision || {}, updated_by: session.user });
+    } else if (operation === "sale_cost") {
+      result = await callPython({ action: "accounting_sale_cost", sale_cost: body.sale_cost || {}, updated_by: session.user });
+    } else if (operation === "close_day") {
+      result = await callPython({ action: "accounting_close_day", date: body.date, updated_by: session.user });
+    } else if (operation === "classify_supplier_invoice") {
+      result = await callPython({ action: "accounting_classify_supplier_invoice", invoice_id: body.invoice_id, classification: body.classification, updated_by: session.user });
     } else if (operation === "supplier_sync") {
       result = await callPython({ action: "accounting_supplier_sync", updated_by: session.user });
     } else {
