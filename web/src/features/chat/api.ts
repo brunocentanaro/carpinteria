@@ -101,6 +101,7 @@ export async function patchSession(
     payment_notes: string;
     client_details_confirmed: boolean;
     final_quote_amount: number | null;
+    approved_quote_amounts: Record<string, number>;
     client_sent: boolean;
     client_accepted: "pending" | "yes" | "no";
     deposit_amount: number | null;

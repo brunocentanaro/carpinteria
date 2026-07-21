@@ -178,6 +178,9 @@ class QuotationSession(BaseModel):
     final_quote_amount: float | None = None
     final_quote_updated_at: datetime | None = None
     final_quote_updated_by: str = ""
+    approved_quote_amounts: dict[str, float] = Field(default_factory=dict)
+    approved_quotes_updated_at: datetime | None = None
+    approved_quotes_updated_by: str = ""
     approval_status: str = "pending"  # pending | approved
     client_sent: bool = False
     client_accepted: str = "pending"  # pending | yes | no
@@ -321,6 +324,9 @@ def _session_row(doc: dict) -> dict:
         "final_quote_amount": doc.get("final_quote_amount"),
         "final_quote_updated_at": doc.get("final_quote_updated_at"),
         "final_quote_updated_by": doc.get("final_quote_updated_by") or "",
+        "approved_quote_amounts": dict(doc.get("approved_quote_amounts") or {}),
+        "approved_quotes_updated_at": doc.get("approved_quotes_updated_at"),
+        "approved_quotes_updated_by": doc.get("approved_quotes_updated_by") or "",
         "factory_order": bool(doc.get("order_number")),
         "approval_status": doc.get("approval_status") or "pending",
         "client_sent": bool(doc.get("client_sent") or False),
@@ -526,6 +532,9 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         "final_quote_amount",
         "final_quote_updated_at",
         "final_quote_updated_by",
+        "approved_quote_amounts",
+        "approved_quotes_updated_at",
+        "approved_quotes_updated_by",
         "client_sent",
         "client_accepted",
         "deposit_amount",
@@ -567,6 +576,21 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         elif key == "final_quote_updated_at":
             update[key] = value
         elif key == "final_quote_updated_by":
+            update[key] = str(value or "").strip()
+        elif key == "approved_quote_amounts":
+            if not isinstance(value, dict):
+                raise ValueError("Los presupuestos aprobados deben enviarse por producto")
+            amounts: dict[str, float] = {}
+            for raw_key, raw_amount in value.items():
+                item_key = str(raw_key or "").strip()
+                amount = float(raw_amount)
+                if not item_key or amount <= 0:
+                    raise ValueError("Cada presupuesto definitivo debe ser mayor a cero")
+                amounts[item_key] = round(amount, 2)
+            update[key] = amounts
+        elif key == "approved_quotes_updated_at":
+            update[key] = value
+        elif key == "approved_quotes_updated_by":
             update[key] = str(value or "").strip()
         elif key == "client_details_confirmed":
             confirmed = bool(value)

@@ -92,11 +92,42 @@ function itemClientLabel(item: QuotationItem): string {
   ].filter(Boolean).join(", ");
 }
 
+function itemApprovalKey(item: QuotationItem) {
+  return `item:${item.code}`;
+}
+
+function molduraApprovalKey(_quote: MolduraQuote, index: number) {
+  return `moldura:${index}`;
+}
+
+function productApprovalKeys(session: Session) {
+  return [
+    ...session.items.map(itemApprovalKey),
+    ...(session.moldura_quotes ?? []).map(molduraApprovalKey),
+  ];
+}
+
+function approvedQuoteTotal(session: Session) {
+  return productApprovalKeys(session).reduce(
+    (sum, key) => sum + (session.approved_quote_amounts[key] ?? 0),
+    0,
+  );
+}
+
+function allProductsApproved(session: Session) {
+  const keys = productApprovalKeys(session);
+  return keys.length > 0 && keys.every((key) => (session.approved_quote_amounts[key] ?? 0) > 0);
+}
+
 function buildClientMessage(session: Session, grand: number): string {
-  const itemLines = session.items.map((item) => itemClientLabel(item));
-  const molduraLines = (session.moldura_quotes ?? []).map((quote) => {
+  const itemLines = session.items.map((item) => {
+    const approved = session.approved_quote_amounts[itemApprovalKey(item)];
+    return `${itemClientLabel(item)}${approved ? ` — UYU ${fmtUYU(approved)} + IVA` : ""}`;
+  });
+  const molduraLines = (session.moldura_quotes ?? []).map((quote, index) => {
     const qty = quote.quantity > 1 ? `${fmtDim(quote.quantity)} ${quote.unit}` : quote.unit;
-    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}`;
+    const approved = session.approved_quote_amounts[molduraApprovalKey(quote, index)];
+    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}${approved ? ` — UYU ${fmtUYU(approved)} + IVA` : ""}`;
   });
   const firstItem = session.items[0];
   const materialHint = firstItem ? itemMaterialLabel(firstItem) : "";
@@ -127,7 +158,7 @@ function buildClientMessage(session: Session, grand: number): string {
     product,
     technicalLine,
     extras.length ? `Tambien queda contemplado: ${extras.join(", ")}.` : "",
-    `El valor final es de UYU ${fmtUYU(session.final_quote_amount ?? grand)}+IVA.`,
+    `El valor final es de UYU ${fmtUYU(allProductsApproved(session) ? approvedQuoteTotal(session) : grand)}+IVA.`,
     "Mencionanos cualquier ajuste y lo revisamos.",
   ].filter(Boolean).join("\n\n");
 }
@@ -180,7 +211,6 @@ export function QuotationPanel({ session, isAdmin = false }: { session: Session 
       </header>
 
       <OrderProgress session={session} grand={grand} />
-      <DefinitiveQuotePanel session={session} calculatedTotal={grand} isAdmin={isAdmin} />
       <OrderPaperPanel
         key={session.id}
         session={session}
@@ -188,14 +218,14 @@ export function QuotationPanel({ session, isAdmin = false }: { session: Session 
       {session.order_number && <FactoryOrderHeader session={session} grand={grand} />}
       <GlobalsPanel session={session} />
       <PendingPanel session={session} />
-      <ItemsList items={session.items} sessionId={session.id} defaultOpen={!!session.order_number} />
-      <MolduraQuotesPanel session={session} />
+      <ItemsList session={session} defaultOpen={!!session.order_number} isAdmin={isAdmin} />
+      <MolduraQuotesPanel session={session} isAdmin={isAdmin} />
       <Footer grand={grand} session={session} />
     </div>
   );
 }
 
-function MolduraQuotesPanel({ session }: { session: Session }) {
+function MolduraQuotesPanel({ session, isAdmin }: { session: Session; isAdmin: boolean }) {
   const quotes = session.moldura_quotes ?? [];
   if (quotes.length === 0) return null;
 
@@ -211,15 +241,15 @@ function MolduraQuotesPanel({ session }: { session: Session }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-2">
-        {quotes.slice().reverse().map((quote, idx) => (
-          <MolduraQuoteRow key={`${quote.created_at ?? ""}-${idx}`} quote={quote} />
+        {quotes.map((quote, index) => ({ quote, index })).reverse().map(({ quote, index }) => (
+          <MolduraQuoteRow key={`${quote.created_at ?? ""}-${index}`} quote={quote} session={session} quoteIndex={index} isAdmin={isAdmin} />
         ))}
       </CardContent>
     </Card>
   );
 }
 
-function MolduraQuoteRow({ quote }: { quote: MolduraQuote }) {
+function MolduraQuoteRow({ quote, session, quoteIndex, isAdmin }: { quote: MolduraQuote; session: Session; quoteIndex: number; isAdmin: boolean }) {
   const unit = quote.unit === "metro" ? "m" : "varilla";
   const title = molduraProductTitle(quote);
   return (
@@ -261,6 +291,12 @@ function MolduraQuoteRow({ quote }: { quote: MolduraQuote }) {
           )}
         </div>
       </div>
+      <ApprovedQuoteEditor
+        session={session}
+        approvalKey={molduraApprovalKey(quote, quoteIndex)}
+        calculatedAmount={quote.total}
+        isAdmin={isAdmin}
+      />
     </div>
   );
 }
@@ -754,60 +790,54 @@ function OrderPaperPanel({ session }: { session: Session }) {
   );
 }
 
-function DefinitiveQuotePanel({
+function ApprovedQuoteEditor({
   session,
-  calculatedTotal,
+  approvalKey,
+  calculatedAmount,
   isAdmin,
 }: {
   session: Session;
-  calculatedTotal: number;
+  approvalKey: string;
+  calculatedAmount: number;
   isAdmin: boolean;
 }) {
   const queryClient = useQueryClient();
-  const [amount, setAmount] = useState(session.final_quote_amount != null ? String(session.final_quote_amount) : "");
+  const approvedAmount = session.approved_quote_amounts[approvalKey];
+  const [amount, setAmount] = useState(approvedAmount != null ? String(approvedAmount) : "");
   useEffect(() => {
-    setAmount(session.final_quote_amount != null ? String(session.final_quote_amount) : "");
-  }, [session.final_quote_amount, session.id]);
+    setAmount(approvedAmount != null ? String(approvedAmount) : "");
+  }, [approvedAmount, approvalKey, session.id]);
   const mutation = useMutation({
-    mutationFn: (value: number | null) => patchSession(session.id, { final_quote_amount: value }),
+    mutationFn: (value: number) => patchSession(session.id, {
+      approved_quote_amounts: { ...session.approved_quote_amounts, [approvalKey]: value },
+    }),
     onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
   });
-  const parsed = amount.trim() ? Number(amount.replace(",", ".")) : null;
-  const canSave = parsed === null || (Number.isFinite(parsed) && parsed > 0);
+  const parsed = Number(amount.replace(",", "."));
+  const canSave = amount.trim() !== "" && Number.isFinite(parsed) && parsed > 0;
 
   return (
-    <Card className={session.final_quote_amount ? "border-emerald-300 bg-emerald-50/40" : "border-amber-300"}>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-xs uppercase text-muted-foreground">Presupuesto definitivo</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {session.final_quote_amount != null ? (
-          <div>
-            <div className="text-2xl font-bold tabular-nums">UYU {fmtUYU(session.final_quote_amount)}</div>
-            <div className="text-xs text-muted-foreground">
-              Visible para personal y usado en el mensaje al cliente.
-              {session.final_quote_updated_by ? ` Actualizado por ${session.final_quote_updated_by}.` : ""}
-            </div>
-          </div>
-        ) : (
-          <div className="text-sm text-amber-800">
-            Administracion todavia no fijo el importe definitivo. Calculo del cotizador: UYU {fmtUYU(calculatedTotal)}.
-          </div>
-        )}
+    <div className={`mt-3 rounded-md border p-3 ${approvedAmount ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <div className="text-[10px] font-semibold uppercase text-muted-foreground">Precio definitivo avalado</div>
+          <div className="font-bold tabular-nums">{approvedAmount ? `UYU ${fmtUYU(approvedAmount)}` : "Pendiente de administracion"}</div>
+          <div className="text-[10px] text-muted-foreground">Cotizador: UYU {fmtUYU(calculatedAmount)}</div>
+        </div>
         {isAdmin ? (
-          <div className="flex items-end gap-2">
+          <div className="flex items-end gap-2 sm:min-w-[300px]">
             <Label className="flex-1 space-y-1 text-xs">
-              Importe final (UYU)
-              <Input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Ingresar presupuesto definitivo" />
+              Importe avalado (UYU)
+              <Input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Precio definitivo" />
             </Label>
-            <Button type="button" disabled={!canSave || mutation.isPending} onClick={() => mutation.mutate(parsed)}>
-              {mutation.isPending ? "Guardando..." : "Guardar definitivo"}
+            <Button type="button" size="sm" disabled={!canSave || mutation.isPending} onClick={() => mutation.mutate(parsed)}>
+              {mutation.isPending ? "Guardando..." : "Avalar"}
             </Button>
           </div>
         ) : null}
-        {mutation.error ? <div className="text-xs text-destructive">{mutation.error.message}</div> : null}
-      </CardContent>
-    </Card>
+      </div>
+      {mutation.error ? <div className="mt-2 text-xs text-destructive">{mutation.error.message}</div> : null}
+    </div>
   );
 }
 
@@ -1299,22 +1329,30 @@ function ItemsBoardPicker({
 // ---------------------------------------------------------------------------
 
 function ItemsList({
-  items,
-  sessionId,
+  session,
   defaultOpen = false,
+  isAdmin,
 }: {
-  items: QuotationItem[];
-  sessionId: string;
+  session: Session;
   defaultOpen?: boolean;
+  isAdmin: boolean;
 }) {
   return (
     <section>
       <div className="text-xs uppercase font-semibold text-muted-foreground mb-2">
-        Items ({items.length})
+        Items ({session.items.length})
       </div>
       <div className="space-y-2">
-        {items.map((it) => (
-          <ItemCard key={it.code} item={it} sessionId={sessionId} defaultOpen={defaultOpen} />
+        {session.items.map((it) => (
+          <div key={it.code} className="space-y-2">
+            <ItemCard item={it} sessionId={session.id} defaultOpen={defaultOpen} />
+            <ApprovedQuoteEditor
+              session={session}
+              approvalKey={itemApprovalKey(it)}
+              calculatedAmount={(it.last_quote?.total_with_hardware ?? it.last_quote?.total ?? 0) * it.quantity}
+              isAdmin={isAdmin}
+            />
+          </div>
         ))}
       </div>
     </section>
@@ -1329,7 +1367,8 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
   const queryClient = useQueryClient();
   const hasItems = session.items.length > 0;
   const hasMolduras = (session.moldura_quotes?.length ?? 0) > 0;
-  const hasDefinitiveQuote = session.final_quote_amount != null;
+  const hasDefinitiveQuote = allProductsApproved(session);
+  const definitiveTotal = approvedQuoteTotal(session);
   const allOk =
     hasItems &&
     session.items.every((it) => {
@@ -1399,19 +1438,19 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       <section className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <div className="text-xs uppercase font-semibold text-muted-foreground">
-            {session.final_quote_amount != null ? "Presupuesto definitivo" : "Total estimado"}
+            {hasDefinitiveQuote ? "Total definitivo avalado" : "Total estimado"}
           </div>
           <div className="text-2xl font-bold tabular-nums">
-            UYU {fmtUYU(session.final_quote_amount ?? grand)}
+            UYU {fmtUYU(hasDefinitiveQuote ? definitiveTotal : grand)}
           </div>
-          {session.final_quote_amount != null ? <div className="text-xs text-muted-foreground">Calculo tecnico: UYU {fmtUYU(grand)}</div> : null}
+          {hasDefinitiveQuote ? <div className="text-xs text-muted-foreground">Calculo tecnico: UYU {fmtUYU(grand)}</div> : null}
           {!allOk && hasItems && (
             <div className="text-xs text-amber-700 mt-1">
               Resolvé los pendientes para exportar limpio.
             </div>
           )}
           {!hasDefinitiveQuote && (hasItems || hasMolduras) ? (
-            <div className="text-xs text-amber-700 mt-1">Esperando el presupuesto definitivo de administracion para enviar al cliente.</div>
+            <div className="text-xs text-amber-700 mt-1">Falta avalar el precio definitivo de uno o mas productos.</div>
           ) : null}
         </div>
         <div className="flex gap-2">

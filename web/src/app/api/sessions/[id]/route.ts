@@ -51,6 +51,7 @@ export async function PATCH(
           payment_notes?: string;
           client_details_confirmed?: boolean;
           final_quote_amount?: number | null;
+          approved_quote_amounts?: Record<string, number>;
         }
       | undefined;
     if (!current) {
@@ -72,6 +73,7 @@ export async function PATCH(
       "payment_notes",
       "client_details_confirmed",
       "final_quote_amount",
+      "approved_quote_amounts",
       "client_sent",
       "client_accepted",
       "deposit_amount",
@@ -97,6 +99,9 @@ export async function PATCH(
       }
       if ("final_quote_amount" in body && auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede fijar el presupuesto definitivo" }, { status: 403 });
+      }
+      if ("approved_quote_amounts" in body && auth.area !== "administracion") {
+        return NextResponse.json({ error: "Solo administracion puede avalar precios definitivos" }, { status: 403 });
       }
       if ("approval_status" in body && auth.brandId !== "casa") {
         return NextResponse.json({ error: "La aprobacion se gestiona desde La Casa del Carpintero" }, { status: 403 });
@@ -128,6 +133,10 @@ export async function PATCH(
       if ("final_quote_amount" in body) {
         payload.final_quote_updated_at = new Date().toISOString();
         payload.final_quote_updated_by = auth.user;
+      }
+      if ("approved_quote_amounts" in body) {
+        payload.approved_quotes_updated_at = new Date().toISOString();
+        payload.approved_quotes_updated_by = auth.user;
       }
     }
     const result = await callPython(payload);

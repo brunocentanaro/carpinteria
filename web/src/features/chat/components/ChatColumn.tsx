@@ -377,7 +377,7 @@ export function ChatColumn({ session, onSessionCreated, isOwner = false }: ChatC
       onDrop={handleDrop}
       onPaste={handlePaste}
     >
-      {session?.client_details_confirmed ? <ConfirmedClientHeader session={session} /> : null}
+      {session && isOrderPaperComplete(session) ? <ConfirmedClientHeader session={session} /> : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3 bg-background">
         {messages.length === 0 && (
           <div className="text-sm text-muted-foreground">
@@ -539,11 +539,11 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
     onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
   });
   return (
-    <section className="shrink-0 border-b bg-emerald-50 px-4 py-3 text-sm">
+    <header className="shrink-0 border-b-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-sm shadow-sm">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
         <div>
-          <div className="text-[10px] font-semibold uppercase text-emerald-700">Cliente confirmado</div>
-          <div className="font-semibold">{session.client_name}</div>
+          <div className="text-[10px] font-semibold uppercase text-emerald-700">Cotizacion para</div>
+          <div className="text-base font-bold">{session.client_name}</div>
         </div>
         <div>
           <div className="text-[10px] uppercase text-muted-foreground">Telefono</div>
@@ -569,7 +569,17 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
       </div>
       {session.payment_notes ? <div className="mt-1 text-xs text-muted-foreground">Nota de pago: {session.payment_notes}</div> : null}
       {mutation.error ? <div className="mt-1 text-xs text-destructive">{mutation.error.message}</div> : null}
-    </section>
+    </header>
+  );
+}
+
+function isOrderPaperComplete(session: Session) {
+  return Boolean(
+    session.client_name.trim() &&
+      session.client_phone.trim() &&
+      session.order_summary.trim() &&
+      session.payment_status !== "unknown" &&
+      session.payment_notes.trim(),
   );
 }
 
