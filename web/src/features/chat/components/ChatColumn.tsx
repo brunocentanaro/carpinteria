@@ -546,7 +546,11 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
   ];
   const confirmedKeys = session.confirmed_quote_keys.filter((key) => approvedKeys.includes(key));
   const confirmedTotal = confirmedKeys.reduce(
-    (sum, key) => sum + (session.approved_quote_amounts[key] ?? 0),
+    (sum, key) => {
+      const amount = session.approved_quote_amounts[key] ?? 0;
+      const mode = session.approved_quote_tax_modes[key] ?? (key.startsWith("moldura:") ? "included" : "plus");
+      return sum + (mode === "plus" ? Math.round(amount * 1.22 * 100) / 100 : amount);
+    },
     0,
   );
   const requiredDeposit = Math.round(confirmedTotal * 0.5 * 100) / 100;

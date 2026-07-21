@@ -179,6 +179,7 @@ class QuotationSession(BaseModel):
     final_quote_updated_at: datetime | None = None
     final_quote_updated_by: str = ""
     approved_quote_amounts: dict[str, float] = Field(default_factory=dict)
+    approved_quote_tax_modes: dict[str, str] = Field(default_factory=dict)
     approved_quotes_updated_at: datetime | None = None
     approved_quotes_updated_by: str = ""
     confirmed_quote_keys: list[str] = Field(default_factory=list)
@@ -326,6 +327,7 @@ def _session_row(doc: dict) -> dict:
         "final_quote_updated_at": doc.get("final_quote_updated_at"),
         "final_quote_updated_by": doc.get("final_quote_updated_by") or "",
         "approved_quote_amounts": dict(doc.get("approved_quote_amounts") or {}),
+        "approved_quote_tax_modes": dict(doc.get("approved_quote_tax_modes") or {}),
         "approved_quotes_updated_at": doc.get("approved_quotes_updated_at"),
         "approved_quotes_updated_by": doc.get("approved_quotes_updated_by") or "",
         "confirmed_quote_keys": list(doc.get("confirmed_quote_keys") or []),
@@ -535,6 +537,7 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         "final_quote_updated_at",
         "final_quote_updated_by",
         "approved_quote_amounts",
+        "approved_quote_tax_modes",
         "approved_quotes_updated_at",
         "approved_quotes_updated_by",
         "confirmed_quote_keys",
@@ -548,6 +551,7 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
     }
     current = _coll().find_one({"id": session_id}, {"_id": 0}) or {}
     approved_amounts = fields.get("approved_quote_amounts", current.get("approved_quote_amounts") or {})
+    tax_modes = fields.get("approved_quote_tax_modes", current.get("approved_quote_tax_modes") or {})
     item_keys = [f"item:{item.get('code')}" for item in (current.get("items") or [])]
     moldura_keys = [f"moldura:{index}" for index, _quote in enumerate(current.get("moldura_quotes") or [])]
     product_keys = item_keys + moldura_keys
@@ -561,7 +565,11 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
     if candidate_payment_status == "deposit":
         if not confirmed_keys:
             raise ValueError("Primero indique que productos confirmo el cliente")
-        confirmed_total = sum(float(approved_amounts.get(key) or 0) for key in confirmed_keys)
+        confirmed_total = sum(
+            float(approved_amounts.get(key) or 0)
+            * (1.22 if tax_modes.get(key, "included" if key.startswith("moldura:") else "plus") == "plus" else 1)
+            for key in confirmed_keys
+        )
         deposit_amount = fields.get("deposit_amount", current.get("deposit_amount"))
         if deposit_amount is None or deposit_amount == "":
             raise ValueError("Ingrese el importe de la seña")
@@ -612,6 +620,17 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
                     raise ValueError("Cada presupuesto definitivo debe ser mayor a cero")
                 amounts[item_key] = round(amount, 2)
             update[key] = amounts
+        elif key == "approved_quote_tax_modes":
+            if not isinstance(value, dict):
+                raise ValueError("El tratamiento de IVA debe enviarse por producto")
+            modes: dict[str, str] = {}
+            for raw_key, raw_mode in value.items():
+                item_key = str(raw_key or "").strip()
+                mode = str(raw_mode or "").strip()
+                if not item_key or mode not in {"plus", "included"}:
+                    raise ValueError("El tratamiento de IVA debe ser + IVA o IVA incluido")
+                modes[item_key] = mode
+            update[key] = modes
         elif key == "approved_quotes_updated_at":
             update[key] = value
         elif key == "approved_quotes_updated_by":

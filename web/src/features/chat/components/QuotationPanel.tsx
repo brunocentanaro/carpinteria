@@ -107,9 +107,22 @@ function productApprovalKeys(session: Session) {
   ];
 }
 
+function approvedTaxMode(session: Session, key: string): "plus" | "included" {
+  return session.approved_quote_tax_modes[key] ?? (key.startsWith("moldura:") ? "included" : "plus");
+}
+
+function approvedGrossAmount(session: Session, key: string): number {
+  const amount = session.approved_quote_amounts[key] ?? 0;
+  return approvedTaxMode(session, key) === "plus" ? Math.round(amount * 1.22 * 100) / 100 : amount;
+}
+
+function approvedTaxLabel(session: Session, key: string): string {
+  return approvedTaxMode(session, key) === "plus" ? "+ IVA" : "IVA incluido";
+}
+
 function approvedQuoteTotal(session: Session) {
   return productApprovalKeys(session).reduce(
-    (sum, key) => sum + (session.approved_quote_amounts[key] ?? 0),
+    (sum, key) => sum + approvedGrossAmount(session, key),
     0,
   );
 }
@@ -122,12 +135,14 @@ function allProductsApproved(session: Session) {
 function buildClientMessage(session: Session, grand: number): string {
   const itemLines = session.items.map((item) => {
     const approved = session.approved_quote_amounts[itemApprovalKey(item)];
-    return `${itemClientLabel(item)}${approved ? ` — UYU ${fmtUYU(approved)} + IVA` : ""}`;
+    const key = itemApprovalKey(item);
+    return `${itemClientLabel(item)}${approved ? ` — UYU ${fmtUYU(approved)} ${approvedTaxLabel(session, key)}` : ""}`;
   });
   const molduraLines = (session.moldura_quotes ?? []).map((quote, index) => {
     const qty = quote.quantity > 1 ? `${fmtDim(quote.quantity)} ${quote.unit}` : quote.unit;
     const approved = session.approved_quote_amounts[molduraApprovalKey(quote, index)];
-    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}${approved ? ` — UYU ${fmtUYU(approved)} + IVA` : ""}`;
+    const key = molduraApprovalKey(quote, index);
+    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}${approved ? ` — UYU ${fmtUYU(approved)} ${approvedTaxLabel(session, key)}` : ""}`;
   });
   const firstItem = session.items[0];
   const materialHint = firstItem ? itemMaterialLabel(firstItem) : "";
@@ -803,14 +818,18 @@ function ApprovedQuoteEditor({
 }) {
   const queryClient = useQueryClient();
   const approvedAmount = session.approved_quote_amounts[approvalKey];
+  const approvedMode = approvedTaxMode(session, approvalKey);
   const clientConfirmed = session.confirmed_quote_keys.includes(approvalKey);
   const [amount, setAmount] = useState(approvedAmount != null ? String(approvedAmount) : "");
+  const [taxMode, setTaxMode] = useState<"plus" | "included">(approvedMode);
   useEffect(() => {
     setAmount(approvedAmount != null ? String(approvedAmount) : "");
-  }, [approvedAmount, approvalKey, session.id]);
+    setTaxMode(approvedMode);
+  }, [approvedAmount, approvedMode, approvalKey, session.id]);
   const mutation = useMutation({
     mutationFn: (value: number) => patchSession(session.id, {
       approved_quote_amounts: { ...session.approved_quote_amounts, [approvalKey]: value },
+      approved_quote_tax_modes: { ...session.approved_quote_tax_modes, [approvalKey]: taxMode },
     }),
     onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
   });
@@ -830,14 +849,24 @@ function ApprovedQuoteEditor({
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="text-[10px] font-semibold uppercase text-muted-foreground">Precio definitivo avalado</div>
-          <div className="font-bold tabular-nums">{approvedAmount ? `UYU ${fmtUYU(approvedAmount)}` : "Pendiente de administracion"}</div>
+          <div className="font-bold tabular-nums">{approvedAmount ? `UYU ${fmtUYU(approvedAmount)} ${approvedTaxLabel(session, approvalKey)}` : "Pendiente de administracion"}</div>
           <div className="text-[10px] text-muted-foreground">Cotizador: UYU {fmtUYU(calculatedAmount)}</div>
         </div>
         {isAdmin ? (
-          <div className="flex items-end gap-2 sm:min-w-[300px]">
+          <div className="flex flex-wrap items-end gap-2 sm:min-w-[420px]">
             <Label className="flex-1 space-y-1 text-xs">
               Importe avalado (UYU)
               <Input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Precio definitivo" />
+            </Label>
+            <Label className="min-w-[140px] space-y-1 text-xs">
+              Tratamiento de IVA
+              <Select value={taxMode} onValueChange={(value) => setTaxMode(value as "plus" | "included")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="plus">+ IVA</SelectItem>
+                  <SelectItem value="included">IVA incluido</SelectItem>
+                </SelectContent>
+              </Select>
             </Label>
             <Button type="button" size="sm" disabled={!canSave || mutation.isPending} onClick={() => mutation.mutate(parsed)}>
               {mutation.isPending ? "Guardando..." : "Avalar"}

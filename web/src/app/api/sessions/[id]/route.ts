@@ -52,6 +52,7 @@ export async function PATCH(
           client_details_confirmed?: boolean;
           final_quote_amount?: number | null;
           approved_quote_amounts?: Record<string, number>;
+          approved_quote_tax_modes?: Record<string, "plus" | "included">;
           confirmed_quote_keys?: string[];
         }
       | undefined;
@@ -75,6 +76,7 @@ export async function PATCH(
       "client_details_confirmed",
       "final_quote_amount",
       "approved_quote_amounts",
+      "approved_quote_tax_modes",
       "confirmed_quote_keys",
       "client_sent",
       "client_accepted",
@@ -102,7 +104,7 @@ export async function PATCH(
       if ("final_quote_amount" in body && auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede fijar el presupuesto definitivo" }, { status: 403 });
       }
-      if ("approved_quote_amounts" in body && auth.area !== "administracion") {
+      if (("approved_quote_amounts" in body || "approved_quote_tax_modes" in body) && auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede avalar precios definitivos" }, { status: 403 });
       }
       if ("approval_status" in body && auth.brandId !== "casa") {
@@ -136,7 +138,7 @@ export async function PATCH(
         payload.final_quote_updated_at = new Date().toISOString();
         payload.final_quote_updated_by = auth.user;
       }
-      if ("approved_quote_amounts" in body) {
+      if ("approved_quote_amounts" in body || "approved_quote_tax_modes" in body) {
         payload.approved_quotes_updated_at = new Date().toISOString();
         payload.approved_quotes_updated_by = auth.user;
       }

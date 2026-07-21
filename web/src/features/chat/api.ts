@@ -102,6 +102,7 @@ export async function patchSession(
     client_details_confirmed: boolean;
     final_quote_amount: number | null;
     approved_quote_amounts: Record<string, number>;
+    approved_quote_tax_modes: Record<string, "plus" | "included">;
     confirmed_quote_keys: string[];
     client_sent: boolean;
     client_accepted: "pending" | "yes" | "no";
