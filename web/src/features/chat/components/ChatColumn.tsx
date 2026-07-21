@@ -544,16 +544,14 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
     ...session.items.map((item) => `item:${item.code}`),
     ...(session.moldura_quotes ?? []).map((_quote, index) => `moldura:${index}`),
   ];
-  const definitiveTotal = approvedKeys.reduce(
+  const confirmedKeys = session.confirmed_quote_keys.filter((key) => approvedKeys.includes(key));
+  const confirmedTotal = confirmedKeys.reduce(
     (sum, key) => sum + (session.approved_quote_amounts[key] ?? 0),
     0,
   );
-  const allProductsApproved = approvedKeys.length > 0 && approvedKeys.every(
-    (key) => (session.approved_quote_amounts[key] ?? 0) > 0,
-  );
-  const minimumDeposit = definitiveTotal * 0.6;
+  const requiredDeposit = Math.round(confirmedTotal * 0.5 * 100) / 100;
   const parsedDeposit = Number(depositAmount.replace(",", "."));
-  const validDeposit = allProductsApproved && Number.isFinite(parsedDeposit) && parsedDeposit > minimumDeposit;
+  const validDeposit = confirmedKeys.length > 0 && Number.isFinite(parsedDeposit) && Math.round(parsedDeposit * 100) / 100 === requiredDeposit;
   const mutation = useMutation({
     mutationFn: (payload: Parameters<typeof patchSession>[1]) => patchSession(session.id, payload),
     onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
@@ -564,7 +562,9 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
   });
   const changePaymentStatus = (status: Session["payment_status"]) => {
     setPaymentStatus(status);
-    if (status !== "deposit") {
+    if (status === "deposit") {
+      setDepositAmount(requiredDeposit > 0 ? String(requiredDeposit) : "");
+    } else {
       mutation.mutate({ payment_status: status, ...(status === "none" ? { deposit_amount: null } : {}) });
     }
   };
@@ -619,9 +619,9 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
             {mutation.isPending ? "Guardando..." : "Guardar seña"}
           </Button>
           <div className="w-full text-xs text-muted-foreground">
-            {allProductsApproved
-              ? `Debe superar el 60% del presupuesto definitivo: más de UYU ${minimumDeposit.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
-              : "Primero administración debe avalar el precio definitivo de todos los productos."}
+            {confirmedKeys.length > 0
+              ? `Corresponde al 50% de los productos confirmados (UYU ${confirmedTotal.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}): UYU ${requiredDeposit.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+              : "Primero indique al menos un producto confirmado por el cliente."}
           </div>
         </div>
       ) : null}

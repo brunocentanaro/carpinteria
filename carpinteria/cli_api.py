@@ -2453,6 +2453,7 @@ def handle_session_commercial_status(data: dict) -> dict:
             "approved_quote_amounts",
             "approved_quotes_updated_at",
             "approved_quotes_updated_by",
+            "confirmed_quote_keys",
             "client_sent",
             "client_accepted",
             "deposit_amount",

@@ -803,6 +803,7 @@ function ApprovedQuoteEditor({
 }) {
   const queryClient = useQueryClient();
   const approvedAmount = session.approved_quote_amounts[approvalKey];
+  const clientConfirmed = session.confirmed_quote_keys.includes(approvalKey);
   const [amount, setAmount] = useState(approvedAmount != null ? String(approvedAmount) : "");
   useEffect(() => {
     setAmount(approvedAmount != null ? String(approvedAmount) : "");
@@ -810,6 +811,14 @@ function ApprovedQuoteEditor({
   const mutation = useMutation({
     mutationFn: (value: number) => patchSession(session.id, {
       approved_quote_amounts: { ...session.approved_quote_amounts, [approvalKey]: value },
+    }),
+    onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
+  });
+  const confirmationMutation = useMutation({
+    mutationFn: (confirmed: boolean) => patchSession(session.id, {
+      confirmed_quote_keys: confirmed
+        ? [...new Set([...session.confirmed_quote_keys, approvalKey])]
+        : session.confirmed_quote_keys.filter((key) => key !== approvalKey),
     }),
     onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
   });
@@ -836,7 +845,25 @@ function ApprovedQuoteEditor({
           </div>
         ) : null}
       </div>
+      <div className="mt-3 flex items-center justify-between gap-3 border-t pt-3">
+        <div className="text-xs">
+          <span className="font-medium">Confirmacion del cliente:</span>{" "}
+          <span className={clientConfirmed ? "text-emerald-700" : "text-muted-foreground"}>
+            {clientConfirmed ? "incluido en el pedido" : "todavia no confirmado"}
+          </span>
+        </div>
+        <Button
+          type="button"
+          size="sm"
+          variant={clientConfirmed ? "outline" : "default"}
+          disabled={!approvedAmount || confirmationMutation.isPending}
+          onClick={() => confirmationMutation.mutate(!clientConfirmed)}
+        >
+          {clientConfirmed ? "Quitar confirmacion" : "Cliente confirmó"}
+        </Button>
+      </div>
       {mutation.error ? <div className="mt-2 text-xs text-destructive">{mutation.error.message}</div> : null}
+      {confirmationMutation.error ? <div className="mt-2 text-xs text-destructive">{confirmationMutation.error.message}</div> : null}
     </div>
   );
 }

@@ -52,6 +52,7 @@ export async function PATCH(
           client_details_confirmed?: boolean;
           final_quote_amount?: number | null;
           approved_quote_amounts?: Record<string, number>;
+          confirmed_quote_keys?: string[];
         }
       | undefined;
     if (!current) {
@@ -74,6 +75,7 @@ export async function PATCH(
       "client_details_confirmed",
       "final_quote_amount",
       "approved_quote_amounts",
+      "confirmed_quote_keys",
       "client_sent",
       "client_accepted",
       "deposit_amount",
