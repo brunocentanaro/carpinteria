@@ -544,6 +544,20 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         "final_payment_amount",
     }
     current = _coll().find_one({"id": session_id}, {"_id": 0}) or {}
+    candidate_payment_status = fields.get("payment_status", current.get("payment_status") or "unknown")
+    if candidate_payment_status == "deposit":
+        approved_amounts = fields.get("approved_quote_amounts", current.get("approved_quote_amounts") or {})
+        item_keys = [f"item:{item.get('code')}" for item in (current.get("items") or [])]
+        moldura_keys = [f"moldura:{index}" for index, _quote in enumerate(current.get("moldura_quotes") or [])]
+        product_keys = item_keys + moldura_keys
+        if not product_keys or any(float(approved_amounts.get(key) or 0) <= 0 for key in product_keys):
+            raise ValueError("Primero debe avalar el precio definitivo de todos los productos")
+        definitive_total = sum(float(approved_amounts.get(key) or 0) for key in product_keys)
+        deposit_amount = fields.get("deposit_amount", current.get("deposit_amount"))
+        if deposit_amount is None or deposit_amount == "":
+            raise ValueError("Ingrese el importe de la seña")
+        if float(deposit_amount) <= definitive_total * 0.60:
+            raise ValueError("La seña debe superar el 60% del presupuesto definitivo")
     detail_fields = {"client_name", "client_phone", "order_summary", "payment_status", "payment_notes"}
     locked_detail_fields = {"client_name", "client_phone", "order_summary", "payment_notes"}
     if current.get("client_details_confirmed") and locked_detail_fields.intersection(fields):

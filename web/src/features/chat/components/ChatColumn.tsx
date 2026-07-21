@@ -7,6 +7,7 @@ import remarkGfm from "remark-gfm";
 import { ClipboardList, ImagePlus, Paperclip, Send, Wrench } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { createSession, patchSession, qk, streamChat, uploadFurniturePhoto, uploadOrderPhoto, uploadPliego } from "../api";
 import type { Attachment, ChatMessage, Session, ToolTraceEntry } from "../schemas";
@@ -533,11 +534,44 @@ export function ChatColumn({ session, onSessionCreated, isOwner = false }: ChatC
 
 function ConfirmedClientHeader({ session }: { session: Session }) {
   const queryClient = useQueryClient();
+  const [paymentStatus, setPaymentStatus] = useState(session.payment_status);
+  const [depositAmount, setDepositAmount] = useState(session.deposit_amount != null ? String(session.deposit_amount) : "");
+  useEffect(() => {
+    setPaymentStatus(session.payment_status);
+    setDepositAmount(session.deposit_amount != null ? String(session.deposit_amount) : "");
+  }, [session.deposit_amount, session.id, session.payment_status]);
+  const approvedKeys = [
+    ...session.items.map((item) => `item:${item.code}`),
+    ...(session.moldura_quotes ?? []).map((_quote, index) => `moldura:${index}`),
+  ];
+  const definitiveTotal = approvedKeys.reduce(
+    (sum, key) => sum + (session.approved_quote_amounts[key] ?? 0),
+    0,
+  );
+  const allProductsApproved = approvedKeys.length > 0 && approvedKeys.every(
+    (key) => (session.approved_quote_amounts[key] ?? 0) > 0,
+  );
+  const minimumDeposit = definitiveTotal * 0.6;
+  const parsedDeposit = Number(depositAmount.replace(",", "."));
+  const validDeposit = allProductsApproved && Number.isFinite(parsedDeposit) && parsedDeposit > minimumDeposit;
   const mutation = useMutation({
-    mutationFn: (paymentStatus: Session["payment_status"]) =>
-      patchSession(session.id, { payment_status: paymentStatus }),
+    mutationFn: (payload: Parameters<typeof patchSession>[1]) => patchSession(session.id, payload),
     onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
+    onError: () => {
+      setPaymentStatus(session.payment_status);
+      setDepositAmount(session.deposit_amount != null ? String(session.deposit_amount) : "");
+    },
   });
+  const changePaymentStatus = (status: Session["payment_status"]) => {
+    setPaymentStatus(status);
+    if (status !== "deposit") {
+      mutation.mutate({ payment_status: status, ...(status === "none" ? { deposit_amount: null } : {}) });
+    }
+  };
+  const saveDeposit = () => {
+    if (!validDeposit) return;
+    mutation.mutate({ payment_status: "deposit", deposit_amount: parsedDeposit });
+  };
   return (
     <header className="shrink-0 border-b-2 border-emerald-500 bg-emerald-50 px-4 py-3 text-sm shadow-sm">
       <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
@@ -557,9 +591,9 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
           Estado de pago
           <select
             className="ml-2 h-8 rounded border bg-background px-2 text-sm normal-case text-foreground"
-            value={session.payment_status}
+            value={paymentStatus}
             disabled={mutation.isPending}
-            onChange={(event) => mutation.mutate(event.target.value as Session["payment_status"])}
+            onChange={(event) => changePaymentStatus(event.target.value as Session["payment_status"])}
           >
             <option value="none">No pago nada</option>
             <option value="deposit">Seña</option>
@@ -567,6 +601,30 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
           </select>
         </label>
       </div>
+      {paymentStatus === "deposit" ? (
+        <div className="mt-3 flex flex-wrap items-end gap-3 rounded-md border border-emerald-300 bg-white/70 p-3">
+          <label className="min-w-[220px] flex-1 text-[10px] font-medium uppercase text-muted-foreground">
+            Importe de la seña (UYU)
+            <Input
+              className="mt-1 normal-case text-foreground"
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={depositAmount}
+              onChange={(event) => setDepositAmount(event.target.value)}
+              placeholder="Ingresar importe señado"
+            />
+          </label>
+          <Button type="button" size="sm" disabled={!validDeposit || mutation.isPending} onClick={saveDeposit}>
+            {mutation.isPending ? "Guardando..." : "Guardar seña"}
+          </Button>
+          <div className="w-full text-xs text-muted-foreground">
+            {allProductsApproved
+              ? `Debe superar el 60% del presupuesto definitivo: más de UYU ${minimumDeposit.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+              : "Primero administración debe avalar el precio definitivo de todos los productos."}
+          </div>
+        </div>
+      ) : null}
       {session.payment_notes ? <div className="mt-1 text-xs text-muted-foreground">Nota de pago: {session.payment_notes}</div> : null}
       {mutation.error ? <div className="mt-1 text-xs text-destructive">{mutation.error.message}</div> : null}
     </header>
