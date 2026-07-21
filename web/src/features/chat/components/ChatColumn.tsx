@@ -551,7 +551,7 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
   );
   const requiredDeposit = Math.round(confirmedTotal * 0.5 * 100) / 100;
   const parsedDeposit = Number(depositAmount.replace(",", "."));
-  const validDeposit = confirmedKeys.length > 0 && Number.isFinite(parsedDeposit) && Math.round(parsedDeposit * 100) / 100 === requiredDeposit;
+  const validDeposit = confirmedKeys.length > 0 && Number.isFinite(parsedDeposit) && Math.round(parsedDeposit * 100) / 100 >= requiredDeposit;
   const mutation = useMutation({
     mutationFn: (payload: Parameters<typeof patchSession>[1]) => patchSession(session.id, payload),
     onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
@@ -620,7 +620,7 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
           </Button>
           <div className="w-full text-xs text-muted-foreground">
             {confirmedKeys.length > 0
-              ? `Corresponde al 50% de los productos confirmados (UYU ${confirmedTotal.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}): UYU ${requiredDeposit.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
+              ? `La seña mínima es el 50% de los productos confirmados (UYU ${confirmedTotal.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}): UYU ${requiredDeposit.toLocaleString("es-UY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}. Puede ingresar un importe mayor.`
               : "Primero indique al menos un producto confirmado por el cliente."}
           </div>
         </div>

@@ -566,8 +566,8 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         if deposit_amount is None or deposit_amount == "":
             raise ValueError("Ingrese el importe de la seña")
         required_deposit = round(confirmed_total * 0.50, 2)
-        if round(float(deposit_amount), 2) != required_deposit:
-            raise ValueError("La seña debe ser exactamente el 50% de los productos confirmados")
+        if round(float(deposit_amount), 2) < required_deposit:
+            raise ValueError("La seña debe ser al menos el 50% de los productos confirmados")
     detail_fields = {"client_name", "client_phone", "order_summary", "payment_status", "payment_notes"}
     locked_detail_fields = {"client_name", "client_phone", "order_summary", "payment_notes"}
     if current.get("client_details_confirmed") and locked_detail_fields.intersection(fields):

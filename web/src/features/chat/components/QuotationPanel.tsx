@@ -845,23 +845,29 @@ function ApprovedQuoteEditor({
           </div>
         ) : null}
       </div>
-      <div className="mt-3 flex items-center justify-between gap-3 border-t pt-3">
-        <div className="text-xs">
-          <span className="font-medium">Confirmacion del cliente:</span>{" "}
-          <span className={clientConfirmed ? "text-emerald-700" : "text-muted-foreground"}>
-            {clientConfirmed ? "incluido en el pedido" : "todavia no confirmado"}
-          </span>
-        </div>
-        <Button
-          type="button"
-          size="sm"
-          variant={clientConfirmed ? "outline" : "default"}
+      <label
+        className={`mt-3 flex items-center gap-3 rounded-md border p-3 ${
+          approvedAmount ? "cursor-pointer bg-background" : "cursor-not-allowed bg-muted/40 opacity-70"
+        }`}
+      >
+        <input
+          type="checkbox"
+          className="size-5 shrink-0 accent-emerald-600"
+          checked={clientConfirmed}
           disabled={!approvedAmount || confirmationMutation.isPending}
-          onClick={() => confirmationMutation.mutate(!clientConfirmed)}
-        >
-          {clientConfirmed ? "Quitar confirmacion" : "Cliente confirmó"}
-        </Button>
-      </div>
+          onChange={(event) => confirmationMutation.mutate(event.target.checked)}
+        />
+        <span>
+          <span className="block text-sm font-semibold">El cliente confirmó este producto</span>
+          <span className="block text-xs text-muted-foreground">
+            {approvedAmount
+              ? clientConfirmed
+                ? "Este producto integra el pedido y se toma para calcular la seña mínima."
+                : "El personal debe marcar esta casilla solamente si el cliente acepta este producto."
+              : "Administración debe avalar primero el precio definitivo de este producto."}
+          </span>
+        </span>
+      </label>
       {mutation.error ? <div className="mt-2 text-xs text-destructive">{mutation.error.message}</div> : null}
       {confirmationMutation.error ? <div className="mt-2 text-xs text-destructive">{confirmationMutation.error.message}</div> : null}
     </div>
