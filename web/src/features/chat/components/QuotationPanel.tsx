@@ -127,7 +127,7 @@ function buildClientMessage(session: Session, grand: number): string {
     product,
     technicalLine,
     extras.length ? `Tambien queda contemplado: ${extras.join(", ")}.` : "",
-    `El valor final es de UYU ${fmtUYU(grand)}+IVA.`,
+    `El valor final es de UYU ${fmtUYU(session.final_quote_amount ?? grand)}+IVA.`,
     "Mencionanos cualquier ajuste y lo revisamos.",
   ].filter(Boolean).join("\n\n");
 }
@@ -152,7 +152,7 @@ function compactAge(value: string | null | undefined) {
 // Root panel
 // ---------------------------------------------------------------------------
 
-export function QuotationPanel({ session }: { session: Session | null }) {
+export function QuotationPanel({ session, isAdmin = false }: { session: Session | null; isAdmin?: boolean }) {
   if (!session) {
     return (
       <div className="p-6 text-sm text-muted-foreground">
@@ -180,6 +180,7 @@ export function QuotationPanel({ session }: { session: Session | null }) {
       </header>
 
       <OrderProgress session={session} grand={grand} />
+      <DefinitiveQuotePanel session={session} calculatedTotal={grand} isAdmin={isAdmin} />
       <OrderPaperPanel
         key={session.id}
         session={session}
@@ -602,6 +603,8 @@ function OrderPaperPanel({ session }: { session: Session }) {
   const [paymentNotes, setPaymentNotes] = useState(session.payment_notes);
   const [paymentStatus, setPaymentStatus] = useState(session.payment_status);
 
+  if (session.client_details_confirmed) return null;
+
   const draftComplete = Boolean(
     clientName.trim() &&
       clientPhone.trim() &&
@@ -746,6 +749,63 @@ function OrderPaperPanel({ session }: { session: Session }) {
             {mutation.error.message}
           </p>
         ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function DefinitiveQuotePanel({
+  session,
+  calculatedTotal,
+  isAdmin,
+}: {
+  session: Session;
+  calculatedTotal: number;
+  isAdmin: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [amount, setAmount] = useState(session.final_quote_amount != null ? String(session.final_quote_amount) : "");
+  useEffect(() => {
+    setAmount(session.final_quote_amount != null ? String(session.final_quote_amount) : "");
+  }, [session.final_quote_amount, session.id]);
+  const mutation = useMutation({
+    mutationFn: (value: number | null) => patchSession(session.id, { final_quote_amount: value }),
+    onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
+  });
+  const parsed = amount.trim() ? Number(amount.replace(",", ".")) : null;
+  const canSave = parsed === null || (Number.isFinite(parsed) && parsed > 0);
+
+  return (
+    <Card className={session.final_quote_amount ? "border-emerald-300 bg-emerald-50/40" : "border-amber-300"}>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-xs uppercase text-muted-foreground">Presupuesto definitivo</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {session.final_quote_amount != null ? (
+          <div>
+            <div className="text-2xl font-bold tabular-nums">UYU {fmtUYU(session.final_quote_amount)}</div>
+            <div className="text-xs text-muted-foreground">
+              Visible para personal y usado en el mensaje al cliente.
+              {session.final_quote_updated_by ? ` Actualizado por ${session.final_quote_updated_by}.` : ""}
+            </div>
+          </div>
+        ) : (
+          <div className="text-sm text-amber-800">
+            Administracion todavia no fijo el importe definitivo. Calculo del cotizador: UYU {fmtUYU(calculatedTotal)}.
+          </div>
+        )}
+        {isAdmin ? (
+          <div className="flex items-end gap-2">
+            <Label className="flex-1 space-y-1 text-xs">
+              Importe final (UYU)
+              <Input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Ingresar presupuesto definitivo" />
+            </Label>
+            <Button type="button" disabled={!canSave || mutation.isPending} onClick={() => mutation.mutate(parsed)}>
+              {mutation.isPending ? "Guardando..." : "Guardar definitivo"}
+            </Button>
+          </div>
+        ) : null}
+        {mutation.error ? <div className="text-xs text-destructive">{mutation.error.message}</div> : null}
       </CardContent>
     </Card>
   );
@@ -1269,6 +1329,7 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
   const queryClient = useQueryClient();
   const hasItems = session.items.length > 0;
   const hasMolduras = (session.moldura_quotes?.length ?? 0) > 0;
+  const hasDefinitiveQuote = session.final_quote_amount != null;
   const allOk =
     hasItems &&
     session.items.every((it) => {
@@ -1338,22 +1399,26 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       <section className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <div className="text-xs uppercase font-semibold text-muted-foreground">
-            Total estimado
+            {session.final_quote_amount != null ? "Presupuesto definitivo" : "Total estimado"}
           </div>
           <div className="text-2xl font-bold tabular-nums">
-            UYU {fmtUYU(grand)}
+            UYU {fmtUYU(session.final_quote_amount ?? grand)}
           </div>
+          {session.final_quote_amount != null ? <div className="text-xs text-muted-foreground">Calculo tecnico: UYU {fmtUYU(grand)}</div> : null}
           {!allOk && hasItems && (
             <div className="text-xs text-amber-700 mt-1">
               Resolvé los pendientes para exportar limpio.
             </div>
           )}
+          {!hasDefinitiveQuote && (hasItems || hasMolduras) ? (
+            <div className="text-xs text-amber-700 mt-1">Esperando el presupuesto definitivo de administracion para enviar al cliente.</div>
+          ) : null}
         </div>
         <div className="flex gap-2">
           <Button
             variant="outline"
             onClick={attachQuoteToChat}
-            disabled={attachMutation.isPending || (!hasItems && !hasMolduras)}
+            disabled={attachMutation.isPending || !hasDefinitiveQuote || (!hasItems && !hasMolduras)}
           >
             <Check className="h-4 w-4 mr-1" />
             {attachedMessage ? "Enviado" : "Enviar al chat"}
@@ -1361,7 +1426,7 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
           <Button
             variant="outline"
             onClick={copyClientMessage}
-            disabled={!hasItems && !hasMolduras}
+            disabled={!hasDefinitiveQuote || (!hasItems && !hasMolduras)}
           >
             <MessageSquareText className="h-4 w-4 mr-1" />
             {copiedMessage ? "Copiado" : "Mensaje cliente"}

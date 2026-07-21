@@ -2441,6 +2441,15 @@ def handle_session_commercial_status(data: dict) -> dict:
         key: data[key]
         for key in (
             "approval_status",
+            "client_name",
+            "client_phone",
+            "order_summary",
+            "payment_status",
+            "payment_notes",
+            "client_details_confirmed",
+            "final_quote_amount",
+            "final_quote_updated_at",
+            "final_quote_updated_by",
             "client_sent",
             "client_accepted",
             "deposit_amount",

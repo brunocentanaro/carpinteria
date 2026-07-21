@@ -175,6 +175,9 @@ class QuotationSession(BaseModel):
     payment_notes: str = ""
     client_details_confirmed: bool = False
     client_details_confirmed_at: datetime | None = None
+    final_quote_amount: float | None = None
+    final_quote_updated_at: datetime | None = None
+    final_quote_updated_by: str = ""
     approval_status: str = "pending"  # pending | approved
     client_sent: bool = False
     client_accepted: str = "pending"  # pending | yes | no
@@ -315,6 +318,9 @@ def _session_row(doc: dict) -> dict:
         "payment_notes": doc.get("payment_notes") or "",
         "client_details_confirmed": bool(doc.get("client_details_confirmed") or False),
         "client_details_confirmed_at": doc.get("client_details_confirmed_at"),
+        "final_quote_amount": doc.get("final_quote_amount"),
+        "final_quote_updated_at": doc.get("final_quote_updated_at"),
+        "final_quote_updated_by": doc.get("final_quote_updated_by") or "",
         "factory_order": bool(doc.get("order_number")),
         "approval_status": doc.get("approval_status") or "pending",
         "client_sent": bool(doc.get("client_sent") or False),
@@ -517,6 +523,9 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         "payment_status",
         "payment_notes",
         "client_details_confirmed",
+        "final_quote_amount",
+        "final_quote_updated_at",
+        "final_quote_updated_by",
         "client_sent",
         "client_accepted",
         "deposit_amount",
@@ -527,16 +536,9 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
     }
     current = _coll().find_one({"id": session_id}, {"_id": 0}) or {}
     detail_fields = {"client_name", "client_phone", "order_summary", "payment_status", "payment_notes"}
-    if current.get("client_details_confirmed") and detail_fields.intersection(fields):
-        candidate = {field: fields.get(field, current.get(field)) for field in detail_fields}
-        if not all([
-            str(candidate.get("client_name") or "").strip(),
-            str(candidate.get("client_phone") or "").strip(),
-            str(candidate.get("order_summary") or "").strip(),
-            candidate.get("payment_status") != "unknown",
-            str(candidate.get("payment_notes") or "").strip(),
-        ]):
-            raise ValueError("Los datos confirmados no pueden quedar vacios")
+    locked_detail_fields = {"client_name", "client_phone", "order_summary", "payment_notes"}
+    if current.get("client_details_confirmed") and locked_detail_fields.intersection(fields):
+        raise ValueError("Los datos confirmados del papel de orden no se pueden modificar")
     update: dict[str, Any] = {}
     for key, value in fields.items():
         if key not in allowed:
@@ -551,7 +553,21 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
             status = str(value or "unknown").strip()
             if status not in {"unknown", "none", "deposit", "paid"}:
                 raise ValueError("invalid payment status")
+            if current.get("client_details_confirmed") and status == "unknown":
+                raise ValueError("El estado de pago confirmado no puede volver a pendiente")
             update[key] = status
+        elif key == "final_quote_amount":
+            if value is None or value == "":
+                update[key] = None
+            else:
+                amount = float(value)
+                if amount <= 0:
+                    raise ValueError("El presupuesto definitivo debe ser mayor a cero")
+                update[key] = round(amount, 2)
+        elif key == "final_quote_updated_at":
+            update[key] = value
+        elif key == "final_quote_updated_by":
+            update[key] = str(value or "").strip()
         elif key == "client_details_confirmed":
             confirmed = bool(value)
             if confirmed:

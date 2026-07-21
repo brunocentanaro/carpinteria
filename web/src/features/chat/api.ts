@@ -100,6 +100,7 @@ export async function patchSession(
     payment_status: "unknown" | "none" | "deposit" | "paid";
     payment_notes: string;
     client_details_confirmed: boolean;
+    final_quote_amount: number | null;
     client_sent: boolean;
     client_accepted: "pending" | "yes" | "no";
     deposit_amount: number | null;

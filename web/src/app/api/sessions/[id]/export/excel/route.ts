@@ -5,11 +5,13 @@ import { callPython } from "@/lib/python";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-// POST /api/sessions/:id/export/excel
+type RouteContext = { params: Promise<{ id: string }> };
+
+// GET /api/sessions/:id/export/excel
 // Generates the workbook on the Python side and streams it back as xlsx.
-export async function POST(
+export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
+  { params }: RouteContext,
 ) {
   let xlsxPath = "";
   try {
@@ -39,3 +41,6 @@ export async function POST(
     if (xlsxPath) await unlink(xlsxPath).catch(() => {});
   }
 }
+
+// Keep POST available for existing clients that already use this endpoint.
+export const POST = GET;

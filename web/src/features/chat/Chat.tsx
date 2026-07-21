@@ -32,6 +32,7 @@ export function Chat() {
 
   // The owner (área "administracion") sees the agent trace panel for debugging.
   const meQuery = useQuery({ queryKey: ["auth", "me"], queryFn: getAuthMe, staleTime: 5 * 60 * 1000 });
+  const isAdmin = meQuery.data?.area === "administracion";
   const isOwner = meQuery.data?.area === "administracion" || !!meQuery.data?.allAccess;
 
   return (
@@ -44,7 +45,7 @@ export function Chat() {
           isOwner={isOwner}
         />
         <aside className="hidden min-w-[480px] flex-1 overflow-y-auto border-l bg-muted/30 xl:block">
-          <QuotationPanel session={sessionQuery.data ?? null} />
+          <QuotationPanel session={sessionQuery.data ?? null} isAdmin={isAdmin} />
         </aside>
       </section>
     </div>

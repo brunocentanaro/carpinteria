@@ -8,7 +8,7 @@ import { ClipboardList, ImagePlus, Paperclip, Send, Wrench } from "lucide-react"
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { createSession, qk, streamChat, uploadFurniturePhoto, uploadOrderPhoto, uploadPliego } from "../api";
+import { createSession, patchSession, qk, streamChat, uploadFurniturePhoto, uploadOrderPhoto, uploadPliego } from "../api";
 import type { Attachment, ChatMessage, Session, ToolTraceEntry } from "../schemas";
 import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 
@@ -377,6 +377,7 @@ export function ChatColumn({ session, onSessionCreated, isOwner = false }: ChatC
       onDrop={handleDrop}
       onPaste={handlePaste}
     >
+      {session?.client_details_confirmed ? <ConfirmedClientHeader session={session} /> : null}
       <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-3 bg-background">
         {messages.length === 0 && (
           <div className="text-sm text-muted-foreground">
@@ -527,6 +528,48 @@ export function ChatColumn({ session, onSessionCreated, isOwner = false }: ChatC
         </div>
       )}
     </div>
+  );
+}
+
+function ConfirmedClientHeader({ session }: { session: Session }) {
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (paymentStatus: Session["payment_status"]) =>
+      patchSession(session.id, { payment_status: paymentStatus }),
+    onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
+  });
+  return (
+    <section className="shrink-0 border-b bg-emerald-50 px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <div>
+          <div className="text-[10px] font-semibold uppercase text-emerald-700">Cliente confirmado</div>
+          <div className="font-semibold">{session.client_name}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase text-muted-foreground">Telefono</div>
+          <div>{session.client_phone}</div>
+        </div>
+        <div className="min-w-[220px] flex-1">
+          <div className="text-[10px] uppercase text-muted-foreground">Pedido</div>
+          <div className="truncate" title={session.order_summary}>{session.order_summary}</div>
+        </div>
+        <label className="text-[10px] font-medium uppercase text-muted-foreground">
+          Estado de pago
+          <select
+            className="ml-2 h-8 rounded border bg-background px-2 text-sm normal-case text-foreground"
+            value={session.payment_status}
+            disabled={mutation.isPending}
+            onChange={(event) => mutation.mutate(event.target.value as Session["payment_status"])}
+          >
+            <option value="none">No pago nada</option>
+            <option value="deposit">Seña</option>
+            <option value="paid">Pago</option>
+          </select>
+        </label>
+      </div>
+      {session.payment_notes ? <div className="mt-1 text-xs text-muted-foreground">Nota de pago: {session.payment_notes}</div> : null}
+      {mutation.error ? <div className="mt-1 text-xs text-destructive">{mutation.error.message}</div> : null}
+    </section>
   );
 }
 

@@ -5,10 +5,12 @@ import { callPython } from "@/lib/python";
 export const runtime = "nodejs";
 export const maxDuration = 120;
 
-// POST /api/sessions/:id/export/docx
-export async function POST(
+type RouteContext = { params: Promise<{ id: string }> };
+
+// GET /api/sessions/:id/export/docx
+export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ id: string }> },
+  { params }: RouteContext,
 ) {
   let docxPath = "";
   try {
@@ -38,3 +40,6 @@ export async function POST(
     if (docxPath) await unlink(docxPath).catch(() => {});
   }
 }
+
+// Keep POST available for existing clients that already use this endpoint.
+export const POST = GET;
