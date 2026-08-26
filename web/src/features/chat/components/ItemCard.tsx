@@ -3,7 +3,7 @@
 import type { DragEvent, MouseEvent, PointerEvent, ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, ChevronRight, Maximize2, Plus, Ruler, Trash2, X } from "lucide-react";
+import { ChevronDown, ChevronRight, CopyPlus, Maximize2, Plus, Ruler, Trash2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/table";
 import {
   deleteItem,
+  duplicateItem,
   listHardwareCatalog,
   qk,
   setItemHardwareQuantity,
@@ -123,6 +124,7 @@ export function ItemCard({ item, sessionId, defaultOpen = false }: ItemCardProps
           <Separator />
           <CardContent className="p-4 space-y-5">
             <ItemFields item={item} sessionId={sessionId} />
+            <AlternativeMaterialAction item={item} sessionId={sessionId} />
             <DesignPreview item={item} sessionId={sessionId} />
             <PiecesTable item={item} sessionId={sessionId} />
             <HardwareTable item={item} sessionId={sessionId} />
@@ -1405,6 +1407,53 @@ function ItemFields({
         </div>
       </div>
     </section>
+  );
+}
+
+function AlternativeMaterialAction({ item, sessionId }: { item: QuotationItem; sessionId: string }) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [material, setMaterial] = useState("");
+  const mutation = useMutation({
+    mutationFn: duplicateItem,
+    onSuccess: (session) => {
+      queryClient.setQueryData(qk.session(sessionId), session);
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      setMaterial("");
+      setOpen(false);
+    },
+  });
+  const canDuplicate = material.trim() !== "" && material.trim().toLowerCase() !== item.material.trim().toLowerCase();
+
+  return (
+    <div className="rounded-md border border-dashed p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold">Alternativa en otro material</div>
+          <div className="text-xs text-muted-foreground">Copia medidas, piezas, herrajes y cantidad para comparar ambas opciones.</div>
+        </div>
+        <Dialog open={open} onOpenChange={setOpen}>
+          <DialogTrigger render={<Button type="button" variant="outline" size="sm"><CopyPlus className="h-4 w-4" />Agregar alternativa</Button>} />
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Cotizar {item.code} en otro material</DialogTitle>
+              <DialogDescription>Se creará un producto separado con el mismo diseño para poder presentar las dos opciones.</DialogDescription>
+            </DialogHeader>
+            <Label className="space-y-1.5">
+              Material alternativo
+              <Input value={material} onChange={(event) => setMaterial(event.target.value)} placeholder="Ej: eucaliptus, pino, melamínico o compensado" autoFocus />
+            </Label>
+            {mutation.error ? <p className="text-sm text-destructive" role="alert">{mutation.error.message}</p> : null}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setOpen(false)}>Cancelar</Button>
+              <Button type="button" disabled={!canDuplicate || mutation.isPending} onClick={() => mutation.mutate({ sessionId, itemCode: item.code, material: material.trim() })}>
+                {mutation.isPending ? "Creando..." : "Crear alternativa"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
+    </div>
   );
 }
 

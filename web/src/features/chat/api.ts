@@ -103,6 +103,9 @@ export async function patchSession(
     final_quote_amount: number | null;
     approved_quote_amounts: Record<string, number>;
     approved_quote_tax_modes: Record<string, "plus" | "included">;
+    approved_quote_price_modes: Record<string, "unit" | "total">;
+    approved_quote_quantities: Record<string, number>;
+    approved_quote_notes: Record<string, string>;
     confirmed_quote_keys: string[];
     client_sent: boolean;
     client_accepted: "pending" | "yes" | "no";
@@ -340,6 +343,14 @@ export async function deleteItem(input: { sessionId: string; itemCode: string })
   return api(
     `/api/sessions/${input.sessionId}/items/${input.itemCode}`,
     { method: "DELETE" },
+    z.object({ session: SessionSchema }),
+  ).then((d) => d.session);
+}
+
+export async function duplicateItem(input: { sessionId: string; itemCode: string; material: string }) {
+  return api(
+    `/api/sessions/${input.sessionId}/items/${input.itemCode}`,
+    { method: "POST", body: JSON.stringify({ material: input.material }) },
     z.object({ session: SessionSchema }),
   ).then((d) => d.session);
 }

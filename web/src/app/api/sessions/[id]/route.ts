@@ -53,6 +53,9 @@ export async function PATCH(
           final_quote_amount?: number | null;
           approved_quote_amounts?: Record<string, number>;
           approved_quote_tax_modes?: Record<string, "plus" | "included">;
+          approved_quote_price_modes?: Record<string, "unit" | "total">;
+          approved_quote_quantities?: Record<string, number>;
+          approved_quote_notes?: Record<string, string>;
           confirmed_quote_keys?: string[];
         }
       | undefined;
@@ -77,6 +80,9 @@ export async function PATCH(
       "final_quote_amount",
       "approved_quote_amounts",
       "approved_quote_tax_modes",
+      "approved_quote_price_modes",
+      "approved_quote_quantities",
+      "approved_quote_notes",
       "confirmed_quote_keys",
       "client_sent",
       "client_accepted",
@@ -104,7 +110,7 @@ export async function PATCH(
       if ("final_quote_amount" in body && auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede fijar el presupuesto definitivo" }, { status: 403 });
       }
-      if (("approved_quote_amounts" in body || "approved_quote_tax_modes" in body) && auth.area !== "administracion") {
+      if (("approved_quote_amounts" in body || "approved_quote_tax_modes" in body || "approved_quote_price_modes" in body || "approved_quote_quantities" in body || "approved_quote_notes" in body) && auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede avalar precios definitivos" }, { status: 403 });
       }
       if ("approval_status" in body && auth.brandId !== "casa") {
@@ -115,9 +121,7 @@ export async function PATCH(
           current.client_details_confirmed === true &&
           !!current.client_name?.trim() &&
           !!current.client_phone?.trim() &&
-          !!current.order_summary?.trim() &&
-          current.payment_status !== "unknown" &&
-          !!current.payment_notes?.trim();
+          !!current.order_summary?.trim();
         if (!requestComplete) {
           return NextResponse.json({ error: "Complete todos los datos obligatorios de la solicitud antes de aprobar" }, { status: 400 });
         }
@@ -138,7 +142,7 @@ export async function PATCH(
         payload.final_quote_updated_at = new Date().toISOString();
         payload.final_quote_updated_by = auth.user;
       }
-      if ("approved_quote_amounts" in body || "approved_quote_tax_modes" in body) {
+      if ("approved_quote_amounts" in body || "approved_quote_tax_modes" in body || "approved_quote_price_modes" in body || "approved_quote_quantities" in body || "approved_quote_notes" in body) {
         payload.approved_quotes_updated_at = new Date().toISOString();
         payload.approved_quotes_updated_by = auth.user;
       }

@@ -2452,6 +2452,9 @@ def handle_session_commercial_status(data: dict) -> dict:
             "final_quote_updated_by",
             "approved_quote_amounts",
             "approved_quote_tax_modes",
+            "approved_quote_price_modes",
+            "approved_quote_quantities",
+            "approved_quote_notes",
             "approved_quotes_updated_at",
             "approved_quotes_updated_by",
             "confirmed_quote_keys",
@@ -2571,6 +2574,44 @@ def handle_item_delete(data: dict) -> dict:
     if len(s.items) == before:
         return {"error": f"item {code} not found"}
     s = _save_with_chat_note(s, f"Elimine el item {code} de la cotizacion desde el panel.")
+    return {"session": s.model_dump(mode="json")}
+
+
+def handle_item_duplicate(data: dict) -> dict:
+    """Copy an item as a material alternative, preserving its design."""
+    from carpinteria.agents.cotizador_chat import _format_item_summary, _recalculate_item
+    from carpinteria.quotation_session import find_item, get_session
+
+    sid = str(data.get("session_id") or "")
+    code = str(data.get("item_code") or "")
+    material = str(data.get("material") or "").strip()
+    if not sid or not code or not material:
+        return {"error": "Falta la cotizacion, el producto o el material alternativo"}
+    s = get_session(sid)
+    if s is None:
+        return {"error": "session not found"}
+    source = find_item(s, code)
+    if source is None:
+        return {"error": f"item {code} not found"}
+
+    existing_codes = {item.code.lower() for item in s.items}
+    suffix = 2
+    new_code = f"{source.code}-ALT"
+    while new_code.lower() in existing_codes:
+        new_code = f"{source.code}-ALT{suffix}"
+        suffix += 1
+    duplicate = source.model_copy(deep=True, update={
+        "code": new_code,
+        "material": material,
+        "placa_sku": None,
+        "last_quote": None,
+    })
+    _recalculate_item(duplicate, s)
+    s.items.append(duplicate)
+    s = _save_with_chat_note(
+        s,
+        f"Duplique {source.code} como alternativa {new_code} en {material} desde el panel.\n\n{_format_item_summary(duplicate)}",
+    )
     return {"session": s.model_dump(mode="json")}
 
 
@@ -3300,6 +3341,8 @@ def main() -> None:
             result = handle_catalog_list_boards(data)
         elif action == "item_update":
             result = handle_item_update(data)
+        elif action == "item_duplicate":
+            result = handle_item_duplicate(data)
         elif action == "item_delete":
             result = handle_item_delete(data)
         elif action == "piece_set_quantity":

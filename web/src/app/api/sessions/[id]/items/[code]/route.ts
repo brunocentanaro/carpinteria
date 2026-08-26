@@ -28,6 +28,26 @@ export async function PATCH(
   }
 }
 
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string; code: string }> },
+) {
+  try {
+    const { id, code } = await params;
+    const body = await req.json().catch(() => ({}));
+    const result = await callPython({
+      action: "item_duplicate",
+      session_id: id,
+      item_code: code,
+      material: body?.material,
+    });
+    return NextResponse.json(result);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
 // DELETE /api/sessions/:id/items/:code
 export async function DELETE(
   _req: NextRequest,

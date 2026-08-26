@@ -10,6 +10,7 @@ import { Check, FileSpreadsheet, FileText, MessageSquareText } from "lucide-reac
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -113,7 +114,9 @@ function approvedTaxMode(session: Session, key: string): "plus" | "included" {
 
 function approvedGrossAmount(session: Session, key: string): number {
   const amount = session.approved_quote_amounts[key] ?? 0;
-  return approvedTaxMode(session, key) === "plus" ? Math.round(amount * 1.22 * 100) / 100 : amount;
+  const quantity = session.approved_quote_price_modes[key] === "unit" ? (session.approved_quote_quantities[key] ?? 1) : 1;
+  const net = amount * quantity;
+  return approvedTaxMode(session, key) === "plus" ? Math.round(net * 1.22 * 100) / 100 : net;
 }
 
 function approvedTaxLabel(session: Session, key: string): string {
@@ -136,13 +139,19 @@ function buildClientMessage(session: Session, grand: number): string {
   const itemLines = session.items.map((item) => {
     const approved = session.approved_quote_amounts[itemApprovalKey(item)];
     const key = itemApprovalKey(item);
-    return `${itemClientLabel(item)}${approved ? ` — UYU ${fmtUYU(approved)} ${approvedTaxLabel(session, key)}` : ""}`;
+    const quantity = session.approved_quote_quantities[key] ?? item.quantity;
+    const priceDetail = session.approved_quote_price_modes[key] === "unit" ? ` unitarios × ${fmtDim(quantity)}` : " total";
+    const note = session.approved_quote_notes[key]?.trim();
+    return `${itemClientLabel(item)}${approved ? ` — UYU ${fmtUYU(approved)}${priceDetail} ${approvedTaxLabel(session, key)}` : ""}${note ? `\n  Aclaración: ${note}` : ""}`;
   });
   const molduraLines = (session.moldura_quotes ?? []).map((quote, index) => {
     const qty = quote.quantity > 1 ? `${fmtDim(quote.quantity)} ${quote.unit}` : quote.unit;
     const approved = session.approved_quote_amounts[molduraApprovalKey(quote, index)];
     const key = molduraApprovalKey(quote, index);
-    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}${approved ? ` — UYU ${fmtUYU(approved)} ${approvedTaxLabel(session, key)}` : ""}`;
+    const quantity = session.approved_quote_quantities[key] ?? quote.quantity;
+    const priceDetail = session.approved_quote_price_modes[key] === "unit" ? ` unitarios × ${fmtDim(quantity)}` : " total";
+    const note = session.approved_quote_notes[key]?.trim();
+    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}${approved ? ` — UYU ${fmtUYU(approved)}${priceDetail} ${approvedTaxLabel(session, key)}` : ""}${note ? `\n  Aclaración: ${note}` : ""}`;
   });
   const firstItem = session.items[0];
   const materialHint = firstItem ? itemMaterialLabel(firstItem) : "";
@@ -235,7 +244,7 @@ export function QuotationPanel({ session, isAdmin = false }: { session: Session 
       <PendingPanel session={session} />
       <ItemsList session={session} defaultOpen={!!session.order_number} isAdmin={isAdmin} />
       <MolduraQuotesPanel session={session} isAdmin={isAdmin} />
-      <Footer grand={grand} session={session} />
+      <Footer grand={grand} session={session} isAdmin={isAdmin} />
     </div>
   );
 }
@@ -310,6 +319,7 @@ function MolduraQuoteRow({ quote, session, quoteIndex, isAdmin }: { quote: Moldu
         session={session}
         approvalKey={molduraApprovalKey(quote, quoteIndex)}
         calculatedAmount={quote.total}
+        defaultQuantity={quote.quantity}
         isAdmin={isAdmin}
       />
     </div>
@@ -619,23 +629,12 @@ function moneyLabel(value: number | null | undefined) {
   return `UYU ${fmtUYU(value)}`;
 }
 
-function paymentStatusLabel(status: Session["payment_status"]) {
-  return {
-    unknown: "A confirmar",
-    none: "No pago nada",
-    deposit: "Seño",
-    paid: "Pago",
-  }[status];
-}
-
 function isRequestComplete(session: Session) {
   return Boolean(
     session.client_details_confirmed &&
       session.client_name.trim() &&
       session.client_phone.trim() &&
-      session.order_summary.trim() &&
-      session.payment_status !== "unknown" &&
-      session.payment_notes.trim(),
+      session.order_summary.trim(),
   );
 }
 
@@ -646,22 +645,18 @@ function OrderPaperPanel({ session }: { session: Session }) {
       patchSession(session.id, payload),
     onSuccess: (newSession) => {
       queryClient.setQueryData(qk.session(session.id), newSession);
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
     },
   });
   const [clientName, setClientName] = useState(session.client_name);
   const [clientPhone, setClientPhone] = useState(session.client_phone);
   const [orderSummary, setOrderSummary] = useState(session.order_summary);
-  const [paymentNotes, setPaymentNotes] = useState(session.payment_notes);
-  const [paymentStatus, setPaymentStatus] = useState(session.payment_status);
-
   if (session.client_details_confirmed) return null;
 
   const draftComplete = Boolean(
     clientName.trim() &&
       clientPhone.trim() &&
-      orderSummary.trim() &&
-      paymentStatus !== "unknown" &&
-      paymentNotes.trim(),
+      orderSummary.trim(),
   );
 
   const confirmDetails = () => {
@@ -670,8 +665,6 @@ function OrderPaperPanel({ session }: { session: Session }) {
       client_name: clientName,
       client_phone: clientPhone,
       order_summary: orderSummary,
-      payment_status: paymentStatus,
-      payment_notes: paymentNotes,
       client_details_confirmed: true,
     });
   };
@@ -691,14 +684,6 @@ function OrderPaperPanel({ session }: { session: Session }) {
     }
   };
 
-  const changePaymentStatus = (value: Session["payment_status"]) => {
-    if (session.client_details_confirmed && value === "unknown") return;
-    setPaymentStatus(value);
-    if (value !== "unknown" && value !== session.payment_status) {
-      mutation.mutate({ payment_status: value });
-    }
-  };
-
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 pb-3">
@@ -706,9 +691,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
           <CardTitle className="text-xs uppercase text-muted-foreground">
             Papel de orden
           </CardTitle>
-          <Badge variant="secondary" className="rounded px-2 py-0.5 text-[10px]">
-            {paymentStatusLabel(session.payment_status)}
-          </Badge>
+          <Badge variant="secondary" className="rounded px-2 py-0.5 text-[10px]">Datos del cliente</Badge>
         </div>
         {session.client_details_confirmed ? (
           <div
@@ -734,7 +717,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
       </CardHeader>
       {!draftComplete && (
         <div className="px-4 pb-3 text-xs text-amber-700">
-          Complete todos los campos y confirme con el tick para guardar la solicitud.
+          Complete los datos del cliente y del pedido para guardar la solicitud.
         </div>
       )}
       <CardContent className="grid gap-3 text-sm md:grid-cols-2">
@@ -768,33 +751,6 @@ function OrderPaperPanel({ session }: { session: Session }) {
             placeholder="Resumen del pedido"
           />
         </Label>
-        <Label className="space-y-1 text-xs">
-          Estado de pago *
-          <Select
-            value={paymentStatus}
-            onValueChange={(value) => changePaymentStatus(value as Session["payment_status"])}
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="unknown">A confirmar</SelectItem>
-              <SelectItem value="none">No pago nada</SelectItem>
-              <SelectItem value="deposit">Seño</SelectItem>
-              <SelectItem value="paid">Pago</SelectItem>
-            </SelectContent>
-          </Select>
-        </Label>
-        <Label className="space-y-1 text-xs">
-          Nota de pago *
-          <Input
-            required
-            value={paymentNotes}
-            onChange={(e) => setPaymentNotes(e.target.value)}
-            onBlur={() => saveText("payment_notes", paymentNotes, setPaymentNotes)}
-            placeholder="Ej: seña en efectivo"
-          />
-        </Label>
         {mutation.error ? (
           <p className="text-xs text-destructive md:col-span-2" role="alert">
             {mutation.error.message}
@@ -809,29 +765,46 @@ function ApprovedQuoteEditor({
   session,
   approvalKey,
   calculatedAmount,
+  defaultQuantity,
   isAdmin,
 }: {
   session: Session;
   approvalKey: string;
   calculatedAmount: number;
+  defaultQuantity: number;
   isAdmin: boolean;
 }) {
   const queryClient = useQueryClient();
   const approvedAmount = session.approved_quote_amounts[approvalKey];
   const approvedMode = approvedTaxMode(session, approvalKey);
+  const approvedPriceMode = session.approved_quote_price_modes[approvalKey] ?? "total";
+  const approvedQuantity = session.approved_quote_quantities[approvalKey] ?? defaultQuantity;
+  const approvedNote = session.approved_quote_notes[approvalKey] ?? "";
   const clientConfirmed = session.confirmed_quote_keys.includes(approvalKey);
   const [amount, setAmount] = useState(approvedAmount != null ? String(approvedAmount) : "");
   const [taxMode, setTaxMode] = useState<"plus" | "included">(approvedMode);
+  const [priceMode, setPriceMode] = useState<"unit" | "total">(approvedPriceMode);
+  const [quantity, setQuantity] = useState(String(approvedQuantity));
+  const [note, setNote] = useState(approvedNote);
   useEffect(() => {
     setAmount(approvedAmount != null ? String(approvedAmount) : "");
     setTaxMode(approvedMode);
-  }, [approvedAmount, approvedMode, approvalKey, session.id]);
+    setPriceMode(approvedPriceMode);
+    setQuantity(String(approvedQuantity));
+    setNote(approvedNote);
+  }, [approvedAmount, approvedMode, approvedNote, approvedPriceMode, approvedQuantity, approvalKey, session.id]);
   const mutation = useMutation({
     mutationFn: (value: number) => patchSession(session.id, {
       approved_quote_amounts: { ...session.approved_quote_amounts, [approvalKey]: value },
       approved_quote_tax_modes: { ...session.approved_quote_tax_modes, [approvalKey]: taxMode },
+      approved_quote_price_modes: { ...session.approved_quote_price_modes, [approvalKey]: priceMode },
+      approved_quote_quantities: { ...session.approved_quote_quantities, [approvalKey]: Number(quantity) },
+      approved_quote_notes: { ...session.approved_quote_notes, [approvalKey]: note.trim() },
     }),
-    onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(qk.session(session.id), updated);
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
   });
   const confirmationMutation = useMutation({
     mutationFn: (confirmed: boolean) => patchSession(session.id, {
@@ -839,24 +812,43 @@ function ApprovedQuoteEditor({
         ? [...new Set([...session.confirmed_quote_keys, approvalKey])]
         : session.confirmed_quote_keys.filter((key) => key !== approvalKey),
     }),
-    onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(qk.session(session.id), updated);
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
   });
   const parsed = Number(amount.replace(",", "."));
-  const canSave = amount.trim() !== "" && Number.isFinite(parsed) && parsed > 0;
+  const parsedQuantity = Number(quantity.replace(",", "."));
+  const canSave = amount.trim() !== "" && Number.isFinite(parsed) && parsed > 0 && Number.isFinite(parsedQuantity) && parsedQuantity > 0;
 
   return (
     <div className={`mt-3 rounded-md border p-3 ${approvedAmount ? "border-emerald-300 bg-emerald-50" : "border-amber-300 bg-amber-50"}`}>
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <div className="text-[10px] font-semibold uppercase text-muted-foreground">Precio definitivo avalado</div>
-          <div className="font-bold tabular-nums">{approvedAmount ? `UYU ${fmtUYU(approvedAmount)} ${approvedTaxLabel(session, approvalKey)}` : "Pendiente de administracion"}</div>
-          <div className="text-[10px] text-muted-foreground">Cotizador: UYU {fmtUYU(calculatedAmount)}</div>
+          <div className="font-bold tabular-nums">{approvedAmount ? `UYU ${fmtUYU(approvedAmount)} ${approvedPriceMode === "unit" ? `unitarios × ${fmtDim(approvedQuantity)}` : "total"} ${approvedTaxLabel(session, approvalKey)}` : "Pendiente de administracion"}</div>
+          <div className="text-[10px] text-muted-foreground">{calculatedAmount > 0 ? `Cotizador: UYU ${fmtUYU(calculatedAmount)}` : "El cotizador no pudo calcularlo: cargá el importe manualmente."}</div>
+          {approvedNote ? <div className="mt-1 text-xs text-foreground">Aclaración: {approvedNote}</div> : null}
         </div>
         {isAdmin ? (
-          <div className="flex flex-wrap items-end gap-2 sm:min-w-[420px]">
+          <div className="grid w-full gap-2 sm:min-w-[520px] sm:grid-cols-2 lg:grid-cols-4">
             <Label className="flex-1 space-y-1 text-xs">
               Importe avalado (UYU)
               <Input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Precio definitivo" />
+            </Label>
+            <Label className="space-y-1 text-xs">
+              Tipo de precio
+              <Select value={priceMode} onValueChange={(value) => setPriceMode(value as "unit" | "total")}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unit">Unitario</SelectItem>
+                  <SelectItem value="total">Total</SelectItem>
+                </SelectContent>
+              </Select>
+            </Label>
+            <Label className="space-y-1 text-xs">
+              Cantidad
+              <Input type="number" min="0.01" step="0.01" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
             </Label>
             <Label className="min-w-[140px] space-y-1 text-xs">
               Tratamiento de IVA
@@ -868,7 +860,11 @@ function ApprovedQuoteEditor({
                 </SelectContent>
               </Select>
             </Label>
-            <Button type="button" size="sm" disabled={!canSave || mutation.isPending} onClick={() => mutation.mutate(parsed)}>
+            <Label className="space-y-1 text-xs sm:col-span-2 lg:col-span-3">
+              Aclaraciones para la cotización
+              <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ej: realizado en esta medida porque la solicitada no está disponible" rows={2} />
+            </Label>
+            <Button type="button" size="sm" className="self-end" disabled={!canSave || mutation.isPending} onClick={() => mutation.mutate(parsed)}>
               {mutation.isPending ? "Guardando..." : "Avalar"}
             </Button>
           </div>
@@ -883,13 +879,15 @@ function ApprovedQuoteEditor({
           type="checkbox"
           className="size-5 shrink-0 accent-emerald-600"
           checked={clientConfirmed}
-          disabled={!approvedAmount || confirmationMutation.isPending}
+          disabled={!approvedAmount || !session.client_sent || confirmationMutation.isPending}
           onChange={(event) => confirmationMutation.mutate(event.target.checked)}
         />
         <span>
           <span className="block text-sm font-semibold">El cliente confirmó este producto</span>
           <span className="block text-xs text-muted-foreground">
-            {approvedAmount
+            {!session.client_sent
+              ? "La cotización debe marcarse como enviada antes de registrar la aceptación del cliente."
+              : approvedAmount
               ? clientConfirmed
                 ? "Este producto integra el pedido y se toma para calcular la seña mínima."
                 : "El personal debe marcar esta casilla solamente si el cliente acepta este producto."
@@ -911,6 +909,10 @@ function depositProgressLabel(deposit: number | null | undefined, total: number)
 }
 
 function OrderProgress({ session, grand }: { session: Session; grand: number }) {
+  const acceptedTotal = session.confirmed_quote_keys.reduce(
+    (sum, key) => sum + approvedGrossAmount(session, key),
+    0,
+  );
   const steps = [
     { key: "requested", label: "Solicitada", done: isRequestComplete(session) },
     {
@@ -933,7 +935,7 @@ function OrderProgress({ session, grand }: { session: Session; grand: number }) 
       key: "deposit",
       label: "Seña",
       done: session.client_accepted === "yes" && !!session.deposit_amount,
-      detail: depositProgressLabel(session.deposit_amount, grand),
+      detail: depositProgressLabel(session.deposit_amount, acceptedTotal),
     },
     {
       key: "order",
@@ -947,15 +949,10 @@ function OrderProgress({ session, grand }: { session: Session; grand: number }) 
       done: session.ready_to_deliver,
     },
     {
-      key: "delivered",
-      label: "Entregada",
-      done: session.delivered,
-    },
-    {
       key: "paid",
-      label: "Cobrada",
-      done: session.delivered && !!session.final_payment_amount,
-      detail: moneyLabel(session.final_payment_amount || grand),
+      label: "Entregada y cobrada",
+      done: session.delivered && session.final_payment_amount !== null,
+      detail: session.final_payment_amount !== null ? `UYU ${fmtUYU(session.final_payment_amount)}` : moneyLabel(grand),
     },
   ];
   const completedCount = steps.filter((step) => step.done).length;
@@ -989,7 +986,7 @@ function OrderProgress({ session, grand }: { session: Session; grand: number }) 
               width: `calc((100% - 2rem) * ${Math.max(0, Math.min(progress, 100)) / 100})`,
             }}
           />
-          <div className="relative grid grid-cols-9 gap-2">
+          <div className="relative grid grid-cols-8 gap-2">
             {steps.map((step, index) => {
               const state = step.rejected ? "rejected" : step.done ? "done" : "pending";
               return (
@@ -1412,6 +1409,7 @@ function ItemsList({
               session={session}
               approvalKey={itemApprovalKey(it)}
               calculatedAmount={(it.last_quote?.total_with_hardware ?? it.last_quote?.total ?? 0) * it.quantity}
+              defaultQuantity={it.quantity}
               isAdmin={isAdmin}
             />
           </div>
@@ -1425,7 +1423,7 @@ function ItemsList({
 // Footer
 // ---------------------------------------------------------------------------
 
-function Footer({ grand, session }: { grand: number; session: Session }) {
+function Footer({ grand, session, isAdmin }: { grand: number; session: Session; isAdmin: boolean }) {
   const queryClient = useQueryClient();
   const hasItems = session.items.length > 0;
   const hasMolduras = (session.moldura_quotes?.length ?? 0) > 0;
@@ -1447,6 +1445,20 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
       queryClient.setQueryData(qk.session(session.id), newSession);
       setAttachedMessage(true);
       window.setTimeout(() => setAttachedMessage(false), 1800);
+    },
+  });
+  const approvalMutation = useMutation({
+    mutationFn: () => patchSession(session.id, { approval_status: "approved" }),
+    onSuccess: (newSession) => {
+      queryClient.setQueryData(qk.session(session.id), newSession);
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+  const sentMutation = useMutation({
+    mutationFn: () => patchSession(session.id, { client_sent: true }),
+    onSuccess: (newSession) => {
+      queryClient.setQueryData(qk.session(session.id), newSession);
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
     },
   });
 
@@ -1516,6 +1528,21 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
           ) : null}
         </div>
         <div className="flex gap-2">
+          {isAdmin && session.approval_status !== "approved" ? (
+            <Button
+              onClick={() => approvalMutation.mutate()}
+              disabled={!hasDefinitiveQuote || !isRequestComplete(session) || approvalMutation.isPending}
+            >
+              <Check className="h-4 w-4 mr-1" />
+              {approvalMutation.isPending ? "Aprobando…" : "Aprobar cotización"}
+            </Button>
+          ) : null}
+          {session.approval_status === "approved" && !session.client_sent ? (
+            <Button onClick={() => sentMutation.mutate()} disabled={sentMutation.isPending}>
+              <MessageSquareText className="h-4 w-4 mr-1" />
+              {sentMutation.isPending ? "Guardando…" : "Marcar enviada al cliente"}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             onClick={attachQuoteToChat}
@@ -1550,6 +1577,8 @@ function Footer({ grand, session }: { grand: number; session: Session }) {
           </Button>
         </div>
       </section>
+      {approvalMutation.error ? <div className="text-xs text-destructive">{approvalMutation.error.message}</div> : null}
+      {sentMutation.error ? <div className="text-xs text-destructive">{sentMutation.error.message}</div> : null}
     </>
   );
 }

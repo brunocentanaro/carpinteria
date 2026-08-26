@@ -180,6 +180,9 @@ class QuotationSession(BaseModel):
     final_quote_updated_by: str = ""
     approved_quote_amounts: dict[str, float] = Field(default_factory=dict)
     approved_quote_tax_modes: dict[str, str] = Field(default_factory=dict)
+    approved_quote_price_modes: dict[str, str] = Field(default_factory=dict)
+    approved_quote_quantities: dict[str, float] = Field(default_factory=dict)
+    approved_quote_notes: dict[str, str] = Field(default_factory=dict)
     approved_quotes_updated_at: datetime | None = None
     approved_quotes_updated_by: str = ""
     confirmed_quote_keys: list[str] = Field(default_factory=list)
@@ -328,6 +331,9 @@ def _session_row(doc: dict) -> dict:
         "final_quote_updated_by": doc.get("final_quote_updated_by") or "",
         "approved_quote_amounts": dict(doc.get("approved_quote_amounts") or {}),
         "approved_quote_tax_modes": dict(doc.get("approved_quote_tax_modes") or {}),
+        "approved_quote_price_modes": dict(doc.get("approved_quote_price_modes") or {}),
+        "approved_quote_quantities": dict(doc.get("approved_quote_quantities") or {}),
+        "approved_quote_notes": dict(doc.get("approved_quote_notes") or {}),
         "approved_quotes_updated_at": doc.get("approved_quotes_updated_at"),
         "approved_quotes_updated_by": doc.get("approved_quotes_updated_by") or "",
         "confirmed_quote_keys": list(doc.get("confirmed_quote_keys") or []),
@@ -343,6 +349,9 @@ def _session_row(doc: dict) -> dict:
         "final_payment_amount": doc.get("final_payment_amount"),
         "total": round(total, 2),
         "item_count": len(items),
+        "product_count": len(items) + len(doc.get("moldura_quotes") or []),
+        "product_keys": [f"item:{item.get('code')}" for item in items]
+        + [f"moldura:{index}" for index, _quote in enumerate(doc.get("moldura_quotes") or [])],
         "general_specs": doc.get("general_specs") or {},
         "sequence": sequence,
         "year": year,
@@ -538,6 +547,9 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         "final_quote_updated_by",
         "approved_quote_amounts",
         "approved_quote_tax_modes",
+        "approved_quote_price_modes",
+        "approved_quote_quantities",
+        "approved_quote_notes",
         "approved_quotes_updated_at",
         "approved_quotes_updated_by",
         "confirmed_quote_keys",
@@ -552,6 +564,8 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
     current = _coll().find_one({"id": session_id}, {"_id": 0}) or {}
     approved_amounts = fields.get("approved_quote_amounts", current.get("approved_quote_amounts") or {})
     tax_modes = fields.get("approved_quote_tax_modes", current.get("approved_quote_tax_modes") or {})
+    price_modes = fields.get("approved_quote_price_modes", current.get("approved_quote_price_modes") or {})
+    quantities = fields.get("approved_quote_quantities", current.get("approved_quote_quantities") or {})
     item_keys = [f"item:{item.get('code')}" for item in (current.get("items") or [])]
     moldura_keys = [f"moldura:{index}" for index, _quote in enumerate(current.get("moldura_quotes") or [])]
     product_keys = item_keys + moldura_keys
@@ -561,22 +575,64 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
     confirmed_keys = [str(key) for key in confirmed_keys]
     if any(key not in product_keys or float(approved_amounts.get(key) or 0) <= 0 for key in confirmed_keys):
         raise ValueError("Solo puede confirmar productos con precio definitivo avalado")
+    confirmed_total = round(sum(
+        float(approved_amounts.get(key) or 0)
+        * (float(quantities.get(key) or 1) if price_modes.get(key, "total") == "unit" else 1)
+        * (1.22 if tax_modes.get(key, "included" if key.startswith("moldura:") else "plus") == "plus" else 1)
+        for key in confirmed_keys
+    ), 2)
+    candidate_approval = fields.get("approval_status", current.get("approval_status") or "pending")
+    candidate_sent = bool(fields.get("client_sent", current.get("client_sent") or False))
+    candidate_accepted = fields.get("client_accepted", current.get("client_accepted") or "pending")
+    candidate_deposit = fields.get("deposit_amount", current.get("deposit_amount"))
+    candidate_order = str(fields.get("order_number", current.get("order_number") or "") or "").strip()
+    candidate_ready = bool(fields.get("ready_to_deliver", current.get("ready_to_deliver") or False))
+    candidate_delivered = bool(fields.get("delivered", current.get("delivered") or False))
+    candidate_final_payment = fields.get("final_payment_amount", current.get("final_payment_amount"))
+    if "confirmed_quote_keys" in fields and confirmed_keys and not candidate_sent:
+        raise ValueError("La cotizacion debe enviarse antes de registrar los productos aceptados")
+    if candidate_approval == "approved":
+        if not product_keys or any(float(approved_amounts.get(key) or 0) <= 0 for key in product_keys):
+            raise ValueError("Debe avalar el precio definitivo de todos los productos antes de aprobar")
+        if not current.get("client_details_confirmed"):
+            raise ValueError("El empleado debe completar y confirmar primero los datos de la solicitud")
+    if candidate_sent and candidate_approval != "approved":
+        raise ValueError("La cotizacion debe estar aprobada antes de enviarla al cliente")
+    if candidate_accepted != "pending" and not candidate_sent:
+        raise ValueError("La cotizacion debe enviarse antes de registrar la respuesta del cliente")
+    if candidate_accepted == "yes" and not confirmed_keys:
+        raise ValueError("Indique primero que productos acepto el cliente")
+    if candidate_deposit not in {None, ""} and float(candidate_deposit) > 0:
+        if candidate_accepted != "yes":
+            raise ValueError("El cliente debe aceptar al menos un producto antes de registrar la seña")
+        required_deposit = round(confirmed_total * 0.50, 2)
+        if round(float(candidate_deposit), 2) < required_deposit:
+            raise ValueError("La seña debe ser al menos el 50% de los productos confirmados")
+    if candidate_order and (candidate_accepted != "yes" or not candidate_deposit):
+        raise ValueError("Debe registrar la seña antes de emitir la orden de fabrica")
+    if candidate_ready and not candidate_order:
+        raise ValueError("Debe existir una orden de fabrica antes de marcar el trabajo como listo")
+    if candidate_delivered or candidate_final_payment not in {None, ""}:
+        if not candidate_ready:
+            raise ValueError("Fabrica debe confirmar que el pedido esta listo antes de entregarlo")
+        if not candidate_delivered or candidate_final_payment in {None, ""} or float(candidate_final_payment) < 0:
+            raise ValueError("La entrega y el cobro del saldo deben registrarse juntos")
+        remaining = round(max(confirmed_total - float(candidate_deposit or 0), 0), 2)
+        if round(float(candidate_final_payment), 2) != remaining:
+            raise ValueError(f"El saldo restante a cobrar es UYU {remaining:.2f}")
     candidate_payment_status = fields.get("payment_status", current.get("payment_status") or "unknown")
+    if candidate_payment_status == "paid" and (not candidate_delivered or candidate_final_payment in {None, ""}):
+        raise ValueError("El pago total se registra junto con la entrega y el cobro del saldo")
     if candidate_payment_status == "deposit":
         if not confirmed_keys:
             raise ValueError("Primero indique que productos confirmo el cliente")
-        confirmed_total = sum(
-            float(approved_amounts.get(key) or 0)
-            * (1.22 if tax_modes.get(key, "included" if key.startswith("moldura:") else "plus") == "plus" else 1)
-            for key in confirmed_keys
-        )
         deposit_amount = fields.get("deposit_amount", current.get("deposit_amount"))
         if deposit_amount is None or deposit_amount == "":
             raise ValueError("Ingrese el importe de la seña")
         required_deposit = round(confirmed_total * 0.50, 2)
         if round(float(deposit_amount), 2) < required_deposit:
             raise ValueError("La seña debe ser al menos el 50% de los productos confirmados")
-    detail_fields = {"client_name", "client_phone", "order_summary", "payment_status", "payment_notes"}
+    detail_fields = {"client_name", "client_phone", "order_summary"}
     locked_detail_fields = {"client_name", "client_phone", "order_summary", "payment_notes"}
     if current.get("client_details_confirmed") and locked_detail_fields.intersection(fields):
         raise ValueError("Los datos confirmados del papel de orden no se pueden modificar")
@@ -631,6 +687,24 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
                     raise ValueError("El tratamiento de IVA debe ser + IVA o IVA incluido")
                 modes[item_key] = mode
             update[key] = modes
+        elif key == "approved_quote_price_modes":
+            if not isinstance(value, dict):
+                raise ValueError("Las modalidades de precio deben enviarse por producto")
+            modes = {str(raw_key): str(raw_mode) for raw_key, raw_mode in value.items()}
+            if any(not item_key or mode not in {"unit", "total"} for item_key, mode in modes.items()):
+                raise ValueError("La modalidad debe ser precio unitario o total")
+            update[key] = modes
+        elif key == "approved_quote_quantities":
+            if not isinstance(value, dict):
+                raise ValueError("Las cantidades deben enviarse por producto")
+            quantities_by_key = {str(raw_key): float(raw_quantity) for raw_key, raw_quantity in value.items()}
+            if any(not item_key or quantity <= 0 for item_key, quantity in quantities_by_key.items()):
+                raise ValueError("Cada cantidad debe ser mayor a cero")
+            update[key] = quantities_by_key
+        elif key == "approved_quote_notes":
+            if not isinstance(value, dict):
+                raise ValueError("Las aclaraciones deben enviarse por producto")
+            update[key] = {str(raw_key): str(raw_note or "").strip() for raw_key, raw_note in value.items()}
         elif key == "approved_quotes_updated_at":
             update[key] = value
         elif key == "approved_quotes_updated_by":
@@ -645,8 +719,6 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
                     str(candidate.get("client_name") or "").strip(),
                     str(candidate.get("client_phone") or "").strip(),
                     str(candidate.get("order_summary") or "").strip(),
-                    candidate.get("payment_status") != "unknown",
-                    str(candidate.get("payment_notes") or "").strip(),
                 ]):
                     raise ValueError("Complete todos los datos obligatorios antes de confirmarlos")
                 update["client_details_confirmed_at"] = datetime.now(timezone.utc)

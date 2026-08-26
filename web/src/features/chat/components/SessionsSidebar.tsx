@@ -79,10 +79,22 @@ function isRequestComplete(s: SessionRow) {
     s.client_details_confirmed &&
       s.client_name.trim() &&
       s.client_phone.trim() &&
-      s.order_summary.trim() &&
-      s.payment_status !== "unknown" &&
-      s.payment_notes.trim(),
+      s.order_summary.trim(),
   );
+}
+
+function confirmedTotal(s: SessionRow) {
+  return s.confirmed_quote_keys.reduce((sum, key) => {
+    const amount = s.approved_quote_amounts[key] ?? 0;
+    const mode = s.approved_quote_tax_modes[key] ?? (key.startsWith("moldura:") ? "included" : "plus");
+    const quantity = s.approved_quote_price_modes[key] === "unit" ? (s.approved_quote_quantities[key] ?? 1) : 1;
+    const net = amount * quantity;
+    return sum + (mode === "plus" ? Math.round(net * 1.22 * 100) / 100 : net);
+  }, 0);
+}
+
+function allProductsApproved(s: SessionRow) {
+  return s.product_keys.length > 0 && s.product_keys.every((key) => (s.approved_quote_amounts[key] ?? 0) > 0);
 }
 
 export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
@@ -137,8 +149,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
 
   function currentStep(s: SessionRow) {
     if (!isRequestComplete(s)) return "Completar solicitud";
-    if (s.delivered && s.final_payment_amount) return "Cobrada";
-    if (s.delivered) return "Cobro final";
+    if (s.delivered && s.final_payment_amount !== null) return "Entregada y cobrada";
     if (s.ready_to_deliver) return "Entrega";
     if (s.client_accepted === "yes" && s.deposit_amount && !s.order_number) return "Nro. de orden";
     if (s.client_accepted === "yes" && s.deposit_amount) return "Produccion";
@@ -158,8 +169,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
       s.client_accepted === "yes" && !!s.deposit_amount,
       s.client_accepted === "yes" && !!s.deposit_amount && !!s.order_number,
       s.ready_to_deliver,
-      s.delivered,
-      s.delivered && !!s.final_payment_amount,
+      s.delivered && s.final_payment_amount !== null,
     ];
     return (
       <div className="flex items-center gap-1" title={currentStep(s)}>
@@ -188,7 +198,12 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   function saveAmount(id: string, field: "deposit_amount" | "final_payment_amount", value: string) {
     const parsed = value.trim() ? Number(value) : null;
     if (parsed !== null && (!Number.isFinite(parsed) || parsed < 0)) return;
-    statusMutation.mutate({ id, fields: { [field]: parsed } });
+    statusMutation.mutate({
+      id,
+      fields: field === "deposit_amount"
+        ? { deposit_amount: parsed, payment_status: parsed ? "deposit" : "none" }
+        : { final_payment_amount: parsed },
+    });
   }
 
   function orderDraft(s: SessionRow) {
@@ -203,32 +218,30 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
 
   function progressControls(s: SessionRow) {
     const deposit = amountDraft(s.id, "deposit_amount", s.deposit_amount);
-    const finalPayment = amountDraft(s.id, "final_payment_amount", s.final_payment_amount);
+    const remaining = Math.round(Math.max(confirmedTotal(s) - (s.deposit_amount || 0), 0) * 100) / 100;
+    const finalPayment = amountDraft(s.id, "final_payment_amount", s.final_payment_amount ?? remaining);
     const baseButton = "rounded border px-2 py-1 text-[10px] text-muted-foreground hover:bg-muted";
     const primaryButton = "rounded bg-primary px-2 py-1 text-[10px] text-primary-foreground";
     const dangerButton = "rounded border border-red-200 px-2 py-1 text-[10px] text-red-700 hover:bg-red-50";
 
     let control: React.ReactNode = null;
-    if (
-      s.approval_status !== "approved" &&
-      isRequestComplete(s) &&
-      isAdmin &&
-      brandId === "casa"
-    ) {
-      control = (
-        <div className="flex gap-1">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              statusMutation.mutate({ id: s.id, fields: { approval_status: "approved" } });
-            }}
-            className={primaryButton}
-          >
-            Aprobar
-          </button>
-        </div>
-      );
+    if (s.approval_status !== "approved") {
+      if (isRequestComplete(s) && allProductsApproved(s) && isAdmin && brandId === "casa") {
+        control = (
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                statusMutation.mutate({ id: s.id, fields: { approval_status: "approved" } });
+              }}
+              className={primaryButton}
+            >
+              Aprobar
+            </button>
+          </div>
+        );
+      }
     } else if (!s.client_sent && brandId === "casa") {
       control = (
         <div className="flex gap-1">
@@ -244,41 +257,46 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (s.client_accepted === "pending" && brandId === "casa") {
-      control = (
-        <div className="flex gap-1">
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              statusMutation.mutate({
-                id: s.id,
-                fields: {
-                  client_accepted: "no",
-                  deposit_amount: null,
-                  ready_to_deliver: false,
-                  delivered: false,
-                  final_payment_amount: null,
-                  order_number: "",
-                },
-              });
-            }}
-            className={dangerButton}
-          >
-            No
-          </button>
-          <button
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              statusMutation.mutate({ id: s.id, fields: { client_accepted: "yes" } });
-            }}
-            className={primaryButton}
-          >
-            Si
-          </button>
-        </div>
-      );
+    } else if (s.client_accepted === "pending") {
+      if (brandId === "casa") {
+        control = (
+          <div className="flex gap-1">
+            <button
+              type="button"
+              disabled={s.confirmed_quote_keys.length === 0}
+              onClick={(e) => {
+                e.stopPropagation();
+                statusMutation.mutate({
+                  id: s.id,
+                  fields: {
+                    client_accepted: "no",
+                    confirmed_quote_keys: [],
+                    deposit_amount: null,
+                    payment_status: "none",
+                    ready_to_deliver: false,
+                    delivered: false,
+                    final_payment_amount: null,
+                    order_number: "",
+                  },
+                });
+              }}
+              className={dangerButton}
+            >
+              No
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                statusMutation.mutate({ id: s.id, fields: { client_accepted: "yes" } });
+              }}
+              className={`${primaryButton} disabled:cursor-not-allowed disabled:opacity-50`}
+            >
+              Si
+            </button>
+          </div>
+        );
+      }
     } else if (s.client_accepted === "no" && brandId === "casa") {
       control = (
         <button
@@ -292,7 +310,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           Reabrir
         </button>
       );
-    } else if (!s.deposit_amount && brandId === "casa") {
+    } else if (s.client_accepted === "yes" && !s.deposit_amount && brandId === "casa") {
       control = (
         <div className="flex items-center gap-1">
           <input
@@ -338,33 +356,22 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (!s.ready_to_deliver && brandId === "pirone") {
-      control = (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            statusMutation.mutate({ id: s.id, fields: { ready_to_deliver: true } });
-          }}
-          className={primaryButton}
-        >
-          Listo para entregar
-        </button>
-      );
+    } else if (!s.ready_to_deliver) {
+      if (brandId === "pirone") {
+        control = (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              statusMutation.mutate({ id: s.id, fields: { ready_to_deliver: true } });
+            }}
+            className={primaryButton}
+          >
+            Listo para entregar
+          </button>
+        );
+      }
     } else if (!s.delivered && brandId === "casa") {
-      control = (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            statusMutation.mutate({ id: s.id, fields: { delivered: true } });
-          }}
-          className={primaryButton}
-        >
-          Marcar entregada
-        </button>
-      );
-    } else if (!s.final_payment_amount && brandId === "casa") {
       control = (
         <div className="flex items-center gap-1">
           <input
@@ -373,17 +380,19 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
             onClick={(e) => e.stopPropagation()}
             className="h-7 min-w-0 flex-1 rounded border bg-background px-2 text-xs"
             inputMode="decimal"
-            placeholder={s.total > 0 ? String(s.total) : "Cobro final"}
+            placeholder={remaining > 0 ? String(remaining) : "Saldo restante"}
           />
           <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              saveAmount(s.id, "final_payment_amount", finalPayment);
+              const parsed = Number(finalPayment);
+              if (!Number.isFinite(parsed) || parsed < 0) return;
+              statusMutation.mutate({ id: s.id, fields: { delivered: true, final_payment_amount: parsed, payment_status: "paid" } });
             }}
             className={primaryButton}
           >
-            OK
+            Entregar y cobrar
           </button>
         </div>
       );
@@ -408,6 +417,9 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </div>
         )}
         {control}
+        {statusMutation.error && statusMutation.variables?.id === s.id && (
+          <div className="mt-1.5 text-[10px] text-red-700">{statusMutation.error.message}</div>
+        )}
       </div>
     );
   }

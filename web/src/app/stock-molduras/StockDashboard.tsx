@@ -50,10 +50,10 @@ interface ProductMetric extends DashboardProduct {
   inventoryValue: number;
   sold: number;
   estimatedRevenue: number;
-  monthlySales: number;
+  monthlyOutflow: number;
   inventoryDays: number | null;
-  lastSale: Date | null;
-  daysSinceSale: number | null;
+  lastOutflow: Date | null;
+  daysSinceOutflow: number | null;
   productionPriority: number;
 }
 
@@ -84,26 +84,35 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
   for (const row of reservations) reservedByCode.set(row.code, (reservedByCode.get(row.code) || 0) + row.quantity);
 
   const sales = movements.filter((movement) => movement.type === "VENTA");
+  const outflows = movements.filter((movement) => movement.type === "VENTA" || movement.type === "ENVIO_CASA");
   const validSaleDates = sales.map((sale) => new Date(sale.created_at)).filter((date) => !Number.isNaN(date.getTime()));
   const firstSale = validSaleDates.length ? new Date(Math.min(...validSaleDates.map((date) => date.getTime()))) : now;
-  const observedMonths = Math.max(1, (now.getTime() - firstSale.getTime()) / (30.44 * DAY_MS));
+  const salesObservedMonths = Math.max(1, (now.getTime() - firstSale.getTime()) / (30.44 * DAY_MS));
   const soldByCode = new Map<string, number>();
-  const lastSaleByCode = new Map<string, Date>();
   for (const sale of sales) {
     const quantity = sale.complete_quantity + sale.fraction_quantity;
     soldByCode.set(sale.code, (soldByCode.get(sale.code) || 0) + quantity);
-    const date = new Date(sale.created_at);
-    if (!Number.isNaN(date.getTime()) && (!lastSaleByCode.get(sale.code) || date > lastSaleByCode.get(sale.code)!)) lastSaleByCode.set(sale.code, date);
+  }
+  const validOutflowDates = outflows.map((movement) => new Date(movement.created_at)).filter((date) => !Number.isNaN(date.getTime()));
+  const firstOutflow = validOutflowDates.length ? new Date(Math.min(...validOutflowDates.map((date) => date.getTime()))) : now;
+  const outflowObservedMonths = Math.max(1, (now.getTime() - firstOutflow.getTime()) / (30.44 * DAY_MS));
+  const outflowByCode = new Map<string, number>();
+  const lastOutflowByCode = new Map<string, Date>();
+  for (const movement of outflows) {
+    const quantity = movement.complete_quantity + movement.fraction_quantity;
+    outflowByCode.set(movement.code, (outflowByCode.get(movement.code) || 0) + quantity);
+    const date = new Date(movement.created_at);
+    if (!Number.isNaN(date.getTime()) && (!lastOutflowByCode.get(movement.code) || date > lastOutflowByCode.get(movement.code)!)) lastOutflowByCode.set(movement.code, date);
   }
 
   const metrics: ProductMetric[] = products.map((product) => {
     const physicalStock = stockByCode.get(product.code) || 0;
     const available = Math.max(0, physicalStock - (reservedByCode.get(product.code) || 0));
     const sold = soldByCode.get(product.code) || 0;
-    const monthlySales = sold / observedMonths;
-    const lastSale = lastSaleByCode.get(product.code) || null;
-    const inventoryDays = monthlySales > 0 ? (available / monthlySales) * 30.44 : null;
-    const target = Math.max(product.jit_min_quantity, Math.ceil(monthlySales));
+    const monthlyOutflow = (outflowByCode.get(product.code) || 0) / outflowObservedMonths;
+    const lastOutflow = lastOutflowByCode.get(product.code) || null;
+    const inventoryDays = monthlyOutflow > 0 ? (available / monthlyOutflow) * 30.44 : null;
+    const target = Math.max(product.jit_min_quantity, Math.ceil(monthlyOutflow));
     return {
       ...product,
       stock: physicalStock,
@@ -111,10 +120,10 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
       inventoryValue: physicalStock * product.price_varilla_iva,
       sold,
       estimatedRevenue: sold * product.price_varilla_iva,
-      monthlySales,
+      monthlyOutflow,
       inventoryDays,
-      lastSale,
-      daysSinceSale: lastSale ? daysBetween(lastSale, now) : null,
+      lastOutflow,
+      daysSinceOutflow: lastOutflow ? daysBetween(lastOutflow, now) : null,
       productionPriority: Math.max(0, target - available),
     };
   });
@@ -124,8 +133,8 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
   const totalValue = stocked.reduce((sum, item) => sum + item.inventoryValue, 0);
   const totalSold = metrics.reduce((sum, item) => sum + item.sold, 0);
   const lowStock = metrics.filter((item) => item.jit_min_quantity > 0 && item.available <= item.jit_min_quantity);
-  const deadStock = stocked.filter((item) => item.daysSinceSale === null || item.daysSinceSale >= DEAD_DAYS);
-  const slowStock = stocked.filter((item) => item.daysSinceSale !== null && item.daysSinceSale >= SLOW_DAYS && item.daysSinceSale < DEAD_DAYS);
+  const deadStock = stocked.filter((item) => item.daysSinceOutflow === null || item.daysSinceOutflow >= DEAD_DAYS);
+  const slowStock = stocked.filter((item) => item.daysSinceOutflow !== null && item.daysSinceOutflow >= SLOW_DAYS && item.daysSinceOutflow < DEAD_DAYS);
   const deadValue = deadStock.reduce((sum, item) => sum + item.inventoryValue, 0);
   const slowValue = slowStock.reduce((sum, item) => sum + item.inventoryValue, 0);
 
@@ -142,11 +151,11 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
   const topQuantity = [...stocked].sort((a, b) => b.stock - a.stock).slice(0, 8);
   const topSold = [...metrics].filter((item) => item.sold > 0).sort((a, b) => b.sold - a.sold).slice(0, 8);
   const topRevenue = [...metrics].filter((item) => item.estimatedRevenue > 0).sort((a, b) => b.estimatedRevenue - a.estimatedRevenue).slice(0, 8);
-  const overstock = stocked.filter((item) => item.monthlySales === 0 || (item.inventoryDays || 0) > 180).sort((a, b) => b.inventoryValue - a.inventoryValue).slice(0, 10);
-  const fastLow = metrics.filter((item) => item.monthlySales > 0 && (item.available <= item.jit_min_quantity || (item.inventoryDays !== null && item.inventoryDays < 30))).sort((a, b) => b.monthlySales - a.monthlySales).slice(0, 10);
+  const overstock = stocked.filter((item) => item.monthlyOutflow === 0 || (item.inventoryDays || 0) > 180).sort((a, b) => b.inventoryValue - a.inventoryValue).slice(0, 10);
+  const fastLow = metrics.filter((item) => item.monthlyOutflow > 0 && (item.available <= item.jit_min_quantity || (item.inventoryDays !== null && item.inventoryDays < 30))).sort((a, b) => b.monthlyOutflow - a.monthlyOutflow).slice(0, 10);
   const manufacture = metrics.filter((item) => item.productionPriority > 0).sort((a, b) => b.productionPriority - a.productionPriority).slice(0, 12);
   const missingPrice = metrics.filter((item) => item.price_varilla_iva <= 0);
-  const monthlySalesAverage = totalSold / observedMonths;
+  const monthlySalesAverage = totalSold / salesObservedMonths;
 
   if (mode === "casa") {
     const completeStock = products.map((product) => ({ ...product, complete: completeByCode.get(product.code) || 0 })).filter((item) => item.complete > 0).sort((a, b) => b.complete - a.complete);
@@ -170,7 +179,7 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
 
   return <div className="space-y-6">
     <section className="rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-950">
-      <strong>Alcance de los datos:</strong> ventas y facturación usan los {sales.length} movimientos de venta disponibles ({number(observedMonths, 1)} meses observados). La facturación se estima con el precio de lista actual; no hay costo histórico para calcular margen real.
+      <strong>Alcance de los datos:</strong> ventas y facturación usan los {sales.length} movimientos de venta disponibles ({number(salesObservedMonths, 1)} meses observados). Rotación, cobertura y prioridad de fabricación también consideran los {outflows.length - sales.length} envíos a La Casa del Carpintero como salidas de fábrica. La facturación se estima con el precio de lista actual; no hay costo histórico para calcular margen real.
     </section>
 
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -194,26 +203,26 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
       <DashboardSection title="Productos que más facturan" subtitle="Estimado a precio de lista actual"><ProductRanking items={topRevenue} value={(item) => money(item.estimatedRevenue)} /></DashboardSection>
     </div>
 
-    <DashboardSection title="Rotación y cobertura" subtitle="Venta promedio mensual y días de inventario por producto">
-      <SimpleTable headers={["Producto", "Stock", "Venta mensual", "Días inventario", "Última venta"]} rows={[...metrics].sort((a, b) => b.monthlySales - a.monthlySales).slice(0, 20).map((item) => [productLabel(item), number(item.available), number(item.monthlySales, 1), item.inventoryDays === null ? "Sin ventas" : `${number(item.inventoryDays)} días`, item.lastSale ? item.lastSale.toLocaleDateString("es-UY") : "Sin movimiento"])} />
+    <DashboardSection title="Rotación y cobertura" subtitle="Salida promedio mensual (ventas + envíos a La Casa) y días de inventario por producto">
+      <SimpleTable headers={["Producto", "Stock", "Salida mensual", "Días inventario", "Última salida"]} rows={[...metrics].sort((a, b) => b.monthlyOutflow - a.monthlyOutflow).slice(0, 20).map((item) => [productLabel(item), number(item.available), number(item.monthlyOutflow, 1), item.inventoryDays === null ? "Sin salidas" : `${number(item.inventoryDays)} días`, item.lastOutflow ? item.lastOutflow.toLocaleDateString("es-UY") : "Sin movimiento"])} />
     </DashboardSection>
 
     <div className="grid gap-6 xl:grid-cols-2">
-      <DashboardSection title="Mucho stock y poca venta" subtitle="Sin ventas o más de 180 días de cobertura"><ProductRanking items={overstock} value={(item) => `${money(item.inventoryValue)} · ${item.inventoryDays === null ? "sin ventas" : `${number(item.inventoryDays)} días`}`} /></DashboardSection>
-      <DashboardSection title="Poco stock y mucha venta" subtitle="Menos de 30 días de cobertura o bajo JIT"><ProductRanking items={fastLow} value={(item) => `${number(item.available)} disp. · ${number(item.monthlySales, 1)}/mes`} empty="No hay productos críticos con ventas." /></DashboardSection>
+      <DashboardSection title="Mucho stock y poca salida" subtitle="Sin salidas o más de 180 días de cobertura"><ProductRanking items={overstock} value={(item) => `${money(item.inventoryValue)} · ${item.inventoryDays === null ? "sin salidas" : `${number(item.inventoryDays)} días`}`} /></DashboardSection>
+      <DashboardSection title="Poco stock y mucha salida" subtitle="Menos de 30 días de cobertura o bajo JIT"><ProductRanking items={fastLow} value={(item) => `${number(item.available)} disp. · ${number(item.monthlyOutflow, 1)}/mes`} empty="No hay productos críticos con salidas." /></DashboardSection>
     </div>
 
     <DashboardSection title="Alertas de stock bajo" subtitle="Disponible igual o menor al mínimo Just in Time">
       <AlertTable items={lowStock} />
     </DashboardSection>
 
-    <DashboardSection title="Prioridad de fabricación" subtitle="Objetivo: cubrir el mayor entre mínimo JIT y un mes de venta promedio">
+    <DashboardSection title="Prioridad de fabricación" subtitle="Objetivo: cubrir el mayor entre mínimo JIT y un mes de salidas promedio">
       <SimpleTable headers={["Prioridad", "Producto", "Disponible", "Fabricar", "Materia prima estimada"]} rows={manufacture.map((item, index) => [String(index + 1), productLabel(item), number(item.available), `${number(item.productionPriority)} varillas`, `${number(item.productionPriority * 3.3, 1)} m lineales · ${number(item.productionPriority * 3.3 * (item.width_mm / 1000) * (item.height_mm / 1000), 4)} m³`])} empty="No hay fabricación sugerida con los parámetros actuales." />
     </DashboardSection>
 
     <div className="grid gap-6 xl:grid-cols-2">
-      <DashboardSection title="Stock muerto" subtitle={`Sin ventas o sin venta hace ${DEAD_DAYS} días`}><ProductRanking items={deadStock.sort((a, b) => b.inventoryValue - a.inventoryValue).slice(0, 12)} value={(item) => money(item.inventoryValue)} /></DashboardSection>
-      <DashboardSection title="Stock lento / liquidación" subtitle={`Última venta entre ${SLOW_DAYS} y ${DEAD_DAYS} días`}><ProductRanking items={slowStock.sort((a, b) => b.inventoryValue - a.inventoryValue).slice(0, 12)} value={(item) => money(item.inventoryValue)} empty="No hay productos en el rango de stock lento." /></DashboardSection>
+      <DashboardSection title="Stock muerto" subtitle={`Sin salidas o sin salida hace ${DEAD_DAYS} días`}><ProductRanking items={deadStock.sort((a, b) => b.inventoryValue - a.inventoryValue).slice(0, 12)} value={(item) => money(item.inventoryValue)} /></DashboardSection>
+      <DashboardSection title="Stock lento / liquidación" subtitle={`Última salida entre ${SLOW_DAYS} y ${DEAD_DAYS} días`}><ProductRanking items={slowStock.sort((a, b) => b.inventoryValue - a.inventoryValue).slice(0, 12)} value={(item) => money(item.inventoryValue)} empty="No hay productos en el rango de stock lento." /></DashboardSection>
     </div>
 
     <DashboardSection title="Precios y escenarios" subtitle="Lista pública vigente e impacto sobre el inventario">

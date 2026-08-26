@@ -549,22 +549,29 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
     (sum, key) => {
       const amount = session.approved_quote_amounts[key] ?? 0;
       const mode = session.approved_quote_tax_modes[key] ?? (key.startsWith("moldura:") ? "included" : "plus");
-      return sum + (mode === "plus" ? Math.round(amount * 1.22 * 100) / 100 : amount);
+      const quantity = session.approved_quote_price_modes[key] === "unit" ? (session.approved_quote_quantities[key] ?? 1) : 1;
+      const net = amount * quantity;
+      return sum + (mode === "plus" ? Math.round(net * 1.22 * 100) / 100 : net);
     },
     0,
   );
   const requiredDeposit = Math.round(confirmedTotal * 0.5 * 100) / 100;
   const parsedDeposit = Number(depositAmount.replace(",", "."));
   const validDeposit = confirmedKeys.length > 0 && Number.isFinite(parsedDeposit) && Math.round(parsedDeposit * 100) / 100 >= requiredDeposit;
+  const depositAllowed = session.client_sent && session.client_accepted === "yes" && confirmedKeys.length > 0;
   const mutation = useMutation({
     mutationFn: (payload: Parameters<typeof patchSession>[1]) => patchSession(session.id, payload),
-    onSuccess: (updated) => queryClient.setQueryData(qk.session(session.id), updated),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(qk.session(session.id), updated);
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
     onError: () => {
       setPaymentStatus(session.payment_status);
       setDepositAmount(session.deposit_amount != null ? String(session.deposit_amount) : "");
     },
   });
   const changePaymentStatus = (status: Session["payment_status"]) => {
+    if (status === "deposit" && !depositAllowed) return;
     setPaymentStatus(status);
     if (status === "deposit") {
       setDepositAmount(requiredDeposit > 0 ? String(requiredDeposit) : "");
@@ -599,9 +606,10 @@ function ConfirmedClientHeader({ session }: { session: Session }) {
             disabled={mutation.isPending}
             onChange={(event) => changePaymentStatus(event.target.value as Session["payment_status"])}
           >
+            <option value="unknown" disabled>Pago pendiente</option>
             <option value="none">No pago nada</option>
-            <option value="deposit">Seña</option>
-            <option value="paid">Pago</option>
+            <option value="deposit" disabled={!depositAllowed}>Seña</option>
+            <option value="paid" disabled={!session.delivered}>Pago</option>
           </select>
         </label>
       </div>
