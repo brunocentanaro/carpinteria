@@ -2097,6 +2097,11 @@ def handle_session_list(data: dict) -> dict:
     return {"sessions": rows}
 
 
+def handle_crm_customers(data: dict) -> dict:
+    from carpinteria.quotation_session import list_crm_customers
+    return {"customers": list_crm_customers(brand_id=str(data.get("brand_id") or "") or None)}
+
+
 def handle_session_archive(data: dict) -> dict:
     from carpinteria.quotation_session import list_session_archive
     months = list_session_archive(
@@ -3245,6 +3250,8 @@ def main() -> None:
             result = handle_session_get(data)
         elif action == "session_list":
             result = handle_session_list(data)
+        elif action == "crm_customers":
+            result = handle_crm_customers(data)
         elif action == "session_archive":
             result = handle_session_archive(data)
         elif action == "session_ingest_pliego":

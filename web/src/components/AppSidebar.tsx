@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import {
   Calculator,
   ChartNoAxesColumnIncreasing,
+  ContactRound,
   Factory,
   Files,
   Hammer,
@@ -43,6 +44,7 @@ const NAV: NavItem[] = [
   { href: "/dashboard-molduras", icon: ChartNoAxesColumnIncreasing, label: "Dashboard de molduras" },
   { href: "/stock-molduras", icon: PackageCheck, label: "Stock de molduras" },
   { href: "/inventario", icon: Warehouse, label: "Inventario operativo" },
+  { href: "/crm", icon: ContactRound, label: "CRM de clientes" },
   { href: "/usuarios", icon: Users, label: "Usuarios" },
 ];
 

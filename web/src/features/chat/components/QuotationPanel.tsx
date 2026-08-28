@@ -236,7 +236,7 @@ export function QuotationPanel({ session, isAdmin = false }: { session: Session 
 
       <OrderProgress session={session} grand={grand} />
       <OrderPaperPanel
-        key={session.id}
+        key={`${session.id}:${session.client_details_confirmed}:${session.client_name}:${session.client_phone}:${session.order_summary}`}
         session={session}
       />
       {session.order_number && <FactoryOrderHeader session={session} grand={grand} />}
@@ -651,7 +651,6 @@ function OrderPaperPanel({ session }: { session: Session }) {
   const [clientName, setClientName] = useState(session.client_name);
   const [clientPhone, setClientPhone] = useState(session.client_phone);
   const [orderSummary, setOrderSummary] = useState(session.order_summary);
-  if (session.client_details_confirmed) return null;
 
   const draftComplete = Boolean(
     clientName.trim() &&
@@ -667,6 +666,10 @@ function OrderPaperPanel({ session }: { session: Session }) {
       order_summary: orderSummary,
       client_details_confirmed: true,
     });
+  };
+
+  const editDetails = () => {
+    mutation.mutate({ client_details_confirmed: false });
   };
 
   const saveText = (
@@ -689,17 +692,26 @@ function OrderPaperPanel({ session }: { session: Session }) {
       <CardHeader className="flex-row items-start justify-between gap-3 space-y-0 pb-3">
         <div className="space-y-2">
           <CardTitle className="text-xs uppercase text-muted-foreground">
-            Papel de orden
+            Datos del cliente y solicitud
           </CardTitle>
-          <Badge variant="secondary" className="rounded px-2 py-0.5 text-[10px]">Datos del cliente</Badge>
+          <Badge variant="secondary" className="rounded px-2 py-0.5 text-[10px]">
+            {session.client_details_confirmed ? "Datos guardados" : "Pendiente de confirmar"}
+          </Badge>
         </div>
         {session.client_details_confirmed ? (
-          <div
-            className="flex size-9 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
-            aria-label="Datos del cliente guardados"
-            title="Datos guardados"
-          >
-            <Check />
+          <div className="flex items-center gap-2">
+            {session.approval_status !== "approved" ? (
+              <Button type="button" variant="outline" size="sm" disabled={mutation.isPending} onClick={editDetails}>
+                Editar datos
+              </Button>
+            ) : null}
+            <div
+              className="flex size-9 items-center justify-center rounded-full bg-emerald-100 text-emerald-700"
+              aria-label="Datos del cliente guardados"
+              title="Datos guardados"
+            >
+              <Check />
+            </div>
           </div>
         ) : (
           <Button
@@ -715,7 +727,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
           </Button>
         )}
       </CardHeader>
-      {!draftComplete && (
+      {!session.client_details_confirmed && !draftComplete && (
         <div className="px-4 pb-3 text-xs text-amber-700">
           Complete los datos del cliente y del pedido para guardar la solicitud.
         </div>
@@ -725,6 +737,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Cliente *
           <Input
             required
+            disabled={session.client_details_confirmed}
             value={clientName}
             onChange={(e) => setClientName(e.target.value)}
             onBlur={() => saveText("client_name", clientName, setClientName)}
@@ -735,6 +748,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Telefono *
           <Input
             required
+            disabled={session.client_details_confirmed}
             value={clientPhone}
             onChange={(e) => setClientPhone(e.target.value)}
             onBlur={() => saveText("client_phone", clientPhone, setClientPhone)}
@@ -745,6 +759,7 @@ function OrderPaperPanel({ session }: { session: Session }) {
           Pedido segun papel *
           <Input
             required
+            disabled={session.client_details_confirmed}
             value={orderSummary}
             onChange={(e) => setOrderSummary(e.target.value)}
             onBlur={() => saveText("order_summary", orderSummary, setOrderSummary)}

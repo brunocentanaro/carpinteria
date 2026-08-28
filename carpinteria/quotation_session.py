@@ -500,6 +500,127 @@ def list_sessions(
     return rows[:limit]
 
 
+def _crm_segment(name: str, description: str, material: str, *, moldura: bool = False) -> str:
+    text = f"{name} {description} {material}".lower()
+    if moldura or any(word in text for word in ("moldura", "liston", "listón", "barrote", "varilla", "zocalo", "zócalo", "contravidrio")):
+        return "molduras"
+    if any(word in text for word in ("melamin", "mdf", "placa", "aglomerado", "compensado", "fenolico", "fenólico")):
+        return "muebles_placa"
+    if any(word in text for word in ("madera", "eucalipt", "pino", "lapacho", "cedro", "roble", "finger", "maciza")):
+        return "muebles_madera"
+    if any(word in text for word in ("mueble", "mesa", "silla", "placard", "armario", "escritorio", "estante", "mostrador")):
+        return "muebles_otros"
+    return "otros"
+
+
+def list_crm_customers(brand_id: str | None = None) -> list[dict]:
+    query: dict[str, Any] = {"$or": [{"client_name": {"$nin": [None, ""]}}, {"client_phone": {"$nin": [None, ""]}}]}
+    if brand_id == "casa":
+        query = {"$and": [query, {"$or": [{"brand_id": "casa"}, {"brand_id": {"$exists": False}}]}]}
+    elif brand_id == "pirone":
+        query = {"$and": [query, {"$or": [{"brand_id": "pirone"}, {"brand_id": "casa"}, {"brand_id": {"$exists": False}}]}]}
+    elif brand_id:
+        query["brand_id"] = brand_id
+
+    customers: dict[str, dict[str, Any]] = {}
+    cursor = _coll().find(query, {"_id": 0}).sort("updated_at", -1)
+    for doc in cursor:
+        name = str(doc.get("client_name") or "").strip()
+        phone = str(doc.get("client_phone") or "").strip()
+        normalized_phone = "".join(char for char in phone if char.isdigit())
+        customer_key = f"phone:{normalized_phone}" if normalized_phone else f"name:{name.casefold()}"
+        customer = customers.setdefault(customer_key, {
+            "id": customer_key,
+            "name": name or "Sin nombre",
+            "phone": phone,
+            "segments": set(),
+            "quotes_count": 0,
+            "purchases_count": 0,
+            "total_purchased": 0.0,
+            "last_activity": None,
+            "orders": [],
+        })
+        if name and customer["name"] == "Sin nombre":
+            customer["name"] = name
+        if phone and not customer["phone"]:
+            customer["phone"] = phone
+
+        confirmed = set(str(key) for key in (doc.get("confirmed_quote_keys") or []))
+        accepted = doc.get("client_accepted") == "yes"
+        approved_amounts = doc.get("approved_quote_amounts") or {}
+        tax_modes = doc.get("approved_quote_tax_modes") or {}
+        price_modes = doc.get("approved_quote_price_modes") or {}
+        quantities = doc.get("approved_quote_quantities") or {}
+        products = []
+        order_total = 0.0
+
+        for item in doc.get("items") or []:
+            key = f"item:{item.get('code', '')}"
+            segment = _crm_segment(str(item.get("name") or ""), str(item.get("description") or ""), str(item.get("material") or ""))
+            customer["segments"].add(segment)
+            purchased = accepted and key in confirmed
+            products.append({
+                "key": key,
+                "name": str(item.get("name") or item.get("code") or "Producto"),
+                "quantity": float(item.get("quantity") or 1),
+                "material": str(item.get("material") or ""),
+                "segment": segment,
+                "purchased": purchased,
+            })
+            if purchased:
+                amount = float(approved_amounts.get(key) or 0)
+                if price_modes.get(key) == "unit":
+                    amount *= float(quantities.get(key) or item.get("quantity") or 1)
+                if tax_modes.get(key, "plus") == "plus":
+                    amount *= 1.22
+                order_total += amount
+
+        for index, quote in enumerate(doc.get("moldura_quotes") or []):
+            key = f"moldura:{index}"
+            segment = "molduras"
+            customer["segments"].add(segment)
+            purchased = accepted and key in confirmed
+            products.append({
+                "key": key,
+                "name": str(quote.get("description") or quote.get("family") or quote.get("code") or "Moldura"),
+                "quantity": float(quote.get("quantity") or 1),
+                "material": str(quote.get("material") or ""),
+                "segment": segment,
+                "purchased": purchased,
+            })
+            if purchased:
+                amount = float(approved_amounts.get(key) or 0)
+                if price_modes.get(key) == "unit":
+                    amount *= float(quantities.get(key) or quote.get("quantity") or 1)
+                if tax_modes.get(key, "included") == "plus":
+                    amount *= 1.22
+                order_total += amount
+
+        activity = doc.get("updated_at") or doc.get("created_at")
+        customer["quotes_count"] += 1
+        if accepted and any(product["purchased"] for product in products):
+            customer["purchases_count"] += 1
+        customer["total_purchased"] += order_total
+        if customer["last_activity"] is None:
+            customer["last_activity"] = activity
+        customer["orders"].append({
+            "session_id": str(doc.get("id") or ""),
+            "title": str(doc.get("title") or "Cotizacion"),
+            "summary": str(doc.get("order_summary") or ""),
+            "status": "comprado" if accepted and any(product["purchased"] for product in products) else "cotizado",
+            "date": activity,
+            "total": round(order_total, 2),
+            "products": products,
+        })
+
+    result = []
+    for customer in customers.values():
+        customer["segments"] = sorted(customer["segments"])
+        customer["total_purchased"] = round(customer["total_purchased"], 2)
+        result.append(customer)
+    return sorted(result, key=lambda row: row["last_activity"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+
+
 def list_session_archive(
     user_id: str | None = None,
     brand_id: str | None = None,
