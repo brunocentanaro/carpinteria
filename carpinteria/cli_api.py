@@ -3228,6 +3228,11 @@ def handle_fiserv_sync(data: dict) -> dict:
     return fiserv.sync_range(today - _td(days=lookback - 1), today, user=user)
 
 
+def handle_fiserv_tax_report(data: dict) -> dict:
+    from . import fiserv
+    return fiserv.export_tax_report(int(data["year"]), int(data["month"]))
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -3358,6 +3363,8 @@ def main() -> None:
             result = handle_fiserv_panel(data)
         elif action == "fiserv_sync":
             result = handle_fiserv_sync(data)
+        elif action == "fiserv_tax_report":
+            result = handle_fiserv_tax_report(data)
         elif action == "accounting_daily_report":
             result = handle_accounting_daily_report(data)
         elif action == "session_update":

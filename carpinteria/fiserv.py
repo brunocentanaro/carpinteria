@@ -556,3 +556,177 @@ def panel(year: int, month: int, *, today: date | None = None) -> dict:
         "alerts": alerts,
         "last_sync_at": last_sync.get("updated_at") if last_sync else None,
     }
+
+
+_MONTHS_ES = (
+    "", "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "setiembre", "octubre", "noviembre", "diciembre",
+)
+
+# Numeric columns shared by the detail and summary sheets. Order matters: it is
+# the column order in the export and the order the TOTAL row sums.
+_TAX_COLUMNS = (
+    "Bruto", "Arancel", "IVA arancel", "Ret. 17.453", "Red. IVA 19.210",
+    "Costo anticipo", "Contracargo", "Neto",
+)
+
+
+def _tax_amounts(settlement: dict) -> list[float]:
+    c = settlement.get("concepts") or {}
+    return [
+        _num(settlement.get("gross_amount")),
+        _num(c.get("tariff")),
+        _num(c.get("tariff_vat")),
+        _num(c.get("withholding_17453")),
+        _num(c.get("tax_credit_19210")),
+        _num(c.get("advance_cost")) + _num(c.get("advance_vat")),
+        _num(c.get("fiserv_charge")),
+        _num(settlement.get("net_amount")),
+    ]
+
+
+def export_tax_report(year: int, month: int) -> dict:
+    """Monthly Excel of Fiserv card fiscal data for the accountant: settlement
+    detail plus a per-product summary with recoverable tax credits and the real
+    Fiserv cost. Pure read from Mongo; returns the same shape as the accounting
+    daily report so the route can stream it."""
+    from pathlib import Path
+    from tempfile import gettempdir
+    from uuid import uuid4
+
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    start, end = _month_bounds(year, month)
+    settlements = list(
+        collection("fiserv_settlements").find(
+            {"acquirer": "fiserv", "payment_date": {"$gte": start, "$lte": end}}, {"_id": 0}
+        ).sort([("payment_date", 1), ("settlement_number", 1)])
+    )
+
+    dark_green = "174C45"
+    pale_green = "E8F3EF"
+    light_gray = "F3F4F6"
+    border_color = "D1D5DB"
+    money = '#,##0.00'
+    period_label = f"{_MONTHS_ES[month].capitalize()} {year}"
+
+    def style_sheet(sheet, span_cols: int) -> None:
+        sheet.sheet_view.showGridLines = False
+        sheet.page_setup.orientation = "landscape"
+        sheet.page_setup.fitToWidth = 1
+        sheet.page_setup.fitToHeight = 0
+        sheet.sheet_properties.pageSetUpPr.fitToPage = True
+        sheet.print_title_rows = "1:4"
+        last = chr(64 + span_cols)
+        sheet.merge_cells(f"A1:{last}1")
+        sheet["A1"] = "LA CASA DEL CARPINTERO — REPORTE FISCAL DE TARJETAS"
+        sheet["A1"].font = Font(size=16, bold=True, color="FFFFFF")
+        sheet["A1"].fill = PatternFill("solid", fgColor=dark_green)
+        sheet["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        sheet.row_dimensions[1].height = 30
+        sheet.merge_cells(f"A2:{last}2")
+        sheet["A2"] = period_label
+        sheet["A2"].font = Font(size=12, bold=True, color=dark_green)
+        sheet["A2"].alignment = Alignment(horizontal="center")
+
+    def write_header(sheet, headers: list[str], row: int) -> None:
+        for index, title in enumerate(headers, start=1):
+            cell = sheet.cell(row=row, column=index, value=title)
+            cell.fill = PatternFill("solid", fgColor=dark_green)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    workbook = Workbook()
+    detail = workbook.active
+    detail.title = "Detalle"
+    style_sheet(detail, 12)
+    detail.freeze_panes = "A5"
+    detail_headers = ["Liquidación", "Fecha pago", "Fecha present.", "Producto", *_TAX_COLUMNS]
+    header_row = 4
+    write_header(detail, detail_headers, header_row)
+
+    row = header_row
+    totals = [0.0] * len(_TAX_COLUMNS)
+    for settlement in settlements:
+        row += 1
+        amounts = _tax_amounts(settlement)
+        totals = [running + value for running, value in zip(totals, amounts, strict=True)]
+        detail.cell(row=row, column=1, value=settlement.get("settlement_number"))
+        detail.cell(row=row, column=2, value=settlement.get("payment_date"))
+        detail.cell(row=row, column=3, value=settlement.get("presentation_date"))
+        detail.cell(row=row, column=4, value=settlement.get("product_desc") or settlement.get("product_code"))
+        for offset, value in enumerate(amounts):
+            cell = detail.cell(row=row, column=5 + offset, value=round(value, 2))
+            cell.number_format = money
+        fill = PatternFill("solid", fgColor="FFFFFF" if row % 2 else light_gray)
+        for cell in detail[row]:
+            cell.fill = fill
+            cell.border = Border(bottom=Side(style="hair", color=border_color))
+
+    if not settlements:
+        detail.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 1, end_column=12)
+        empty = detail.cell(row=header_row + 1, column=1, value="Sin liquidaciones en el período.")
+        empty.alignment = Alignment(horizontal="center", vertical="center")
+        empty.font = Font(italic=True, color="6B7280")
+        row = header_row + 1
+
+    total_row = row + 1
+    detail.merge_cells(start_row=total_row, start_column=1, end_row=total_row, end_column=4)
+    detail.cell(row=total_row, column=1, value="TOTAL").font = Font(bold=True, color=dark_green)
+    for offset, value in enumerate(totals):
+        cell = detail.cell(row=total_row, column=5 + offset, value=round(value, 2))
+        cell.number_format = money
+    for cell in detail[total_row]:
+        cell.fill = PatternFill("solid", fgColor=pale_green)
+        cell.font = Font(bold=True, color=dark_green)
+        cell.border = Border(top=Side(style="medium", color=dark_green))
+
+    detail_widths = [16, 12, 13, 30, 14, 13, 13, 13, 15, 15, 13, 14]
+    for index, width in enumerate(detail_widths, start=1):
+        detail.column_dimensions[chr(64 + index)].width = width
+    detail.print_area = f"A1:L{total_row}"
+
+    summary = workbook.create_sheet("Resumen")
+    style_sheet(summary, 9)
+    summary.freeze_panes = "A5"
+    summary_headers = ["Producto", *_TAX_COLUMNS]
+    write_header(summary, summary_headers, header_row)
+
+    by_product: dict[str, list[float]] = {}
+    for settlement in settlements:
+        key = settlement.get("product_desc") or settlement.get("product_code") or "—"
+        agg = by_product.setdefault(key, [0.0] * len(_TAX_COLUMNS))
+        for offset, value in enumerate(_tax_amounts(settlement)):
+            agg[offset] += value
+
+    row = header_row
+    for product in sorted(by_product, key=lambda k: -by_product[k][0]):
+        row += 1
+        summary.cell(row=row, column=1, value=product)
+        for offset, value in enumerate(by_product[product]):
+            cell = summary.cell(row=row, column=2 + offset, value=round(value, 2))
+            cell.number_format = money
+        fill = PatternFill("solid", fgColor="FFFFFF" if row % 2 else light_gray)
+        for cell in summary[row]:
+            cell.fill = fill
+            cell.border = Border(bottom=Side(style="hair", color=border_color))
+
+    total_row = row + 1
+    summary.cell(row=total_row, column=1, value="TOTAL").font = Font(bold=True, color=dark_green)
+    for offset, value in enumerate(totals):
+        cell = summary.cell(row=total_row, column=2 + offset, value=round(value, 2))
+        cell.number_format = money
+    for cell in summary[total_row]:
+        cell.fill = PatternFill("solid", fgColor=pale_green)
+        cell.font = Font(bold=True, color=dark_green)
+        cell.border = Border(top=Side(style="medium", color=dark_green))
+
+    summary_widths = [34, 14, 13, 13, 13, 15, 15, 13, 14]
+    for index, width in enumerate(summary_widths, start=1):
+        summary.column_dimensions[chr(64 + index)].width = width
+    summary.print_area = f"A1:I{total_row}"
+
+    path = Path(gettempdir()) / f"reporte-fiscal-tarjetas-{year}-{month:02d}-{uuid4().hex[:8]}.xlsx"
+    workbook.save(path)
+    return {"excel_path": str(path), "filename": f"reporte-fiscal-tarjetas-{year}-{month:02d}.xlsx"}
