@@ -8,7 +8,10 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "uv run python -m carpinteria.ucfe_cron"
+# `--directory /app` anchors the run at the repo root: the image's final
+# WORKDIR is /app/web, where `carpinteria` is not importable. The Dockerfile
+# also sets PYTHONPATH=/app (defense in depth).
+startCommand = "uv run --directory /app python -m carpinteria.ucfe_cron"
 # 09:15 UTC = 06:15 Uruguay. Sync overlaps the last 7 days; unique keys per
 # comprobante/line make repeated runs idempotent.
 cronSchedule = "15 9 * * *"

@@ -1,0 +1,19 @@
+# Config-as-code for the separate `fiserv-cron` Railway service (same repo/image
+# as `carpinteria` web). Point that service's "Config file path" at this file.
+# It syncs Fiserv Merchant Center (closed batch, settlements, payment calendar)
+# nightly and exits; Railway re-runs it on the schedule. Needs MONGO_URL,
+# FISERV_USER, FISERV_PASS and FISERV_TOTP_SECRET (reference them from the
+# `carpinteria` web service). The web service keeps using the root railway.toml.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# `--directory /app` anchors the run at the repo root: the image's final
+# WORKDIR is /app/web, where `carpinteria` is not importable. The Dockerfile
+# also sets PYTHONPATH=/app (defense in depth).
+startCommand = "uv run --directory /app python -m carpinteria.fiserv_cron"
+# 02:00 UTC = 23:00 Uruguay. Runs after the store closes so the day's batch is
+# already settled. Syncs the last 10 days; unique keys make reruns idempotent.
+cronSchedule = "0 2 * * *"
+restartPolicyType = "never"

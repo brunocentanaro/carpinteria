@@ -23,6 +23,11 @@ RUN npm run build
 RUN ls -la .next/
 
 ENV PROJECT_ROOT=/app
+# The image's final WORKDIR is /app/web (needed by `next start`), but the
+# package `carpinteria` is only importable via cwd (uv treats the project as
+# virtual, so `uv sync` never installs it). Anchor Python entrypoints at /app so
+# `python -m carpinteria.*` works from any cwd — required by the cron services.
+ENV PYTHONPATH=/app
 WORKDIR /app/web
 
 CMD sh -c "npx next start -H 0.0.0.0 -p ${PORT:-3000}"
