@@ -113,6 +113,68 @@ interface JournalEntry {
   balanced: boolean;
   lines: JournalLine[];
 }
+type CardMedio = "visa_debito" | "visa_credito" | "master_debito" | "master_credito" | "maestro";
+interface CardConciliationRow {
+  medio: CardMedio;
+  pos_total: number;
+  caja_total: number;
+  difference: number;
+  flag: "" | "faltante" | "sobrante";
+}
+interface CouponIntegrityItem {
+  fiserv_id: string;
+  bill_number: string;
+  ticket: string;
+  batch: string;
+  product_name: string;
+  amount: number;
+  issues: string[];
+}
+interface CardConciliation {
+  date: string;
+  has_coupons: boolean;
+  pending_sync: boolean;
+  caja_source: "handover" | "movements";
+  coupon_count: number;
+  per_medio: CardConciliationRow[];
+  unmapped_pos_total: number;
+  has_faltante: boolean;
+  has_sobrante: boolean;
+  coupon_integrity: {
+    coupons: CouponIntegrityItem[];
+    flagged: CouponIntegrityItem[];
+    registered_bill_range: { min: number; max: number } | null;
+  };
+}
+interface ProposedCardSettlement {
+  settlement_number: string;
+  payment_date: string;
+  product_desc: string;
+  net_amount: number;
+  already_registered: boolean;
+}
+interface TillHandoverCardTotals {
+  visa_debito: number;
+  visa_credito: number;
+  master_debito: number;
+  master_credito: number;
+  maestro: number;
+}
+interface TillHandover {
+  id: string;
+  date: string;
+  counted_cash: number;
+  theoretical_cash: number;
+  difference: number;
+  card_totals: TillHandoverCardTotals;
+  pos_batches: string[];
+  ticket_close_total: number | null;
+  cashier: string;
+  overridden: boolean;
+  override_count: number;
+  created_at: string;
+  created_by: string;
+}
 interface AccountingData {
   year: number;
   month: number;
@@ -146,6 +208,9 @@ interface AccountingData {
     remaining_activity_days: number;
   };
   cutoff_date: string;
+  card_conciliation: CardConciliation;
+  proposed_card_settlements: ProposedCardSettlement[];
+  till_handovers: TillHandover[];
 }
 
 const tabs: Array<{ id: Tab; label: string; icon: typeof CalendarDays; section: "operation" | "accounting" }> = [
@@ -197,6 +262,18 @@ const paymentMethodLabels: Record<string, string> = {
   maestro: "Maestro",
   mercadolibre: "Mercado Libre",
   otro: "Otro",
+};
+const cardMedioLabels: Record<CardMedio, string> = {
+  visa_debito: "Visa débito",
+  visa_credito: "Visa crédito",
+  master_debito: "Master débito (incluye prepago)",
+  master_credito: "Master crédito",
+  maestro: "Maestro",
+};
+const couponIssueLabels: Record<string, string> = {
+  empty: "sin factura",
+  duplicated: "factura repetida",
+  out_of_range: "factura fuera de rango",
 };
 function movementPaymentLabel(movement: Movement) {
   const method = paymentMethodLabels[movement.payment_method] || movement.payment_method;
@@ -277,7 +354,7 @@ export function AccountingWorkspace() {
     {dataQuery.isLoading ? <div className="border bg-card p-10 text-center text-sm text-muted-foreground">Cargando contabilidad...</div> : null}
     {dataQuery.error ? <div className="border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{dataQuery.error.message}</div> : null}
     {data ? <>
-      {tab === "daily" ? <DailySheet data={data} year={year} month={month} saving={mutation.isPending} canEdit={canOperate} canCorrect={canManageAccounting} onSave={(movement) => mutation.mutate({ operation: "movement", movement })} onSupplierPayment={(payment) => mutation.mutate({ operation: "daily_supplier_payment", payment })} onCorrect={(movementId, direction) => mutation.mutate({ operation: "correct_movement", movement_id: movementId, direction })} onCorrectAmount={(movementId, amount) => mutation.mutate({ operation: "correct_movement_amount", movement_id: movementId, amount })} onCorrectDate={(movementId, date) => mutation.mutate({ operation: "correct_movement_date", movement_id: movementId, date })} onDelete={(movementId) => mutation.mutate({ operation: "delete_movement", movement_id: movementId })} onReplace={(movementId, replacements) => mutation.mutate({ operation: "replace_movement", movement_id: movementId, replacements })} /> : null}
+      {tab === "daily" ? <DailySheet data={data} year={year} month={month} saving={mutation.isPending} canEdit={canOperate} canCorrect={canManageAccounting} onSave={(movement) => mutation.mutate({ operation: "movement", movement })} onSupplierPayment={(payment) => mutation.mutate({ operation: "daily_supplier_payment", payment })} onCorrect={(movementId, direction) => mutation.mutate({ operation: "correct_movement", movement_id: movementId, direction })} onCorrectAmount={(movementId, amount) => mutation.mutate({ operation: "correct_movement_amount", movement_id: movementId, amount })} onCorrectDate={(movementId, date) => mutation.mutate({ operation: "correct_movement_date", movement_id: movementId, date })} onDelete={(movementId) => mutation.mutate({ operation: "delete_movement", movement_id: movementId })} onReplace={(movementId, replacements) => mutation.mutate({ operation: "replace_movement", movement_id: movementId, replacements })} onTillHandover={(handover) => mutation.mutate({ operation: "till_handover", handover })} /> : null}
       {tab === "journal" ? <JournalPanel data={data} saving={mutation.isPending} onSaleCost={(saleCost) => mutation.mutate({ operation: "sale_cost", sale_cost: saleCost })} onCloseDay={(date) => mutation.mutate({ operation: "close_day", date })} /> : null}
       {tab === "accounts" ? <AccountsPanel data={data} saving={mutation.isPending} canEdit={canManageAccounting} onProvision={(provision) => mutation.mutate({ operation: "labor_provision", provision })} /> : null}
       {tab === "position" ? <FinancialPositionPanel data={data} /> : null}
@@ -287,11 +364,11 @@ export function AccountingWorkspace() {
       {tab === "payables" ? <PayablesPanel data={data} saving={mutation.isPending} canEdit={canManageAccounting} onInvoice={(invoice) => mutation.mutate({ operation: "supplier_invoice", invoice })} onSyncUcfe={() => mutation.mutate({ operation: "supplier_sync" })} onClassify={(invoiceId, classification) => mutation.mutate({ operation: "classify_supplier_invoice", invoice_id: invoiceId, classification })} /> : null}
       {tab === "annual" && isAdmin ? <AnnualPanel data={data} /> : null}
     </> : null}
-    {tab === "tarjetas" && isAdmin ? <TarjetasPanel year={year} month={month} /> : null}
+    {tab === "tarjetas" && isAdmin ? <TarjetasPanel year={year} month={month} canConfirm={canManageAccounting} /> : null}
   </main>;
 }
 
-function DailySheet({ data, year, month, saving, canEdit, canCorrect, onSave, onSupplierPayment, onCorrect, onCorrectAmount, onCorrectDate, onDelete, onReplace }: { data: AccountingData; year: number; month: number; saving: boolean; canEdit: boolean; canCorrect: boolean; onSave: (movement: Record<string, unknown>) => void; onSupplierPayment: (payment: Record<string, unknown>) => void; onCorrect: (movementId: string, direction: Direction) => void; onCorrectAmount: (movementId: string, amount: number) => void; onCorrectDate: (movementId: string, date: string) => void; onDelete: (movementId: string) => void; onReplace: (movementId: string, replacements: Record<string, unknown>[]) => void }) {
+function DailySheet({ data, year, month, saving, canEdit, canCorrect, onSave, onSupplierPayment, onCorrect, onCorrectAmount, onCorrectDate, onDelete, onReplace, onTillHandover }: { data: AccountingData; year: number; month: number; saving: boolean; canEdit: boolean; canCorrect: boolean; onSave: (movement: Record<string, unknown>) => void; onSupplierPayment: (payment: Record<string, unknown>) => void; onCorrect: (movementId: string, direction: Direction) => void; onCorrectAmount: (movementId: string, amount: number) => void; onCorrectDate: (movementId: string, date: string) => void; onDelete: (movementId: string) => void; onReplace: (movementId: string, replacements: Record<string, unknown>[]) => void; onTillHandover: (handover: Record<string, unknown>) => void }) {
   const [exporting, setExporting] = useState(false);
   const [draft, setDraft] = useState({
     workday_number: "1",
@@ -402,6 +479,7 @@ function DailySheet({ data, year, month, saving, canEdit, canCorrect, onSave, on
   }
   return <div className="space-y-5">
     <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6"><Metric label="Entradas UYU del mes" value={money(totals.income)} /><Metric label="Salidas UYU del mes" value={money(totals.expenses)} /><Metric label="Saldo en caja" value={money(data.account_balances.cash)} /><Metric label="Saldo bancario registrado" value={money(data.account_balances.bank)} /><Metric label="Pendiente de financieras" value={money(data.account_balances.card_receivables)} /><Metric label="Cuentas por cobrar" value={money(data.account_balances.accounts_receivable)} /></section>
+    <TillHandoverPanel data={data} saving={saving} canEdit={canEdit} onTillHandover={onTillHandover} />
     <section className="border bg-card p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div><h2 className="font-semibold">Movimiento diario</h2><p className="text-xs text-muted-foreground">El reporte se genera para la fecha seleccionada e incluye espacio para firmas.</p></div>
@@ -451,6 +529,62 @@ function DailySheet({ data, year, month, saving, canEdit, canCorrect, onSave, on
     {canCorrect ? <MovementDeletionPanel movements={data.movements} saving={saving} onDelete={onDelete} /> : null}
     {canCorrect ? <SalesBreakdownPanel movements={data.movements} saving={saving} onReplace={onReplace} /> : null}
   </div>;
+}
+
+function TillHandoverPanel({ data, saving, canEdit, onTillHandover }: { data: AccountingData; saving: boolean; canEdit: boolean; onTillHandover: (handover: Record<string, unknown>) => void }) {
+  const day = data.daily_control.next_open_date || today();
+  const existing = data.till_handovers.find((item) => item.date === day);
+  const conciliation = data.card_conciliation;
+  const flagged = conciliation?.coupon_integrity?.flagged ?? [];
+  const [draft, setDraft] = useState({ counted_cash: "", visa_debito: "", visa_credito: "", master_debito: "", master_credito: "", maestro: "", pos_batches: "", ticket_close_total: "" });
+  const [redo, setRedo] = useState(false);
+  const cardFields: Array<{ key: CardMedio; label: string }> = [
+    { key: "visa_debito", label: "Visa débito" },
+    { key: "visa_credito", label: "Visa crédito" },
+    { key: "master_debito", label: "Master débito (incluye prepago)" },
+    { key: "master_credito", label: "Master crédito" },
+    { key: "maestro", label: "Maestro" },
+  ];
+  const blocked = !!existing && !redo;
+  function submit() {
+    const counted = Number(draft.counted_cash);
+    if (!draft.counted_cash.trim() || !(counted >= 0)) { toast.error("Ingresa el efectivo contado (no puede ser negativo)"); return; }
+    const cardTotals: Record<CardMedio, number> = { visa_debito: 0, visa_credito: 0, master_debito: 0, master_credito: 0, maestro: 0 };
+    for (const field of cardFields) cardTotals[field.key] = Number(draft[field.key]) || 0;
+    const posBatches = draft.pos_batches.split(",").map((value) => value.trim()).filter(Boolean);
+    const handover: Record<string, unknown> = { date: day, counted_cash: counted, card_totals: cardTotals, pos_batches: posBatches };
+    if (Number(draft.ticket_close_total) > 0) handover.ticket_close_total = Number(draft.ticket_close_total);
+    if (existing) handover.override = true;
+    onTillHandover(handover);
+    setDraft({ counted_cash: "", visa_debito: "", visa_credito: "", master_debito: "", master_credito: "", maestro: "", pos_batches: "", ticket_close_total: "" });
+    setRedo(false);
+  }
+  return <section className="border bg-card p-4">
+    <div className="flex flex-col gap-1"><div className="text-xs font-semibold uppercase tracking-wider text-primary">Cierre de caja</div><h2 className="font-semibold">Entregar caja</h2><p className="text-xs text-muted-foreground">Día a entregar: <span className="font-medium text-foreground">{day}</span>. El efectivo contado es obligatorio; los totales de tarjeta y el ticket de cierre son opcionales.</p></div>
+    {existing ? <div className="mt-4 rounded-md border border-primary/30 bg-primary/5 p-3 text-sm"><div className="font-medium">Ya se registró una entrega para {day}{existing.overridden ? ` (rehecha ${existing.override_count} ${existing.override_count === 1 ? "vez" : "veces"})` : ""}.</div><div className="mt-2 grid gap-x-6 gap-y-1 text-xs text-muted-foreground sm:grid-cols-2"><span>Efectivo contado: <span className="font-medium text-foreground tabular-nums">{money(existing.counted_cash)}</span></span><span>Ticket de cierre: <span className="font-medium text-foreground tabular-nums">{existing.ticket_close_total != null ? money(existing.ticket_close_total) : "—"}</span></span>{cardFields.map((field) => <span key={field.key}>{field.label}: <span className="font-medium text-foreground tabular-nums">{money(existing.card_totals[field.key])}</span></span>)}<span>Lotes POS: <span className="font-medium text-foreground">{existing.pos_batches.length ? existing.pos_batches.join(", ") : "—"}</span></span></div></div> : null}
+    {canEdit ? <>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <Field label="Efectivo contado *"><Input type="number" min="0" step="0.01" value={draft.counted_cash} onChange={(event) => setDraft({ ...draft, counted_cash: event.target.value })} /></Field>
+        {cardFields.map((field) => <Field key={field.key} label={field.label}><Input type="number" min="0" step="0.01" value={draft[field.key]} onChange={(event) => setDraft({ ...draft, [field.key]: event.target.value })} /></Field>)}
+        <Field label="Lote(s) del POS"><Input value={draft.pos_batches} onChange={(event) => setDraft({ ...draft, pos_batches: event.target.value })} placeholder="123, 124" /></Field>
+        <Field label="Total del ticket de cierre"><Input type="number" min="0" step="0.01" value={draft.ticket_close_total} onChange={(event) => setDraft({ ...draft, ticket_close_total: event.target.value })} /></Field>
+      </div>
+      {existing ? <label className="mt-3 flex items-center gap-2 text-sm"><input type="checkbox" checked={redo} onChange={(event) => setRedo(event.target.checked)} className="h-4 w-4 rounded border" /><span>Rehacer entrega (reemplaza la registrada para {day})</span></label> : null}
+      <Button type="button" className="mt-4" disabled={saving || blocked || !(Number(draft.counted_cash) >= 0) || !draft.counted_cash.trim()} onClick={submit}><CirclePlus /> {existing ? "Rehacer entrega de caja" : "Entregar caja"}</Button>
+    </> : <div className="mt-4 rounded-md bg-muted/50 px-4 py-3 text-sm text-muted-foreground">Tu usuario no tiene permisos para entregar la caja.</div>}
+    {existing ? <div className="mt-5"><div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Arqueo del día</div><div className="mt-2 grid gap-3 sm:grid-cols-3">
+      <Metric label="Efectivo contado" value={money(existing.counted_cash)} />
+      <Metric label="Efectivo teórico" value={money(existing.theoretical_cash)} />
+      <div className={`border p-4 ${existing.difference > 0 ? "border-emerald-300 bg-emerald-50" : existing.difference < 0 ? "border-red-300 bg-red-50" : ""}`}><div className="text-sm text-muted-foreground">Diferencia registrada</div><div className={`mt-1 text-2xl font-semibold tabular-nums ${existing.difference > 0 ? "text-emerald-700" : existing.difference < 0 ? "text-red-600" : ""}`}>{money(existing.difference)}</div><div className="mt-1 text-xs text-muted-foreground">{existing.difference > 0 ? "Sobrante" : existing.difference < 0 ? "Faltante" : "Sin diferencia"} · registrado como hecho, no requiere corrección.</div></div>
+    </div></div> : null}
+    <div className="mt-5"><div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Conciliación de lote POS vs. caja</div>
+      {!conciliation || conciliation.pending_sync || !conciliation.has_coupons ? <div className="mt-2 rounded-md bg-muted/50 px-4 py-3 text-sm text-muted-foreground">Datos de Fiserv pendientes de sincronizar para este día.</div> : <>
+        <div className="mt-2 overflow-x-auto border"><table className="w-full min-w-[520px] text-sm"><thead className="bg-muted/60 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-3 py-2">Medio</th><th className="px-3 py-2 text-right">POS</th><th className="px-3 py-2 text-right">Caja</th><th className="px-3 py-2 text-right">Diferencia</th><th className="px-3 py-2">Estado</th></tr></thead><tbody className="divide-y">{conciliation.per_medio.map((row) => <tr key={row.medio}><td className="px-3 py-2">{cardMedioLabels[row.medio]}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.pos_total)}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.caja_total)}</td><td className={`px-3 py-2 text-right tabular-nums ${row.difference < 0 ? "text-red-600" : row.difference > 0 ? "text-emerald-700" : ""}`}>{money(row.difference)}</td><td className="px-3 py-2"><Badge variant={row.flag === "faltante" ? "destructive" : row.flag === "sobrante" ? "secondary" : "outline"}>{row.flag === "faltante" ? "Faltante" : row.flag === "sobrante" ? "Sobrante" : "OK"}</Badge></td></tr>)}</tbody></table></div>
+        {conciliation.unmapped_pos_total ? <p className="mt-2 text-xs text-muted-foreground">Cupones del POS sin medio identificado: <span className="font-medium text-foreground tabular-nums">{money(conciliation.unmapped_pos_total)}</span>.</p> : null}
+        {flagged.length ? <div className="mt-3"><div className="text-xs font-medium text-amber-900">Cupones observados</div><ul className="mt-1 space-y-1 text-sm">{flagged.map((coupon) => <li key={coupon.fiserv_id} className="text-amber-900">• Factura {coupon.bill_number || "—"} · lote/cupón {coupon.batch || "—"}/{coupon.ticket || "—"} · {coupon.product_name || "—"} · {money(coupon.amount)} · {coupon.issues.map((issue) => couponIssueLabels[issue] || issue).join(", ")}</li>)}</ul></div> : null}
+      </>}
+    </div>
+  </section>;
 }
 
 function JournalPanel({ data, saving, onSaleCost, onCloseDay }: { data: AccountingData; saving: boolean; onSaleCost: (saleCost: Record<string, unknown>) => void; onCloseDay: (date: string) => void }) {
@@ -659,13 +793,46 @@ interface FiservPanelData {
 
 const txTypeLabel: Record<string, string> = { C: "Compra", A: "Anulación", D: "Devolución", T: "Venta c/adelanto" };
 
-function TarjetasPanel({ year, month }: { year: number; month: number }) {
+function TarjetasPanel({ year, month, canConfirm }: { year: number; month: number; canConfirm: boolean }) {
   const client = useQueryClient();
   const [cardFilter, setCardFilter] = useState("");
+  const [exporting, setExporting] = useState(false);
   const query = useQuery({
     queryKey: ["fiserv-panel", year, month],
     queryFn: () => api<FiservPanelData>(`/api/contabilidad/tarjetas?year=${year}&month=${month}`),
   });
+  const accountingQuery = useQuery({
+    queryKey: ["accounting", year, month, "monthly"],
+    queryFn: () => api<AccountingData>(`/api/contabilidad?year=${year}&month=${month}&view=monthly`),
+  });
+  const confirm = useMutation({
+    mutationFn: (settlementNumber: string) => post({ operation: "confirm_card_settlement", settlement_number: settlementNumber }),
+    onSuccess: async () => { toast.success("Acreditación confirmada"); await client.refetchQueries({ queryKey: ["accounting"], type: "active" }); },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "No se pudo confirmar la acreditación"),
+  });
+  async function downloadContadorExport() {
+    setExporting(true);
+    try {
+      const response = await fetch(`/api/contabilidad/tarjetas/export?year=${year}&month=${month}`);
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || "No se pudo exportar para el contador");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `tarjetas-contador-${year}-${String(month).padStart(2, "0")}.xlsx`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo exportar para el contador");
+    } finally {
+      setExporting(false);
+    }
+  }
   const sync = useMutation({
     mutationFn: () => api<Record<string, unknown>>("/api/contabilidad/tarjetas", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lookback_days: 3 }) }),
     onSuccess: async (result) => {
@@ -690,10 +857,22 @@ function TarjetasPanel({ year, month }: { year: number; month: number }) {
         <h2 className="text-lg font-semibold">Tarjetas · Fiserv</h2>
         <p className="text-xs text-muted-foreground">Fuente: Merchant Center. {data.last_sync_at ? `Última sincronización ${new Date(data.last_sync_at).toLocaleString("es-UY")}.` : "Sin sincronizaciones aún."}</p>
       </div>
-      <Button variant="outline" onClick={() => sync.mutate()} disabled={sync.isPending}><RefreshCw className={sync.isPending ? "animate-spin" : ""} /> Sincronizar ahora</Button>
+      <div className="flex flex-wrap items-center gap-2">
+        <Button variant="outline" onClick={() => downloadContadorExport()} disabled={exporting}><Download /> {exporting ? "Generando..." : "Exportar contador"}</Button>
+        <Button variant="outline" onClick={() => sync.mutate()} disabled={sync.isPending}><RefreshCw className={sync.isPending ? "animate-spin" : ""} /> Sincronizar ahora</Button>
+      </div>
     </div>
 
     {data.alerts.length ? <div className="space-y-1 border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">{data.alerts.map((a, i) => <div key={i}>• {a.label}</div>)}</div> : null}
+
+    <section className="overflow-hidden border bg-card">
+      <div className="border-b px-4 py-3"><h3 className="font-semibold">Acreditaciones a confirmar</h3><p className="mt-1 text-xs text-muted-foreground">Liquidaciones de Fiserv detectadas que aún no se registraron como acreditación en banco.</p></div>
+      {(() => {
+        const proposals = (accountingQuery.data?.proposed_card_settlements ?? []).filter((item) => !item.already_registered);
+        if (!proposals.length) return <Empty text="No hay acreditaciones pendientes de confirmar." />;
+        return <div className="overflow-x-auto"><table className="w-full min-w-[520px] text-sm"><thead className="bg-muted/60 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-2">Fecha de pago</th><th className="px-4 py-2">Producto</th><th className="px-4 py-2 text-right">Neto</th>{canConfirm ? <th className="px-4 py-2 text-right">Acción</th> : null}</tr></thead><tbody className="divide-y">{proposals.map((proposal) => <tr key={proposal.settlement_number}><td className="px-4 py-2">{proposal.payment_date}</td><td className="px-4 py-2">{proposal.product_desc}</td><td className="px-4 py-2 text-right tabular-nums">{money(proposal.net_amount)}</td>{canConfirm ? <td className="px-4 py-2 text-right"><Button type="button" variant="outline" size="sm" disabled={confirm.isPending} onClick={() => confirm.mutate(proposal.settlement_number)}>Confirmar</Button></td> : null}</tr>)}</tbody></table></div>;
+      })()}
+    </section>
 
     <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <Metric label="Próximos 7 días (neto a cobrar)" value={money(data.next_7_days_net)} tone="good" />
