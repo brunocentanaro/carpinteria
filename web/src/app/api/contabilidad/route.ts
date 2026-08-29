@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const operation = String(body?.operation || "");
-    const accountingOnlyOperations = new Set(["replace_movement", "correct_movement", "correct_movement_amount", "correct_movement_date", "delete_movement", "supplier_invoice", "supplier_payment", "supplier_sync", "labor_provision", "sale_cost", "close_day", "classify_supplier_invoice"]);
+    const accountingOnlyOperations = new Set(["replace_movement", "correct_movement", "correct_movement_amount", "correct_movement_date", "delete_movement", "supplier_invoice", "supplier_payment", "supplier_sync", "labor_provision", "sale_cost", "close_day", "classify_supplier_invoice", "confirm_card_settlement"]);
     if (accountingOnlyOperations.has(operation) && !canEditAccounting(session)) {
       return NextResponse.json({ error: "Solo administracion contable puede realizar esta operacion" }, { status: 403 });
     }
@@ -74,6 +74,10 @@ export async function POST(req: NextRequest) {
       result = await callPython({ action: "accounting_classify_supplier_invoice", invoice_id: body.invoice_id, classification: body.classification, updated_by: session.user });
     } else if (operation === "supplier_sync") {
       result = await callPython({ action: "accounting_supplier_sync", updated_by: session.user });
+    } else if (operation === "till_handover") {
+      result = await callPython({ action: "accounting_till_handover", handover: body.handover || {}, updated_by: session.user });
+    } else if (operation === "confirm_card_settlement") {
+      result = await callPython({ action: "accounting_confirm_card_settlement", settlement_number: body.settlement_number, updated_by: session.user });
     } else {
       return NextResponse.json({ error: "Operacion invalida" }, { status: 400 });
     }

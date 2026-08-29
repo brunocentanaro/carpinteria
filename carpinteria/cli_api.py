@@ -3206,6 +3206,26 @@ def handle_accounting_daily_report(data: dict) -> dict:
     return export_daily_report(str(data.get("date", "")), str(data.get("cashier", "")))
 
 
+def handle_accounting_till_handover(data: dict) -> dict:
+    from .accounting import register_till_handover
+    return register_till_handover(data.get("handover", {}), str(data.get("updated_by", "")))
+
+
+def handle_accounting_card_conciliation(data: dict) -> dict:
+    from .accounting import conciliate_cards
+    return conciliate_cards(str(data.get("date") or ""))
+
+
+def handle_accounting_list_card_settlements(data: dict) -> dict:
+    from .accounting import list_proposed_card_settlements
+    return list_proposed_card_settlements()
+
+
+def handle_accounting_confirm_card_settlement(data: dict) -> dict:
+    from .accounting import confirm_card_settlement
+    return confirm_card_settlement(str(data.get("settlement_number") or ""), str(data.get("updated_by", "")))
+
+
 def handle_fiserv_panel(data: dict) -> dict:
     from datetime import datetime as _dt
 
@@ -3360,6 +3380,14 @@ def main() -> None:
             result = handle_fiserv_sync(data)
         elif action == "accounting_daily_report":
             result = handle_accounting_daily_report(data)
+        elif action == "accounting_till_handover":
+            result = handle_accounting_till_handover(data)
+        elif action == "accounting_card_conciliation":
+            result = handle_accounting_card_conciliation(data)
+        elif action == "accounting_list_card_settlements":
+            result = handle_accounting_list_card_settlements(data)
+        elif action == "accounting_confirm_card_settlement":
+            result = handle_accounting_confirm_card_settlement(data)
         elif action == "session_update":
             result = handle_session_update(data)
         elif action == "session_delete":

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import unicodedata
 from calendar import monthrange
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -36,6 +37,12 @@ CARD_PAYMENT_PLANS = {
     "credito_2": ("credito", 2),
     "credito_3": ("credito", 3),
 }
+# Medios de tarjeta que declara el cajero al entregar la caja. Master prepago se
+# pliega sobre master_debito porque el POS lo liquida como debito.
+CARD_CONCILIATION_MEDIOS = ("visa_debito", "visa_credito", "master_debito", "master_credito", "maestro")
+# Diferencia POS vs caja por debajo de la cual no hay faltante/sobrante real:
+# el cajero declara totales redondeados al peso, el POS reporta con centavos.
+CARD_CONCILIATION_EPSILON = 0.5
 
 CHART_OF_ACCOUNTS = [
     {"code": "1111", "name": "Caja", "class": "activo", "group": "Disponibilidades", "nature": "debit"},
@@ -151,6 +158,17 @@ def _safe_currency(value: object) -> str:
 
 def _day_key(value: object) -> str:
     return _clean(value)[:10]
+
+
+def _normalize_text(value: object) -> str:
+    raw = str(value or "").lower()
+    raw = unicodedata.normalize("NFKD", raw)
+    return "".join(ch for ch in raw if not unicodedata.combining(ch))
+
+
+def _numeric(value: object) -> int | None:
+    digits = "".join(ch for ch in _clean(value) if ch.isdigit())
+    return int(digits) if digits else None
 
 
 def _functional_currency_fields(currency: str, amount: float, transaction_date: str) -> dict:
@@ -270,6 +288,7 @@ def _ensure_storage() -> None:
     collection("accounting_sale_costs").create_index([("brand_id", 1), ("date", 1)], unique=True)
     collection("accounting_exchange_rates").create_index([("currency", 1), ("transaction_date", 1)], unique=True)
     collection("accounting_day_closures").create_index([("brand_id", 1), ("date", 1)], unique=True)
+    collection("accounting_till_handovers").create_index([("brand_id", 1), ("date", 1)], unique=True)
 
 
 def _last_closed_date() -> str:
@@ -317,6 +336,10 @@ def _daily_control(invoices: list[dict], movements: list[dict], adjustments: lis
         has_sale_cost_resolution = any(_day_key(record.get("date")) == next_open_date for record in sale_costs)
         if has_sales and not has_sale_cost_resolution:
             blockers.append({"type": "sale_cost", "id": next_open_date, "label": "Costo de ventas o confirmacion sin inventario pendiente"})
+        conciliation = conciliate_cards(next_open_date)
+        if conciliation.get("has_faltante"):
+            faltantes = ", ".join(item["medio"] for item in conciliation["per_medio"] if item["flag"] == "faltante")
+            blockers.append({"type": "card_faltante", "id": next_open_date, "label": f"Faltante de tarjetas sin registrar en caja: {faltantes}"})
     return {
         "last_closed_date": last_closed,
         "next_open_date": next_open_date,
@@ -1322,6 +1345,8 @@ def list_accounting(year: int | None = None, month: int | None = None) -> dict:
     sale_costs = list(collection("accounting_sale_costs").find({"brand_id": "casa"}, {"_id": 0}).sort("date", -1).limit(500))
     reporting = _journal_and_statements(statement_movements, invoices, adjustments, sale_costs, year, month)
     control_cutoff = min(reporting["cutoff_date"], date.today().isoformat())
+    control = _daily_control(invoices, statement_movements, adjustments, sale_costs, control_cutoff)
+    conciliation_date = control["next_open_date"] or date.today().isoformat()
     return {
         "year": year,
         "month": month,
@@ -1332,9 +1357,314 @@ def list_accounting(year: int | None = None, month: int | None = None) -> dict:
         "adjustments": adjustments,
         "monthly_results": monthly_results(year),
         "annual_result": annual_result(year),
-        "daily_control": _daily_control(invoices, statement_movements, adjustments, sale_costs, control_cutoff),
+        "daily_control": control,
+        "card_conciliation": conciliate_cards(conciliation_date),
+        "proposed_card_settlements": list_proposed_card_settlements()["proposed"],
+        "till_handovers": list_till_handovers(year, month),
         **reporting,
     }
+
+
+def _daily_cash_summary(all_movements: list[dict], report_date: str) -> dict:
+    """Efectivo del dia: saldo inicial + entradas − salidas, contando solo
+    movimientos en UYU con medio efectivo. Fuente unica de verdad para el
+    reporte diario y para el arqueo de la entrega de caja."""
+    def cash_effect(movement: dict) -> float:
+        if movement.get("currency") != "UYU" or movement.get("payment_method") != "efectivo":
+            return 0.0
+        amount = float(movement.get("amount") or 0)
+        return -amount if movement.get("direction") == "expense" else amount
+
+    day_movements = [movement for movement in all_movements if movement.get("date") == report_date]
+    opening_balance = sum(cash_effect(movement) for movement in all_movements if movement.get("date", "") < report_date)
+    opening_movements = [movement for movement in day_movements if movement.get("source") == "opening_balance"]
+    opening_balance += sum(cash_effect(movement) for movement in opening_movements)
+    report_movements = [movement for movement in day_movements if movement.get("source") != "opening_balance"]
+    cash_income = sum(cash_effect(movement) for movement in report_movements if cash_effect(movement) > 0)
+    cash_expenses = -sum(cash_effect(movement) for movement in report_movements if cash_effect(movement) < 0)
+    return {
+        "opening_balance": opening_balance,
+        "cash_income": cash_income,
+        "cash_expenses": cash_expenses,
+        "closing_balance": opening_balance + cash_income - cash_expenses,
+        "report_movements": report_movements,
+    }
+
+
+def _theoretical_cash_close(report_date: str) -> float:
+    all_movements = list(collection("accounting_movements").find(
+        {"brand_id": "casa", "date": {"$lte": report_date}},
+        {"_id": 0},
+    ).sort([("date", 1), ("created_at", 1)]))
+    return round(_daily_cash_summary(all_movements, report_date)["closing_balance"], 2)
+
+
+def _fiserv_coupon_medio(product_name: object) -> str | None:
+    name = _normalize_text(product_name)
+    if not name:
+        return None
+    if "maestro" in name:
+        return "maestro"
+    is_credito = "credit" in name  # credito / credit
+    if "visa" in name:
+        return "visa_credito" if is_credito else "visa_debito"
+    if "master" in name:
+        # Debit Mastercard, Mastercard prepago y Mastercard debito -> master_debito
+        return "master_credito" if is_credito else "master_debito"
+    return None
+
+
+def _movement_card_medio(movement: dict) -> str | None:
+    method = _clean(movement.get("payment_method")).lower()
+    card_type = _clean(movement.get("card_payment_type")).lower()
+    if method == "maestro":
+        return "maestro"
+    if method == "visa":
+        return "visa_credito" if card_type == "credito" else "visa_debito"
+    if method == "master":
+        return "master_credito" if card_type == "credito" else "master_debito"
+    return None
+
+
+def _card_income_by_medio(report_date: str) -> dict[str, float]:
+    totals = {medio: 0.0 for medio in CARD_CONCILIATION_MEDIOS}
+    for movement in collection("accounting_movements").find(
+        {"brand_id": "casa", "date": report_date, "direction": "income", "payment_method": {"$in": list(CARD_PAYMENT_METHODS)}},
+        {"_id": 0},
+    ):
+        medio = _movement_card_medio(movement)
+        if medio:
+            totals[medio] += float(movement.get("amount") or 0)
+    return totals
+
+
+def _coupon_integrity(report_date: str, coupons: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for coupon in coupons:
+        bill = _clean(coupon.get("bill_number"))
+        counts[bill] = counts.get(bill, 0) + 1
+    sales_numbers = [
+        number
+        for movement in collection("accounting_movements").find(
+            {"brand_id": "casa", "date": report_date, "direction": "income", "category": {"$in": ["facturas", "factura_credito"]}},
+            {"_id": 0, "invoice_number": 1},
+        )
+        if (number := _numeric(movement.get("invoice_number"))) is not None
+    ]
+    low = min(sales_numbers) if sales_numbers else None
+    high = max(sales_numbers) if sales_numbers else None
+    rows: list[dict] = []
+    for coupon in coupons:
+        bill = _clean(coupon.get("bill_number"))
+        issues: list[str] = []
+        if not bill:
+            issues.append("empty")
+        else:
+            if counts.get(bill, 0) > 1:
+                issues.append("duplicated")
+            number = _numeric(bill)
+            if low is not None and number is not None and not low <= number <= high:
+                issues.append("out_of_range")
+        rows.append({
+            "fiserv_id": coupon.get("fiserv_id"),
+            "bill_number": bill,
+            "ticket": coupon.get("ticket"),
+            "batch": coupon.get("batch"),
+            "product_name": coupon.get("product_name"),
+            "amount": round(float(coupon.get("total_amount") or 0), 2),
+            "issues": issues,
+        })
+    return {
+        "coupons": rows,
+        "flagged": [row for row in rows if row["issues"]],
+        "registered_bill_range": {"min": low, "max": high} if low is not None else None,
+    }
+
+
+def conciliate_cards(report_date: str) -> dict:
+    """Concilia los cupones del POS Fiserv contra los totales declarados por el
+    cajero (o, si aun no entrego caja, contra los cobros con tarjeta ya
+    registrados). Por medio, no por fecha de lote."""
+    _ensure_storage()
+    report_date = _required_date(report_date, "fecha de conciliacion")
+    coupons = list(collection("fiserv_transactions").find(
+        {"sale_date": report_date, "transaction_type": "C", "state": "2"},
+        {"_id": 0, "card_number": 0},
+    ))
+    pos_totals = {medio: 0.0 for medio in CARD_CONCILIATION_MEDIOS}
+    unmapped_pos_total = 0.0
+    for coupon in coupons:
+        medio = _fiserv_coupon_medio(coupon.get("product_name"))
+        gross = float(coupon.get("total_amount") or 0)
+        if medio:
+            pos_totals[medio] += gross
+        else:
+            unmapped_pos_total += gross
+    handover = collection("accounting_till_handovers").find_one({"brand_id": "casa", "date": report_date}, {"_id": 0})
+    if handover and handover.get("card_totals"):
+        caja_totals = {medio: float((handover.get("card_totals") or {}).get(medio) or 0) for medio in CARD_CONCILIATION_MEDIOS}
+        caja_source = "handover"
+    else:
+        caja_totals = _card_income_by_medio(report_date)
+        caja_source = "movements"
+    per_medio = []
+    for medio in CARD_CONCILIATION_MEDIOS:
+        pos = round(pos_totals[medio], 2)
+        caja = round(caja_totals[medio], 2)
+        difference = round(pos - caja, 2)
+        flag = ""
+        if difference > CARD_CONCILIATION_EPSILON:
+            flag = "faltante"
+        elif difference < -CARD_CONCILIATION_EPSILON:
+            flag = "sobrante"
+        per_medio.append({"medio": medio, "pos_total": pos, "caja_total": caja, "difference": difference, "flag": flag})
+    return {
+        "date": report_date,
+        "has_coupons": bool(coupons),
+        "pending_sync": not coupons,
+        "caja_source": caja_source,
+        "coupon_count": len(coupons),
+        "per_medio": per_medio,
+        "unmapped_pos_total": round(unmapped_pos_total, 2),
+        "has_faltante": any(item["flag"] == "faltante" for item in per_medio),
+        "has_sobrante": any(item["flag"] == "sobrante" for item in per_medio),
+        "coupon_integrity": _coupon_integrity(report_date, coupons),
+    }
+
+
+def register_till_handover(data: dict, user: str) -> dict:
+    """Entrega de caja + arqueo: un acto del cajero, distinto del cierre
+    contable administrativo. Nunca autocorrige: registra lo contado y la
+    diferencia, y devuelve la conciliacion de tarjetas en vivo."""
+    _ensure_storage()
+    handover_date = _required_date(data.get("date"), "fecha de entrega de caja")
+    raw_counted = data.get("counted_cash")
+    if raw_counted is None or _clean(raw_counted) == "":
+        raise ValueError("Falta el efectivo contado")
+    counted_cash = _money(raw_counted)
+    override = bool(data.get("override"))
+    existing = collection("accounting_till_handovers").find_one({"brand_id": "casa", "date": handover_date}, {"_id": 0})
+    if existing and not override:
+        raise ValueError(f"La caja del {handover_date} ya fue entregada. Usa override para volver a registrarla.")
+    theoretical_cash = _theoretical_cash_close(handover_date)
+    card_totals_in = data.get("card_totals") or {}
+    card_totals = {medio: _money(card_totals_in.get(medio)) for medio in CARD_CONCILIATION_MEDIOS}
+    raw_ticket_total = data.get("ticket_close_total")
+    ticket_close_total = _money(raw_ticket_total) if raw_ticket_total not in (None, "") else None
+    now = _now()
+    handover = {
+        "id": existing["id"] if existing else str(uuid4()),
+        "brand_id": "casa",
+        "date": handover_date,
+        "counted_cash": counted_cash,
+        "theoretical_cash": theoretical_cash,
+        "difference": round(counted_cash - theoretical_cash, 2),
+        "card_totals": card_totals,
+        "pos_batches": [_clean(batch) for batch in (data.get("pos_batches") or []) if _clean(batch)],
+        "ticket_close_total": ticket_close_total,
+        "cashier": user,
+        "overridden": bool(existing),
+        "override_count": (int(existing.get("override_count") or 0) + 1) if existing else 0,
+        "updated_at": now,
+        "updated_by": user,
+    }
+    collection("accounting_till_handovers").update_one(
+        {"brand_id": "casa", "date": handover_date},
+        {"$set": handover, "$setOnInsert": {"created_at": now, "created_by": user}},
+        upsert=True,
+    )
+    saved = collection("accounting_till_handovers").find_one({"brand_id": "casa", "date": handover_date}, {"_id": 0}) or handover
+    return {"handover": saved, "conciliation": conciliate_cards(handover_date)}
+
+
+def list_till_handovers(year: int, month: int) -> list[dict]:
+    _ensure_storage()
+    start = date(year, month, 1).isoformat()
+    end = date(year, month, monthrange(year, month)[1]).isoformat()
+    return list(collection("accounting_till_handovers").find(
+        {"brand_id": "casa", "date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("date", -1))
+
+
+def _settlement_payment_method(row: dict) -> str:
+    text = _normalize_text(f"{row.get('product_desc')} {row.get('product_code')}")
+    if "maestro" in text:
+        return "maestro"
+    if "master" in text:
+        return "master"
+    if "visa" in text:
+        return "visa"
+    raise ValueError(f"No se pudo determinar la tarjeta de la liquidacion {row.get('settlement_number')}")
+
+
+def list_proposed_card_settlements() -> dict:
+    """Cada liquidacion Fiserv con neto>0 que aun no tiene su acreditacion
+    (financiera -> banco) registrada. Match por settlement_number."""
+    _ensure_storage()
+    registered: set[str] = set()
+    for movement in collection("accounting_movements").find(
+        {"brand_id": "casa", "category": CARD_SETTLEMENT_CATEGORY},
+        {"_id": 0, "source_key": 1},
+    ):
+        source_key = _clean(movement.get("source_key"))
+        if source_key.startswith("fiserv-settlement:"):
+            registered.add(source_key.split(":", 1)[1])
+    by_number: dict[str, dict] = {}
+    for row in collection("fiserv_settlements").find({"acquirer": "fiserv", "net_amount": {"$gt": 0}}, {"_id": 0}):
+        number = _clean(row.get("settlement_number"))
+        if not number or number in registered:
+            continue
+        agg = by_number.setdefault(number, {
+            "settlement_number": number,
+            "payment_date": _clean(row.get("payment_date")),
+            "product_desc": _clean(row.get("product_desc")),
+            "net_amount": 0.0,
+            "already_registered": False,
+        })
+        agg["net_amount"] = round(agg["net_amount"] + float(row.get("net_amount") or 0), 2)
+    proposed = sorted(by_number.values(), key=lambda item: (item["payment_date"], item["settlement_number"]))
+    return {"proposed": proposed}
+
+
+def confirm_card_settlement(settlement_number: str, user: str) -> dict:
+    _ensure_storage()
+    number = _clean(settlement_number)
+    if not number:
+        raise ValueError("Falta el numero de liquidacion")
+    rows = list(collection("fiserv_settlements").find({"acquirer": "fiserv", "settlement_number": number}, {"_id": 0}))
+    if not rows:
+        raise ValueError(f"No existe la liquidacion {number}")
+    net_amount = round(sum(float(row.get("net_amount") or 0) for row in rows), 2)
+    if net_amount <= 0:
+        raise ValueError("La liquidacion no tiene neto a acreditar")
+    payment_date = next((_clean(row.get("payment_date")) for row in rows if _clean(row.get("payment_date"))), "")
+    if not payment_date:
+        raise ValueError("La liquidacion no tiene fecha de pago")
+    payment_method = _settlement_payment_method(rows[0])
+    product_desc = _clean(rows[0].get("product_desc")) or number
+    source_key = f"fiserv-settlement:{number}"
+    # register_movement validates card_receivables before deduping by source_key,
+    # so a re-confirm would raise "no puede superar" once the balance dropped.
+    # Guard idempotency here.
+    already = collection("accounting_movements").find_one({"source_key": source_key}, {"_id": 0})
+    if already:
+        return {"settlement_number": number, "net_amount": net_amount, "movement": already, "already_registered": True}
+    result = register_movement({
+        "direction": "transfer",
+        "category": CARD_SETTLEMENT_CATEGORY,
+        "payment_method": payment_method,
+        "amount": net_amount,
+        "currency": "UYU",
+        "date": payment_date,
+        "year": int(payment_date[:4]),
+        "month": int(payment_date[5:7]),
+        "description": f"Acreditacion Fiserv liquidacion {number} ({product_desc})",
+        "reference": number,
+        "source": "fiserv_settlement",
+        "source_key": source_key,
+    }, user)
+    return {"settlement_number": number, "net_amount": net_amount, **result}
 
 
 def export_daily_report(report_date: str, cashier: str) -> dict:
@@ -1348,21 +1678,12 @@ def export_daily_report(report_date: str, cashier: str) -> dict:
         {"brand_id": "casa", "date": {"$lte": selected_date.isoformat()}},
         {"_id": 0},
     ).sort([("date", 1), ("created_at", 1)]))
-    day_movements = [movement for movement in all_movements if movement.get("date") == selected_date.isoformat()]
-
-    def cash_effect(movement: dict) -> float:
-        if movement.get("currency") != "UYU" or movement.get("payment_method") != "efectivo":
-            return 0.0
-        amount = float(movement.get("amount") or 0)
-        return -amount if movement.get("direction") == "expense" else amount
-
-    opening_balance = sum(cash_effect(movement) for movement in all_movements if movement.get("date", "") < selected_date.isoformat())
-    opening_movements = [movement for movement in day_movements if movement.get("source") == "opening_balance"]
-    opening_balance += sum(cash_effect(movement) for movement in opening_movements)
-    report_movements = [movement for movement in day_movements if movement.get("source") != "opening_balance"]
-    cash_income = sum(cash_effect(movement) for movement in report_movements if cash_effect(movement) > 0)
-    cash_expenses = -sum(cash_effect(movement) for movement in report_movements if cash_effect(movement) < 0)
-    closing_balance = opening_balance + cash_income - cash_expenses
+    cash = _daily_cash_summary(all_movements, selected_date.isoformat())
+    opening_balance = cash["opening_balance"]
+    cash_income = cash["cash_income"]
+    cash_expenses = cash["cash_expenses"]
+    closing_balance = cash["closing_balance"]
+    report_movements = cash["report_movements"]
 
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
