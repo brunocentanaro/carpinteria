@@ -446,3 +446,113 @@ def sync_range(start: date, end: date, *, session: requests.Session | None = Non
 
 def sync_day(day: date, *, user: str = "manual") -> dict:
     return sync_range(day, day, user=user)
+
+
+# ── Panel de administración "Tarjetas" ───────────────────────────────────────
+
+# Costo real de Fiserv (lo que efectivamente "come"): arancel + su IVA + el costo
+# financiero del anticipo + su IVA. Separado de los créditos fiscales, que se
+# recuperan ante DGI y NO son costo.
+_COST_CONCEPTS = ("tariff", "tariff_vat", "advance_cost", "advance_vat")
+_TAX_CREDIT_CONCEPTS = ("tax_credit_19210", "withholding_17453")
+_ADVANCE_CONCEPTS = ("advance_cost", "advance_vat")
+
+
+def _month_bounds(year: int, month: int) -> tuple[str, str]:
+    start = date(year, month, 1)
+    end = date(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)
+    return start.isoformat(), end.isoformat()
+
+
+def panel(year: int, month: int, *, today: date | None = None) -> dict:
+    """Aggregate the fiserv_* collections for the admin "Tarjetas" panel. Pure
+    read from Mongo — never hits Fiserv."""
+    today = today or datetime.now(timezone.utc).date()
+    start, end = _month_bounds(year, month)
+
+    settlements = list(
+        collection("fiserv_settlements").find(
+            {"acquirer": "fiserv", "payment_date": {"$gte": start, "$lte": end}}, {"_id": 0}
+        )
+    )
+
+    def concept_sum(keys: tuple[str, ...]) -> float:
+        return round(sum(_num((s.get("concepts") or {}).get(k)) for s in settlements for k in keys), 2)
+
+    gross = round(sum(_num(s.get("gross_amount")) for s in settlements), 2)
+    net = round(sum(_num(s.get("net_amount")) for s in settlements), 2)
+    chargebacks = round(sum(_num((s.get("concepts") or {}).get("merchant_payments")) for s in settlements), 2)
+
+    by_product: dict[str, dict] = {}
+    for s in settlements:
+        key = s.get("product_desc") or s.get("product_code") or "—"
+        agg = by_product.setdefault(key, {"product": key, "gross": 0.0, "net": 0.0, "cost": 0.0, "count": 0})
+        agg["gross"] += _num(s.get("gross_amount"))
+        agg["net"] += _num(s.get("net_amount"))
+        agg["cost"] += sum(_num((s.get("concepts") or {}).get(k)) for k in _COST_CONCEPTS)
+        agg["count"] += 1
+    products = [
+        {**v, "gross": round(v["gross"], 2), "net": round(v["net"], 2), "cost": round(v["cost"], 2)}
+        for v in sorted(by_product.values(), key=lambda x: -x["gross"])
+    ]
+
+    upcoming = list(
+        collection("fiserv_payment_calendar").find(
+            {"acquirer": "fiserv", "payment_date": {"$gte": today.isoformat()}}, {"_id": 0}
+        ).sort("payment_date", 1)
+    )
+    horizon = (today + timedelta(days=7)).isoformat()
+    next_7 = round(sum(_num(r.get("net_amount")) for r in upcoming if r.get("payment_date") <= horizon), 2)
+
+    recent = list(
+        collection("fiserv_transactions").find(
+            {"acquirer": "fiserv", "sale_date": {"$gte": start, "$lte": end}},
+            {"_id": 0, "card_number": 0},
+        ).sort([("sale_date", -1), ("auth_datetime", -1)]).limit(200)
+    )
+
+    chargeback_rows = [
+        {
+            "settlement_number": s.get("settlement_number"),
+            "payment_date": s.get("payment_date"),
+            "amount": round(_num((s.get("concepts") or {}).get("merchant_payments")), 2),
+        }
+        for s in settlements
+        if _num((s.get("concepts") or {}).get("merchant_payments"))
+    ]
+
+    last_sync = collection("fiserv_transactions").find_one(
+        {"acquirer": "fiserv"}, {"_id": 0, "updated_at": 1}, sort=[("updated_at", -1)]
+    )
+    alerts = []
+    for cb in chargeback_rows:
+        alerts.append({"type": "chargeback", "label": f"Contracargo ${cb['amount']:,.2f} en liquidación {cb['settlement_number']} ({cb['payment_date']})"})
+    if last_sync and last_sync.get("updated_at"):
+        stale_days = (datetime.now(timezone.utc) - last_sync["updated_at"]).days
+        if stale_days >= 2:
+            alerts.append({"type": "stale_sync", "label": f"Última sincronización con Fiserv hace {stale_days} días"})
+
+    return {
+        "year": year,
+        "month": month,
+        "month_summary": {
+            "gross": gross,
+            "net": net,
+            "cost_fiserv": concept_sum(_COST_CONCEPTS),
+            "advance_cost": concept_sum(_ADVANCE_CONCEPTS),
+            "tax_credits": concept_sum(_TAX_CREDIT_CONCEPTS),
+            "tax_credit_19210": concept_sum(("tax_credit_19210",)),
+            "withholding_17453": concept_sum(("withholding_17453",)),
+            "tariff": concept_sum(("tariff",)),
+            "tariff_vat": concept_sum(("tariff_vat",)),
+            "chargebacks": chargebacks,
+            "settlement_count": len(settlements),
+        },
+        "by_product": products,
+        "upcoming": upcoming,
+        "next_7_days_net": next_7,
+        "recent_transactions": recent,
+        "chargebacks": chargeback_rows,
+        "alerts": alerts,
+        "last_sync_at": last_sync.get("updated_at") if last_sync else None,
+    }

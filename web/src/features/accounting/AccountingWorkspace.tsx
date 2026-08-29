@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeftRight, BarChart3, BookOpen, CalendarDays, ChevronDown, CirclePlus, Download, FileText, Landmark, ListTree, RefreshCw, Scale, TrendingUp } from "lucide-react";
+import { ArrowLeftRight, BarChart3, BookOpen, CalendarDays, ChevronDown, CirclePlus, CreditCard, Download, FileText, Landmark, ListTree, RefreshCw, Scale, TrendingUp } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { canEditAccounting } from "@/lib/auth";
 
-type Tab = "daily" | "journal" | "accounts" | "position" | "monthly" | "equity" | "cashflow" | "payables" | "annual";
+type Tab = "daily" | "journal" | "accounts" | "position" | "monthly" | "equity" | "cashflow" | "payables" | "tarjetas" | "annual";
 type Direction = "income" | "expense" | "transfer";
 
 interface AuthSession { user: string; area: string; allAccess?: boolean }
@@ -157,6 +157,7 @@ const tabs: Array<{ id: Tab; label: string; icon: typeof CalendarDays; section: 
   { id: "equity", label: "Cambios en patrimonio", icon: TrendingUp, section: "accounting" },
   { id: "cashflow", label: "Flujo de efectivo", icon: ArrowLeftRight, section: "accounting" },
   { id: "payables", label: "Facturas a pagar", icon: FileText, section: "accounting" },
+  { id: "tarjetas", label: "Tarjetas", icon: CreditCard, section: "accounting" },
   { id: "annual", label: "Contabilidad anual", icon: Landmark, section: "accounting" },
 ];
 const supplierClassificationLabels: Record<string, string> = {
@@ -286,6 +287,7 @@ export function AccountingWorkspace() {
       {tab === "payables" ? <PayablesPanel data={data} saving={mutation.isPending} canEdit={canManageAccounting} onInvoice={(invoice) => mutation.mutate({ operation: "supplier_invoice", invoice })} onSyncUcfe={() => mutation.mutate({ operation: "supplier_sync" })} onClassify={(invoiceId, classification) => mutation.mutate({ operation: "classify_supplier_invoice", invoice_id: invoiceId, classification })} /> : null}
       {tab === "annual" && isAdmin ? <AnnualPanel data={data} /> : null}
     </> : null}
+    {tab === "tarjetas" && isAdmin ? <TarjetasPanel year={year} month={month} /> : null}
   </main>;
 }
 
@@ -633,4 +635,121 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 function Empty({ text }: { text: string }) {
   return <div className="p-10 text-center text-sm text-muted-foreground">{text}</div>;
+}
+
+interface FiservUpcoming { payment_date: string; net_amount: number; gross_amount: number; total_count: number }
+interface FiservProduct { product: string; gross: number; net: number; cost: number; count: number }
+interface FiservTx { fiserv_id: string; sale_date: string; auth_datetime?: string; transaction_type: string; state: string; product_name?: string; card_last4?: string; bill_number?: string; batch?: string; ticket?: string; total_amount: number; tax_refund?: string }
+interface FiservPanelData {
+  year: number;
+  month: number;
+  month_summary: {
+    gross: number; net: number; cost_fiserv: number; advance_cost: number; tax_credits: number;
+    tax_credit_19210: number; withholding_17453: number; tariff: number; tariff_vat: number;
+    chargebacks: number; settlement_count: number;
+  };
+  by_product: FiservProduct[];
+  upcoming: FiservUpcoming[];
+  next_7_days_net: number;
+  recent_transactions: FiservTx[];
+  chargebacks: { settlement_number: string; payment_date: string; amount: number }[];
+  alerts: { type: string; label: string }[];
+  last_sync_at: string | null;
+}
+
+const txTypeLabel: Record<string, string> = { C: "Compra", A: "Anulación", D: "Devolución", T: "Venta c/adelanto" };
+
+function TarjetasPanel({ year, month }: { year: number; month: number }) {
+  const client = useQueryClient();
+  const [cardFilter, setCardFilter] = useState("");
+  const query = useQuery({
+    queryKey: ["fiserv-panel", year, month],
+    queryFn: () => api<FiservPanelData>(`/api/contabilidad/tarjetas?year=${year}&month=${month}`),
+  });
+  const sync = useMutation({
+    mutationFn: () => api<Record<string, unknown>>("/api/contabilidad/tarjetas", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lookback_days: 3 }) }),
+    onSuccess: async (result) => {
+      const created = Number(result?.transactions_new ?? 0) + Number(result?.settlements_new ?? 0);
+      toast.success(created ? `Sincronizado: ${created} registros nuevos` : "Sincronizado (sin novedades)");
+      await client.refetchQueries({ queryKey: ["fiserv-panel"], type: "active" });
+    },
+    onError: (error) => toast.error(error instanceof Error ? error.message : "No se pudo sincronizar con Fiserv"),
+  });
+
+  if (query.isLoading) return <div className="border bg-card p-10 text-center text-sm text-muted-foreground">Cargando datos de Fiserv…</div>;
+  if (query.error) return <div className="border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">{query.error instanceof Error ? query.error.message : "No se pudo cargar"}</div>;
+  const data = query.data;
+  if (!data) return null;
+  const s = data.month_summary;
+  const upcoming = data.upcoming.filter((u) => u.net_amount > 0);
+  const filteredTx = cardFilter.trim() ? data.recent_transactions.filter((t) => (t.card_last4 || "").includes(cardFilter.trim()) || (t.bill_number || "").includes(cardFilter.trim())) : data.recent_transactions;
+
+  return <div className="space-y-5">
+    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+      <div>
+        <h2 className="text-lg font-semibold">Tarjetas · Fiserv</h2>
+        <p className="text-xs text-muted-foreground">Fuente: Merchant Center. {data.last_sync_at ? `Última sincronización ${new Date(data.last_sync_at).toLocaleString("es-UY")}.` : "Sin sincronizaciones aún."}</p>
+      </div>
+      <Button variant="outline" onClick={() => sync.mutate()} disabled={sync.isPending}><RefreshCw className={sync.isPending ? "animate-spin" : ""} /> Sincronizar ahora</Button>
+    </div>
+
+    {data.alerts.length ? <div className="space-y-1 border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">{data.alerts.map((a, i) => <div key={i}>• {a.label}</div>)}</div> : null}
+
+    <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <Metric label="Próximos 7 días (neto a cobrar)" value={money(data.next_7_days_net)} tone="good" />
+      <Metric label="Bruto del mes" value={money(s.gross)} />
+      <Metric label="Neto acreditado del mes" value={money(s.net)} />
+      <Metric label="Costo Fiserv del mes" value={money(s.cost_fiserv)} tone="bad" />
+    </section>
+
+    <section className="grid gap-4 lg:grid-cols-3">
+      <div className="border bg-card p-4">
+        <div className="text-xs font-semibold uppercase tracking-wider text-primary">Lo que descuenta Fiserv</div>
+        <p className="mt-1 text-xs text-muted-foreground">Costo real del servicio, separado de lo que se recupera.</p>
+        <dl className="mt-3 space-y-1.5 text-sm">
+          <div className="flex justify-between"><dt>Arancel</dt><dd className="tabular-nums">{money(s.tariff)}</dd></div>
+          <div className="flex justify-between"><dt>IVA arancel</dt><dd className="tabular-nums">{money(s.tariff_vat)}</dd></div>
+          <div className="flex justify-between"><dt>Costo del anticipo</dt><dd className="tabular-nums">{money(s.advance_cost)}</dd></div>
+          <div className="flex justify-between border-t pt-1.5 font-semibold"><dt>Costo Fiserv</dt><dd className="tabular-nums text-red-600">{money(s.cost_fiserv)}</dd></div>
+        </dl>
+      </div>
+      <div className="border bg-card p-4">
+        <div className="text-xs font-semibold uppercase tracking-wider text-emerald-700">Créditos fiscales (recuperables)</div>
+        <p className="mt-1 text-xs text-muted-foreground">No son costo: se deducen ante DGI.</p>
+        <dl className="mt-3 space-y-1.5 text-sm">
+          <div className="flex justify-between"><dt>Reducción IVA Ley 19.210</dt><dd className="tabular-nums">{money(s.tax_credit_19210)}</dd></div>
+          <div className="flex justify-between"><dt>Retención Ley 17.453</dt><dd className="tabular-nums">{money(s.withholding_17453)}</dd></div>
+          <div className="flex justify-between border-t pt-1.5 font-semibold"><dt>Total recuperable</dt><dd className="tabular-nums text-emerald-700">{money(s.tax_credits)}</dd></div>
+        </dl>
+      </div>
+      <div className="border bg-card p-4">
+        <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Contracargos y otros</div>
+        <p className="mt-1 text-xs text-muted-foreground">Cargos del comercio en las liquidaciones.</p>
+        <dl className="mt-3 space-y-1.5 text-sm">
+          <div className="flex justify-between"><dt>Contracargos del mes</dt><dd className="tabular-nums text-red-600">{money(s.chargebacks)}</dd></div>
+          <div className="flex justify-between"><dt>Liquidaciones</dt><dd className="tabular-nums">{s.settlement_count}</dd></div>
+        </dl>
+        {data.chargebacks.length ? <div className="mt-2 space-y-1 text-xs text-muted-foreground">{data.chargebacks.map((c) => <div key={c.settlement_number}>Liq. {c.settlement_number} · {c.payment_date} · {money(c.amount)}</div>)}</div> : null}
+      </div>
+    </section>
+
+    <section className="grid gap-4 lg:grid-cols-2">
+      <div className="overflow-hidden border bg-card">
+        <div className="border-b px-4 py-3"><h3 className="font-semibold">Próximos cobros</h3><p className="mt-1 text-xs text-muted-foreground">Por fecha real de acreditación (anticipo incluido).</p></div>
+        {upcoming.length === 0 ? <Empty text="Sin cobros pendientes." /> : <div className="overflow-x-auto"><table className="w-full min-w-[360px] text-sm"><thead className="bg-muted/60 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-2">Fecha</th><th className="px-4 py-2 text-right">Cupones</th><th className="px-4 py-2 text-right">Neto</th></tr></thead><tbody className="divide-y">{upcoming.map((u) => <tr key={u.payment_date}><td className="px-4 py-2">{u.payment_date}</td><td className="px-4 py-2 text-right tabular-nums">{u.total_count}</td><td className="px-4 py-2 text-right tabular-nums">{money(u.net_amount)}</td></tr>)}</tbody></table></div>}
+      </div>
+      <div className="overflow-hidden border bg-card">
+        <div className="border-b px-4 py-3"><h3 className="font-semibold">Detalle por producto</h3><p className="mt-1 text-xs text-muted-foreground">Liquidado en el mes.</p></div>
+        {data.by_product.length === 0 ? <Empty text="Sin datos del mes." /> : <div className="overflow-x-auto"><table className="w-full min-w-[420px] text-sm"><thead className="bg-muted/60 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-2">Producto</th><th className="px-4 py-2 text-right">Bruto</th><th className="px-4 py-2 text-right">Costo</th><th className="px-4 py-2 text-right">Neto</th></tr></thead><tbody className="divide-y">{data.by_product.map((p) => <tr key={p.product}><td className="px-4 py-2">{p.product}</td><td className="px-4 py-2 text-right tabular-nums">{money(p.gross)}</td><td className="px-4 py-2 text-right tabular-nums text-red-600">{money(p.cost)}</td><td className="px-4 py-2 text-right tabular-nums">{money(p.net)}</td></tr>)}</tbody></table></div>}
+      </div>
+    </section>
+
+    <section className="overflow-hidden border bg-card">
+      <div className="flex flex-col gap-2 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div><h3 className="font-semibold">Cupones recientes</h3><p className="mt-1 text-xs text-muted-foreground">Buscá por últimos 4 dígitos o número de factura.</p></div>
+        <Input value={cardFilter} onChange={(e) => setCardFilter(e.target.value)} placeholder="1234 o factura" className="w-full sm:w-48" />
+      </div>
+      {filteredTx.length === 0 ? <Empty text="Sin cupones para mostrar." /> : <div className="max-h-[420px] overflow-auto"><table className="w-full min-w-[640px] text-sm"><thead className="sticky top-0 bg-muted/70 text-left text-xs uppercase text-muted-foreground"><tr><th className="px-4 py-2">Fecha</th><th className="px-4 py-2">Tipo</th><th className="px-4 py-2">Producto</th><th className="px-4 py-2">Tarjeta</th><th className="px-4 py-2">Factura</th><th className="px-4 py-2">Lote/Cupón</th><th className="px-4 py-2 text-right">Monto</th></tr></thead><tbody className="divide-y">{filteredTx.map((t) => <tr key={t.fiserv_id}><td className="px-4 py-2 whitespace-nowrap">{t.auth_datetime ? new Date(t.auth_datetime).toLocaleString("es-UY", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : t.sale_date}</td><td className="px-4 py-2">{txTypeLabel[t.transaction_type] || t.transaction_type}</td><td className="px-4 py-2">{t.product_name || "—"}</td><td className="px-4 py-2 tabular-nums">{t.card_last4 ? `···· ${t.card_last4}` : "—"}</td><td className="px-4 py-2 tabular-nums">{t.bill_number || "—"}</td><td className="px-4 py-2 tabular-nums text-muted-foreground">{t.batch || "—"}/{t.ticket || "—"}</td><td className="px-4 py-2 text-right tabular-nums">{money(t.total_amount)}</td></tr>)}</tbody></table></div>}
+    </section>
+  </div>;
 }

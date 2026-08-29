@@ -3206,6 +3206,28 @@ def handle_accounting_daily_report(data: dict) -> dict:
     return export_daily_report(str(data.get("date", "")), str(data.get("cashier", "")))
 
 
+def handle_fiserv_panel(data: dict) -> dict:
+    from datetime import datetime as _dt
+
+    from . import fiserv
+    now = _dt.now()
+    return fiserv.panel(int(data.get("year") or now.year), int(data.get("month") or now.month))
+
+
+def handle_fiserv_sync(data: dict) -> dict:
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+
+    from . import fiserv
+    user = str(data.get("updated_by", "")) or "manual"
+    if data.get("start") and data.get("end"):
+        start = _date.fromisoformat(str(data["start"]))
+        end = _date.fromisoformat(str(data["end"]))
+        return fiserv.sync_range(start, end, user=user)
+    lookback = max(1, int(data.get("lookback_days") or 3))
+    today = _dt.now().date()
+    return fiserv.sync_range(today - _td(days=lookback - 1), today, user=user)
+
+
 def main() -> None:
     raw = sys.stdin.read()
     data = json.loads(raw)
@@ -3332,6 +3354,10 @@ def main() -> None:
             result = handle_accounting_classify_supplier_invoice(data)
         elif action == "accounting_supplier_sync":
             result = handle_accounting_supplier_sync(data)
+        elif action == "fiserv_panel":
+            result = handle_fiserv_panel(data)
+        elif action == "fiserv_sync":
+            result = handle_fiserv_sync(data)
         elif action == "accounting_daily_report":
             result = handle_accounting_daily_report(data)
         elif action == "session_update":
