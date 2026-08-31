@@ -1463,6 +1463,13 @@ def _coupon_integrity(report_date: str, coupons: list[dict]) -> dict:
             if counts.get(bill, 0) > 1:
                 issues.append("duplicated")
             number = _numeric(bill)
+            # CAVEAT (conocido): La Casa emite con varias series de factura en
+            # paralelo (26xxx, 76xxx, 86xxx conviven en un mismo día), así que un
+            # único rango min–max sobre los números registrados produce falsos
+            # positivos/negativos. Lo correcto es cruzar contra la lista real de
+            # facturas emitidas (CFE de UCFE ventas) por serie. Ver
+            # docs/fiserv-tarjetas.md, relación 2. Hasta entonces el flag es una
+            # aproximación, no una verdad.
             if low is not None and number is not None and not low <= number <= high:
                 issues.append("out_of_range")
         rows.append({

@@ -30,7 +30,9 @@ Excel + Word.
 - **Next 16 (App Router) + React 19** en `web/`. Tailwind v4 + shadcn/ui
   (style `base-nova` con tokens custom — ver `web/src/app/globals.css`).
 - **Mongo Atlas** como persistence. Colecciones: `quotation_sessions`,
-  `memory`, `hardware_prices`.
+  `memory`, `hardware_prices`, las de contabilidad (`accounting_*`,
+  `supplier_*`), las de UCFE (`ucfe_received_*`) y las de tarjetas Fiserv
+  (`fiserv_transactions`, `fiserv_settlements`, `fiserv_payment_calendar`).
 - **OpenAI Agents SDK** (`openai-agents`) para el chat. Modelo por defecto
   `gpt-4.1-mini`. Conversación persistida via `last_response_id`.
 - **Google Sheets API** para el catálogo Activa y precios de herrajes.
@@ -106,6 +108,12 @@ Leélas antes de tocar UI / composition.
 │   ├── pliego.py             # Vision API → descompone muebles
 │   ├── hardware_catalog.py   # Lista curada de códigos de herrajes
 │   ├── hardware_prices_sheet.py # CRUD precios en sheet
+│   ├── accounting.py         # Contabilidad de La Casa: caja diaria, arqueo,
+│   │                         #   conciliación tarjetas por lote, cierres, estados
+│   ├── fiserv.py             # Integración Fiserv (tarjetas): sync API→Mongo,
+│   │                         #   panel, export contador. Ver docs/fiserv-tarjetas.md
+│   ├── fiserv_cron.py        # Cron nocturno de sync (servicio fiserv-cron)
+│   ├── ucfe.py / ucfe_cron.py# Comprobantes recibidos (compras) + su cron
 │   └── settings.py           # Defaults: margen, recargos, etc.
 ├── web/                      # Frontend Next
 │   ├── src/app/              # Routes (App Router)
@@ -229,6 +237,10 @@ Mínimo:
 - Credenciales Google: `GOOGLE_SERVICE_ACCOUNT_FILE` (path local) o
   `GOOGLE_SERVICE_ACCOUNT_JSON` (inline o base64 para producción).
   La lógica vive en `carpinteria/google_creds.py:load_credentials`.
+- Tarjetas Fiserv (opcional, solo La Casa): `FISERV_USER`, `FISERV_PASS`,
+  `FISERV_TOTP_SECRET` (usuario de solo lectura del Merchant Center; el TOTP se
+  genera con pyotp). Ver `docs/fiserv-tarjetas.md` y `docs/railway-fiserv-cron.md`.
+- UCFE (compras): `UCFE_USERNAME`, `UCFE_PASSWORD`, `UCFE_ID_EMPRESA`.
 
 La hoja del catálogo Activa se elige con `PRICES_SHEET_ID` (default en
 `lista_precios_sheets.py`), NO con `GOOGLE_SHEETS_SPREADSHEET_ID` (esa variable
@@ -280,10 +292,31 @@ o por la UI.
 
 ---
 
+## Docs de referencia (`docs/`)
+
+Contexto profundo que no está en el código. Leélos antes de tocar cada área:
+
+- `docs/contabilidad-casa.md` — módulo de contabilidad de La Casa (caja diaria,
+  proveedores, estados). Modelo y flujo.
+- `docs/fiserv-tarjetas.md` — integración Fiserv + tarjetas + "Entregar caja":
+  arquitectura, colecciones, decisiones tomadas, el roadmap de cómo se relaciona
+  Fiserv con las facturas (3 relaciones), CAVEATS conocidos y estado operativo.
+- `docs/railway-fiserv-cron.md` / `docs/railway-ucfe-cron.md` — los dos crons en
+  Railway: cómo se configuran, el anclaje `/app` obligatorio, y la API interna
+  del portal Fiserv (auth TOTP, endpoints, quirks de Radware).
+- `docs/ucfe-stock-automation.md` — automatización de stock desde UCFE recibidos.
+
 ## Pendientes / ideas
 
 Si Codex / el agente próximo va a tocar algo, esto es lo siguiente que
 tiene sentido:
+
+- **Fiserv/tarjetas** (ver `docs/fiserv-tarjetas.md` para el detalle): completar
+  el backfill histórico a 2026-03-01; corregir el flag `out_of_range` de cupones
+  para múltiples series de factura; relación 2 (importar CFE emitidos de UCFE para
+  llenar la caja sola); relación 3 (comisiones Fiserv como crédito fiscal); pasar
+  las acreditaciones de "propuestas" a automáticas tras un mes limpio; conciliación
+  bancaria BROU. Migración opcional a Railway IaC antes del 2026-12-01.
 
 - Items editables soporta hoy: color/material/grosor/cantidad/qty de
   piezas/qty de herrajes/eliminar item. Falta: agregar pieza nueva,
@@ -300,4 +333,4 @@ tiene sentido:
 ---
 
 ## Última actualización
-2026-05-04
+2026-08-31 (agregado módulo Fiserv/tarjetas + caja; ver `docs/fiserv-tarjetas.md`)
