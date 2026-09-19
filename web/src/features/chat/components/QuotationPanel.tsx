@@ -853,40 +853,43 @@ function ApprovedQuoteEditor({
           {approvedDelivery ? <div className="mt-1 text-xs text-foreground">Plazo de entrega: {approvedDelivery}</div> : null}
         </div>
         {isAdmin ? (
-          <div className="grid w-full gap-2 sm:min-w-[520px] sm:grid-cols-2 lg:grid-cols-4">
-            <Label className="flex-1 space-y-1 text-xs">
+          <div className="grid w-full min-w-0 grid-cols-[repeat(auto-fit,minmax(min(100%,11rem),1fr))] gap-3">
+            <Label className="col-span-full grid min-w-0 gap-1.5 text-xs">
               Importe avalado (UYU)
-              <Input type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Precio definitivo" />
+              <Input type="text" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="Precio definitivo" className="h-11 w-full text-lg font-semibold tabular-nums md:text-lg" />
+              {amount.trim() && Number.isFinite(parsed) && parsed > 0 ? (
+                <span className="break-words text-base font-semibold tabular-nums">UYU {fmtUYU(parsed)}</span>
+              ) : null}
             </Label>
-            <Label className="space-y-1 text-xs">
+            <Label className="grid min-w-0 gap-1.5 text-xs">
               Tipo de precio
               <Select value={priceMode} onValueChange={(value) => setPriceMode(value as "unit" | "total")}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="unit">Unitario</SelectItem>
                   <SelectItem value="total">Total</SelectItem>
                 </SelectContent>
               </Select>
             </Label>
-            <Label className="space-y-1 text-xs">
+            <Label className="grid min-w-0 gap-1.5 text-xs">
               Cantidad
               <Input type="number" min="0.01" step="0.01" value={quantity} onChange={(event) => setQuantity(event.target.value)} />
             </Label>
-            <Label className="min-w-[140px] space-y-1 text-xs">
+            <Label className="grid min-w-0 gap-1.5 text-xs">
               Tratamiento de IVA
               <Select value={taxMode} onValueChange={(value) => setTaxMode(value as "plus" | "included")}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="plus">+ IVA</SelectItem>
                   <SelectItem value="included">IVA incluido</SelectItem>
                 </SelectContent>
               </Select>
             </Label>
-            <Label className="space-y-1 text-xs sm:col-span-2 lg:col-span-3">
+            <Label className="col-span-full grid min-w-0 gap-1.5 text-xs">
               Aclaraciones para la cotización
               <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ej: realizado en esta medida porque la solicitada no está disponible" rows={2} />
             </Label>
-            <Label className="space-y-1 text-xs sm:col-span-2 lg:col-span-3">
+            <Label className="col-span-full grid min-w-0 gap-1.5 text-xs">
               Plazo de entrega
               <Input value={delivery} onChange={(event) => setDelivery(event.target.value)} maxLength={500} placeholder="Ej: 15 días hábiles desde la seña" />
             </Label>
