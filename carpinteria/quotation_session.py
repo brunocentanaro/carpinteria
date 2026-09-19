@@ -8,6 +8,7 @@ OpenAI's Responses API — we only remember `last_response_id` here.
 from __future__ import annotations
 
 import uuid
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -183,6 +184,7 @@ class QuotationSession(BaseModel):
     approved_quote_price_modes: dict[str, str] = Field(default_factory=dict)
     approved_quote_quantities: dict[str, float] = Field(default_factory=dict)
     approved_quote_notes: dict[str, str] = Field(default_factory=dict)
+    approved_quote_delivery_terms: dict[str, str] = Field(default_factory=dict)
     approved_quotes_updated_at: datetime | None = None
     approved_quotes_updated_by: str = ""
     confirmed_quote_keys: list[str] = Field(default_factory=list)
@@ -334,6 +336,7 @@ def _session_row(doc: dict) -> dict:
         "approved_quote_price_modes": dict(doc.get("approved_quote_price_modes") or {}),
         "approved_quote_quantities": dict(doc.get("approved_quote_quantities") or {}),
         "approved_quote_notes": dict(doc.get("approved_quote_notes") or {}),
+        "approved_quote_delivery_terms": dict(doc.get("approved_quote_delivery_terms") or {}),
         "approved_quotes_updated_at": doc.get("approved_quotes_updated_at"),
         "approved_quotes_updated_by": doc.get("approved_quotes_updated_by") or "",
         "confirmed_quote_keys": list(doc.get("confirmed_quote_keys") or []),
@@ -470,6 +473,23 @@ def append_message(
     )
 
 
+def _search_text(value: Any) -> str:
+    if isinstance(value, dict):
+        value = " ".join(_search_text(part) for part in value.values())
+    elif isinstance(value, list):
+        value = " ".join(_search_text(part) for part in value)
+    text = "".join(char for char in unicodedata.normalize("NFKD", str(value or "").casefold()) if not unicodedata.combining(char))
+    return text.replace("eucalyptus", "eucaliptus").replace("eucalipto", "eucaliptus")
+
+
+def _session_matches_search(doc: dict, search: str) -> bool:
+    fields = ("title", "id", "client_name", "client_phone", "user_id", "requested_by", "order_number", "order_summary", "items", "moldura_quotes", "general_specs", "approved_quote_notes")
+    text = _search_text([doc.get(field) for field in fields])
+    if doc.get("moldura_quotes"):
+        text += " molduras"
+    return all(term in text for term in _search_text(search).split())
+
+
 def list_sessions(
     user_id: str | None = None,
     brand_id: str | None = None,
@@ -477,6 +497,7 @@ def list_sessions(
     limit: int = 30,
     year: int | None = None,
     month: int | None = None,
+    search: str = "",
 ) -> list[dict]:
     q: dict = {}
     if brand_id is not None:
@@ -492,12 +513,19 @@ def list_sessions(
             q["brand_id"] = brand_id
     if user_id is not None and area != "administracion" and brand_id != "pirone":
         q["user_id"] = user_id
-    rows = [_session_row(d) for d in _coll().find(q, {"_id": 0}).sort("created_at", -1)]
-    if year is not None:
-        rows = [r for r in rows if r["year"] == year]
-    if month is not None:
-        rows = [r for r in rows if r["month"] == month]
-    return rows[:limit]
+    rows = []
+    for doc in _coll().find(q, {"_id": 0, "messages": 0}).sort("created_at", -1):
+        if search and not _session_matches_search(doc, search):
+            continue
+        row = _session_row(doc)
+        if year is not None and row["year"] != year:
+            continue
+        if month is not None and row["month"] != month:
+            continue
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return rows
 
 
 def _crm_segment(name: str, description: str, material: str, *, moldura: bool = False) -> str:
@@ -671,6 +699,7 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
         "approved_quote_price_modes",
         "approved_quote_quantities",
         "approved_quote_notes",
+        "approved_quote_delivery_terms",
         "approved_quotes_updated_at",
         "approved_quotes_updated_by",
         "confirmed_quote_keys",
@@ -822,7 +851,7 @@ def update_commercial_status(session_id: str, fields: dict[str, Any]) -> Quotati
             if any(not item_key or quantity <= 0 for item_key, quantity in quantities_by_key.items()):
                 raise ValueError("Cada cantidad debe ser mayor a cero")
             update[key] = quantities_by_key
-        elif key == "approved_quote_notes":
+        elif key in {"approved_quote_notes", "approved_quote_delivery_terms"}:
             if not isinstance(value, dict):
                 raise ValueError("Las aclaraciones deben enviarse por producto")
             update[key] = {str(raw_key): str(raw_note or "").strip() for raw_key, raw_note in value.items()}

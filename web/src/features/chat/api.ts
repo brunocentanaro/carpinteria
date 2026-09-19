@@ -52,6 +52,12 @@ export async function listSessions(brandId?: string) {
   ).then((d) => d.sessions);
 }
 
+export async function searchSessions(brandId: string, search: string, limit: number) {
+  const params = new URLSearchParams({ brandId, q: search, limit: String(limit) });
+  return api(`/api/sessions?${params}`, undefined,
+    z.object({ sessions: z.array(SessionRowSchema), has_more: z.boolean() }));
+}
+
 export async function listSessionArchive(year = 2026, brandId?: string) {
   const params = new URLSearchParams({ archive: "1", year: String(year) });
   if (brandId) params.set("brandId", brandId);
@@ -106,6 +112,7 @@ export async function patchSession(
     approved_quote_price_modes: Record<string, "unit" | "total">;
     approved_quote_quantities: Record<string, number>;
     approved_quote_notes: Record<string, string>;
+    approved_quote_delivery_terms: Record<string, string>;
     confirmed_quote_keys: string[];
     client_sent: boolean;
     client_accepted: "pending" | "yes" | "no";

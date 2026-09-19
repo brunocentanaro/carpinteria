@@ -142,7 +142,8 @@ function buildClientMessage(session: Session, grand: number): string {
     const quantity = session.approved_quote_quantities[key] ?? item.quantity;
     const priceDetail = session.approved_quote_price_modes[key] === "unit" ? ` unitarios × ${fmtDim(quantity)}` : " total";
     const note = session.approved_quote_notes[key]?.trim();
-    return `${itemClientLabel(item)}${approved ? ` — UYU ${fmtUYU(approved)}${priceDetail} ${approvedTaxLabel(session, key)}` : ""}${note ? `\n  Aclaración: ${note}` : ""}`;
+    const delivery = session.approved_quote_delivery_terms[key]?.trim();
+    return `${itemClientLabel(item)}${approved ? ` — UYU ${fmtUYU(approved)}${priceDetail} ${approvedTaxLabel(session, key)}` : ""}${note ? `\n  Aclaración: ${note}` : ""}${delivery ? `\n  Plazo de entrega: ${delivery}` : ""}`;
   });
   const molduraLines = (session.moldura_quotes ?? []).map((quote, index) => {
     const qty = quote.quantity > 1 ? `${fmtDim(quote.quantity)} ${quote.unit}` : quote.unit;
@@ -151,7 +152,8 @@ function buildClientMessage(session: Session, grand: number): string {
     const quantity = session.approved_quote_quantities[key] ?? quote.quantity;
     const priceDetail = session.approved_quote_price_modes[key] === "unit" ? ` unitarios × ${fmtDim(quantity)}` : " total";
     const note = session.approved_quote_notes[key]?.trim();
-    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}${approved ? ` — UYU ${fmtUYU(approved)}${priceDetail} ${approvedTaxLabel(session, key)}` : ""}${note ? `\n  Aclaración: ${note}` : ""}`;
+    const delivery = session.approved_quote_delivery_terms[key]?.trim();
+    return `* ${qty} de ${quote.description || quote.family}, en ${quote.material || "material solicitado"}${approved ? ` — UYU ${fmtUYU(approved)}${priceDetail} ${approvedTaxLabel(session, key)}` : ""}${note ? `\n  Aclaración: ${note}` : ""}${delivery ? `\n  Plazo de entrega: ${delivery}` : ""}`;
   });
   const firstItem = session.items[0];
   const materialHint = firstItem ? itemMaterialLabel(firstItem) : "";
@@ -795,19 +797,22 @@ function ApprovedQuoteEditor({
   const approvedPriceMode = session.approved_quote_price_modes[approvalKey] ?? "total";
   const approvedQuantity = session.approved_quote_quantities[approvalKey] ?? defaultQuantity;
   const approvedNote = session.approved_quote_notes[approvalKey] ?? "";
+  const approvedDelivery = session.approved_quote_delivery_terms[approvalKey] ?? "";
   const clientConfirmed = session.confirmed_quote_keys.includes(approvalKey);
   const [amount, setAmount] = useState(approvedAmount != null ? String(approvedAmount) : "");
   const [taxMode, setTaxMode] = useState<"plus" | "included">(approvedMode);
   const [priceMode, setPriceMode] = useState<"unit" | "total">(approvedPriceMode);
   const [quantity, setQuantity] = useState(String(approvedQuantity));
   const [note, setNote] = useState(approvedNote);
+  const [delivery, setDelivery] = useState(approvedDelivery);
   useEffect(() => {
     setAmount(approvedAmount != null ? String(approvedAmount) : "");
     setTaxMode(approvedMode);
     setPriceMode(approvedPriceMode);
     setQuantity(String(approvedQuantity));
     setNote(approvedNote);
-  }, [approvedAmount, approvedMode, approvedNote, approvedPriceMode, approvedQuantity, approvalKey, session.id]);
+    setDelivery(approvedDelivery);
+  }, [approvedAmount, approvedMode, approvedNote, approvedDelivery, approvedPriceMode, approvedQuantity, approvalKey, session.id]);
   const mutation = useMutation({
     mutationFn: (value: number) => patchSession(session.id, {
       approved_quote_amounts: { ...session.approved_quote_amounts, [approvalKey]: value },
@@ -815,6 +820,7 @@ function ApprovedQuoteEditor({
       approved_quote_price_modes: { ...session.approved_quote_price_modes, [approvalKey]: priceMode },
       approved_quote_quantities: { ...session.approved_quote_quantities, [approvalKey]: Number(quantity) },
       approved_quote_notes: { ...session.approved_quote_notes, [approvalKey]: note.trim() },
+      approved_quote_delivery_terms: { ...session.approved_quote_delivery_terms, [approvalKey]: delivery.trim() },
     }),
     onSuccess: (updated) => {
       queryClient.setQueryData(qk.session(session.id), updated);
@@ -844,6 +850,7 @@ function ApprovedQuoteEditor({
           <div className="font-bold tabular-nums">{approvedAmount ? `UYU ${fmtUYU(approvedAmount)} ${approvedPriceMode === "unit" ? `unitarios × ${fmtDim(approvedQuantity)}` : "total"} ${approvedTaxLabel(session, approvalKey)}` : "Pendiente de administracion"}</div>
           <div className="text-[10px] text-muted-foreground">{calculatedAmount > 0 ? `Cotizador: UYU ${fmtUYU(calculatedAmount)}` : "El cotizador no pudo calcularlo: cargá el importe manualmente."}</div>
           {approvedNote ? <div className="mt-1 text-xs text-foreground">Aclaración: {approvedNote}</div> : null}
+          {approvedDelivery ? <div className="mt-1 text-xs text-foreground">Plazo de entrega: {approvedDelivery}</div> : null}
         </div>
         {isAdmin ? (
           <div className="grid w-full gap-2 sm:min-w-[520px] sm:grid-cols-2 lg:grid-cols-4">
@@ -878,6 +885,10 @@ function ApprovedQuoteEditor({
             <Label className="space-y-1 text-xs sm:col-span-2 lg:col-span-3">
               Aclaraciones para la cotización
               <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Ej: realizado en esta medida porque la solicitada no está disponible" rows={2} />
+            </Label>
+            <Label className="space-y-1 text-xs sm:col-span-2 lg:col-span-3">
+              Plazo de entrega
+              <Input value={delivery} onChange={(event) => setDelivery(event.target.value)} maxLength={500} placeholder="Ej: 15 días hábiles desde la seña" />
             </Label>
             <Button type="button" size="sm" className="self-end" disabled={!canSave || mutation.isPending} onClick={() => mutation.mutate(parsed)}>
               {mutation.isPending ? "Guardando..." : "Avalar"}

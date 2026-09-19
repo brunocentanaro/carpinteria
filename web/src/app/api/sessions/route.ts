@@ -10,6 +10,9 @@ export async function GET(req: NextRequest) {
     const session = readSessionToken(req.cookies.get(AUTH_COOKIE)?.value);
     if (!session) return NextResponse.json({ error: "No autenticado" }, { status: 401 });
     const { searchParams } = new URL(req.url);
+    const search = (searchParams.get("q") ?? "").trim().slice(0, 200);
+    const requestedLimit = Number(searchParams.get("limit") || 200);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.floor(requestedLimit)) : 200;
     const archive = searchParams.get("archive") === "1";
     const year = searchParams.get("year");
     const month = searchParams.get("month");
@@ -19,8 +22,9 @@ export async function GET(req: NextRequest) {
       action: archive ? "session_archive" : "session_list",
       year: year ? Number(year) : undefined,
       month: month ? Number(month) : undefined,
-      current_month: !archive && !year && !month,
-      limit: archive ? 1000 : 200,
+      current_month: !archive && !year && !month && !search,
+      search,
+      limit: archive ? 1000 : limit,
       user_id: session.user,
       brand_id: brandId,
       area: session.area,

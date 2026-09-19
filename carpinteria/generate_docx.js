@@ -257,7 +257,9 @@ children.push(new Paragraph({ spacing: { before: 400, after: 100 },
 }));
 
 const conditions = [
-  `Plazo de entrega: ${generalSpecs.delivery_days || 45} dias corridos`,
+  ...(input.delivery_terms?.length
+    ? input.delivery_terms.map((term) => `Plazo de entrega — ${term}`)
+    : Object.hasOwn(input, "delivery_terms") ? [] : [`Plazo de entrega: ${generalSpecs.delivery_days || 45} dias corridos`]),
   "Pago: SIIF",
   `Mantenimiento de oferta: ${generalSpecs.offer_maintenance_days || 60} dias`,
   `Lugar de entrega: ${generalSpecs.delivery_location || "A coordinar"}`,

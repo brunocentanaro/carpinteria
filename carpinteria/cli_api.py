@@ -1166,6 +1166,7 @@ def handle_export_excel(data: dict) -> dict:
         ws.column_dimensions["G"].width = 15
 
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="cotizacion_")
+    _append_delivery_sheet(wb, data.get("delivery_terms") or [])
     wb.save(path)
     shutil.rmtree(image_tmp, ignore_errors=True)
     return {"excel_path": path}
@@ -1877,6 +1878,7 @@ def handle_export_molduras_excel(data: dict) -> dict:
 
     fd, path = tempfile.mkstemp(suffix=".xlsx", prefix="cotizacion_molduras_")
     os.close(fd)
+    _append_delivery_sheet(wb, data.get("delivery_terms") or [])
     wb.save(path)
     for image_path in image_paths:
         try:
@@ -1884,6 +1886,26 @@ def handle_export_molduras_excel(data: dict) -> dict:
         except OSError:
             pass
     return {"excel_path": path}
+
+
+def _session_delivery_terms(session) -> list[str]:
+    products = [(f"item:{item.code}", item.name or item.code) for item in session.items]
+    products.extend((f"moldura:{index}", quote.description or quote.family or "Moldura") for index, quote in enumerate(session.moldura_quotes))
+    return [f"{name}: {session.approved_quote_delivery_terms[key]}" for key, name in products if session.approved_quote_delivery_terms.get(key)]
+
+
+def _append_delivery_sheet(workbook, terms: list[str]) -> None:
+    if not terms:
+        return
+    from openpyxl.styles import Alignment, Font
+    sheet = workbook.create_sheet("Plazos de entrega")
+    sheet.column_dimensions["A"].width = 85
+    sheet.cell(1, 1, "Plazos de entrega").font = Font(bold=True)
+    for row, term in enumerate(terms, 2):
+        cell = sheet.cell(row, 1, term)
+        cell.data_type = "s"
+        cell.alignment = Alignment(wrap_text=True, vertical="top")
+        sheet.row_dimensions[row].height = 45
 
 
 def handle_export_molduras_excel_session(data: dict) -> dict:
@@ -1913,6 +1935,7 @@ def handle_export_molduras_excel_session(data: dict) -> dict:
     general_specs = s.general_specs.model_dump() if s.general_specs else {}
     return handle_export_molduras_excel({
         "items": items,
+        "delivery_terms": _session_delivery_terms(s),
         "commercial": {
             "payment_days": _effective_payment_days(s.payment_days, str(general_specs.get("payment_terms") or "")),
             "destination": _effective_destination(s.destination or str(general_specs.get("delivery_location") or "")),
@@ -2084,17 +2107,20 @@ def handle_session_list(data: dict) -> dict:
     from carpinteria.quotation_session import current_year_month, list_sessions
     year = data.get("year")
     month = data.get("month")
-    if data.get("current_month", False) and not year and not month:
+    search = str(data.get("search") or "").strip()[:200]
+    limit = max(1, int(data.get("limit") or 30))
+    if data.get("current_month", False) and not year and not month and not search:
         year, month = current_year_month()
     rows = list_sessions(
         user_id=data.get("user_id") if data.get("user_id") else None,
         brand_id=data.get("brand_id") if data.get("brand_id") else None,
         area=data.get("area") if data.get("area") else None,
-        limit=int(data.get("limit") or 30),
+        limit=limit + 1,
+        search=search,
         year=int(year) if year else None,
         month=int(month) if month else None,
     )
-    return {"sessions": rows}
+    return {"sessions": rows[:limit], "has_more": len(rows) > limit}
 
 
 def handle_crm_customers(data: dict) -> dict:
@@ -2460,6 +2486,7 @@ def handle_session_commercial_status(data: dict) -> dict:
             "approved_quote_price_modes",
             "approved_quote_quantities",
             "approved_quote_notes",
+            "approved_quote_delivery_terms",
             "approved_quotes_updated_at",
             "approved_quotes_updated_by",
             "confirmed_quote_keys",
@@ -2836,6 +2863,7 @@ def handle_export_excel_session(data: dict) -> dict:
         pass
     return handle_export_excel({
         "quotes": _session_to_quotes_payload(s),
+        "delivery_terms": _session_delivery_terms(s),
         "additional_services": s.additional_services.model_dump() if s.additional_services else {},
     })
 
@@ -2848,7 +2876,7 @@ def handle_export_docx_session(data: dict) -> dict:
     s = get_session(sid)
     if s is None:
         return {"error": "session not found"}
-    return handle_export_docx({"quotes": _session_to_quotes_payload(s)})
+    return handle_export_docx({"quotes": _session_to_quotes_payload(s), "delivery_terms": _session_delivery_terms(s)})
 
 
 def handle_catalog_list_boards(_data: dict) -> dict:

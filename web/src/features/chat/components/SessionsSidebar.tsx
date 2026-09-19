@@ -1,14 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
-import { Folder, Plus } from "lucide-react";
+import { Folder, Plus, Search, X } from "lucide-react";
 
+import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
-import { createSession, listSessionArchive, listSessions, patchSession, qk } from "../api";
+import { createSession, searchSessions, listSessionArchive, listSessions, patchSession, qk } from "../api";
 import type { SessionRow } from "../schemas";
 import { MemoryPanel } from "./MemoryPanel";
 
@@ -100,6 +101,20 @@ function allProductsApproved(s: SessionRow) {
 export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   const queryClient = useQueryClient();
   const { brandId } = useBrandEnvironment();
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [searchLimit, setSearchLimit] = useState(50);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const searching = Boolean(search.trim());
+  const searchResults = useQuery({
+    queryKey: [...qk.sessions(brandId), "search", debouncedSearch, searchLimit],
+    queryFn: () => searchSessions(brandId, debouncedSearch, searchLimit),
+    enabled: Boolean(debouncedSearch),
+  });
+  const waitingForSearch = searching && (search.trim() !== debouncedSearch || searchResults.isFetching);
   const [amountDrafts, setAmountDrafts] = useState<Record<string, string>>({});
   const [orderDrafts, setOrderDrafts] = useState<Record<string, string>>({});
   const now = new Date();
@@ -435,13 +450,18 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           <Plus className="h-4 w-4 mr-1" />
           {brandId === "pirone" ? "Nueva orden" : isAdmin ? "Nueva cotizacion" : "Solicitar cotizacion"}
         </Button>
+        <div className="relative mt-3">
+          <Search aria-hidden="true" className="absolute left-2 top-2.5 size-4 text-muted-foreground" />
+          <Input aria-label="Buscar cotizaciones por producto, madera, cliente o número" type="search" maxLength={200} value={search} onChange={(event) => { setSearch(event.target.value); setSearchLimit(50); }} placeholder="Producto, madera, cliente…" className="pl-8 pr-8" />
+          {search && <button type="button" aria-label="Limpiar búsqueda" className="absolute right-2 top-2.5" onClick={() => { setSearch(""); setDebouncedSearch(""); setSearchLimit(50); }}><X className="size-4" /></button>}
+        </div>
       </div>
       <div className="flex-1 overflow-y-auto p-3">
         <div className="text-xs uppercase font-semibold text-muted-foreground mb-2">
-          {monthLabel(currentYear, currentMonth)}
+          {searching ? "Resultados en todo el historial" : monthLabel(currentYear, currentMonth)}
         </div>
         <ul className="space-y-1">
-          {sessions.data?.map((s) => (
+          {(searching ? (waitingForSearch ? [] : searchResults.data?.sessions) : sessions.data)?.map((s) => (
             <li key={s.id}>
               <div
                 className={`w-full px-2 py-1.5 rounded text-sm transition-colors ${
@@ -479,12 +499,18 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
             </li>
           ))}
         </ul>
-        {sessions.data?.length === 0 && (
+        {!searching && sessions.data?.length === 0 && (
           <div className="rounded border border-dashed px-2 py-3 text-xs text-muted-foreground">
             Sin cotizaciones este mes.
           </div>
         )}
 
+        {searching && <div className="my-2 text-xs text-muted-foreground" role="status" aria-live="polite">
+          {waitingForSearch ? "Buscando…" : searchResults.error ? "No se pudo buscar. Intentá nuevamente." : `${searchResults.data?.sessions.length ?? 0} cotizaciones encontradas`}
+        </div>}
+        {searching && searchResults.error && <Button variant="outline" size="sm" onClick={() => searchResults.refetch()}>Reintentar</Button>}
+        {searching && !waitingForSearch && searchResults.data?.has_more && <Button variant="outline" size="sm" onClick={() => setSearchLimit((limit) => limit + 50)}>Ver más resultados</Button>}
+        {!searching && <>
         <div className="mt-5 text-xs uppercase font-semibold text-muted-foreground mb-2">
           Archivo 2026
         </div>
@@ -523,6 +549,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
             </div>
           )}
         </div>
+        </>}
       </div>
       <div className="border-t p-3 max-h-[40%] overflow-y-auto">
         <MemoryPanel />
