@@ -498,6 +498,7 @@ def list_sessions(
     year: int | None = None,
     month: int | None = None,
     search: str = "",
+    origin_brand: str | None = None,
 ) -> list[dict]:
     q: dict = {}
     if brand_id is not None:
@@ -513,6 +514,10 @@ def list_sessions(
             q["brand_id"] = brand_id
     if user_id is not None and area != "administracion" and brand_id != "pirone":
         q["user_id"] = user_id
+    if origin_brand in {"casa", "pirone"}:
+        origin_filter = ({"$or": [{"brand_id": "casa"}, {"brand_id": {"$exists": False}}]}
+                         if origin_brand == "casa" else {"brand_id": "pirone"})
+        q = {"$and": [q, origin_filter]}
     rows = []
     for doc in _coll().find(q, {"_id": 0, "messages": 0}).sort("created_at", -1):
         if search and not _session_matches_search(doc, search):
@@ -546,7 +551,7 @@ def list_crm_customers(brand_id: str | None = None) -> list[dict]:
     if brand_id == "casa":
         query = {"$and": [query, {"$or": [{"brand_id": "casa"}, {"brand_id": {"$exists": False}}]}]}
     elif brand_id == "pirone":
-        query = {"$and": [query, {"$or": [{"brand_id": "pirone"}, {"brand_id": "casa"}, {"brand_id": {"$exists": False}}]}]}
+        query = {"$and": [query, {"brand_id": "pirone"}]}
     elif brand_id:
         query["brand_id"] = brand_id
 
@@ -655,8 +660,9 @@ def list_session_archive(
     area: str | None = None,
     year: int = 2026,
     limit: int = 1000,
+    origin_brand: str | None = None,
 ) -> list[dict]:
-    rows = list_sessions(user_id=user_id, brand_id=brand_id, area=area, limit=limit, year=year)
+    rows = list_sessions(user_id=user_id, brand_id=brand_id, area=area, limit=limit, year=year, origin_brand=origin_brand)
     groups: dict[tuple[int, int], list[dict]] = {}
     for row in rows:
         groups.setdefault((int(row["year"]), int(row["month"])), []).append(row)

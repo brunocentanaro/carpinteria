@@ -24,6 +24,7 @@ export async function GET(req: NextRequest) {
       month: month ? Number(month) : undefined,
       current_month: !archive && !year && !month && !search,
       search,
+      origin_brand: brandId === "pirone" ? searchParams.get("origin") : undefined,
       limit: archive ? 1000 : limit,
       user_id: session.user,
       brand_id: brandId,

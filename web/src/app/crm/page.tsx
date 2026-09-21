@@ -102,8 +102,8 @@ export default function CrmPage() {
     <main className="mx-auto max-w-7xl space-y-6 p-4 md:p-8">
       <header>
         <div className="text-xs font-semibold uppercase tracking-wider text-primary">{brand.name}</div>
-        <h1 className="mt-1 text-3xl font-semibold tracking-tight">CRM de clientes</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Contactos, cotizaciones, compras y públicos detectados a partir del historial comercial.</p>
+        <h1 className="mt-1 text-3xl font-semibold tracking-tight">{brandId === "pirone" ? "CRM de Juan Pirone" : "CRM de clientes"}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{brandId === "pirone" ? "Clientes, cotizaciones y compras propias de Juan Pirone. Las cotizaciones de La Casa se consultan por separado en el chat cotizador." : "Contactos, cotizaciones, compras y públicos detectados a partir del historial comercial."}</p>
       </header>
 
       <section className="grid gap-3 sm:grid-cols-3">

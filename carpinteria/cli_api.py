@@ -2117,6 +2117,7 @@ def handle_session_list(data: dict) -> dict:
         area=data.get("area") if data.get("area") else None,
         limit=limit + 1,
         search=search,
+        origin_brand=data.get("origin_brand"),
         year=int(year) if year else None,
         month=int(month) if month else None,
     )
@@ -2136,6 +2137,7 @@ def handle_session_archive(data: dict) -> dict:
         area=data.get("area") if data.get("area") else None,
         year=int(data.get("year") or 2026),
         limit=int(data.get("limit") or 1000),
+        origin_brand=data.get("origin_brand"),
     )
     return {"months": months}
 

@@ -43,8 +43,11 @@ export const qk = {
 // Sessions
 // ---------------------------------------------------------------------------
 
-export async function listSessions(brandId?: string) {
-  const qs = brandId ? `?brandId=${encodeURIComponent(brandId)}` : "";
+export async function listSessions(brandId?: string, origin?: string) {
+  const params = new URLSearchParams();
+  if (brandId) params.set("brandId", brandId);
+  if (origin) params.set("origin", origin);
+  const qs = `?${params}`;
   return api(
     `/api/sessions${qs}`,
     undefined,
@@ -52,15 +55,17 @@ export async function listSessions(brandId?: string) {
   ).then((d) => d.sessions);
 }
 
-export async function searchSessions(brandId: string, search: string, limit: number) {
+export async function searchSessions(brandId: string, search: string, limit: number, origin?: string) {
   const params = new URLSearchParams({ brandId, q: search, limit: String(limit) });
+  if (origin) params.set("origin", origin);
   return api(`/api/sessions?${params}`, undefined,
     z.object({ sessions: z.array(SessionRowSchema), has_more: z.boolean() }));
 }
 
-export async function listSessionArchive(year = 2026, brandId?: string) {
+export async function listSessionArchive(year = 2026, brandId?: string, origin?: string) {
   const params = new URLSearchParams({ archive: "1", year: String(year) });
   if (brandId) params.set("brandId", brandId);
+  if (origin) params.set("origin", origin);
   return api(
     `/api/sessions?${params.toString()}`,
     undefined,

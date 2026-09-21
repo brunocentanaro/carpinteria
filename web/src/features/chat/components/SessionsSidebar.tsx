@@ -16,6 +16,8 @@ import { MemoryPanel } from "./MemoryPanel";
 interface SessionsSidebarProps {
   activeId: string | null;
   onSelect: (id: string) => void;
+  origin: "casa" | "pirone";
+  onOriginChange: (origin: "casa" | "pirone") => void;
 }
 
 const MONTH_NAMES = [
@@ -98,9 +100,10 @@ function allProductsApproved(s: SessionRow) {
   return s.product_keys.length > 0 && s.product_keys.every((key) => (s.approved_quote_amounts[key] ?? 0) > 0);
 }
 
-export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
+export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: SessionsSidebarProps) {
   const queryClient = useQueryClient();
   const { brandId } = useBrandEnvironment();
+  const originFilter = brandId === "pirone" ? origin : undefined;
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [searchLimit, setSearchLimit] = useState(50);
@@ -110,8 +113,8 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   }, [search]);
   const searching = Boolean(search.trim());
   const searchResults = useQuery({
-    queryKey: [...qk.sessions(brandId), "search", debouncedSearch, searchLimit],
-    queryFn: () => searchSessions(brandId, debouncedSearch, searchLimit),
+    queryKey: [...qk.sessions(brandId), "search", debouncedSearch, searchLimit, originFilter],
+    queryFn: () => searchSessions(brandId, debouncedSearch, searchLimit, originFilter),
     enabled: Boolean(debouncedSearch),
   });
   const waitingForSearch = searching && (search.trim() !== debouncedSearch || searchResults.isFetching);
@@ -132,12 +135,12 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   const isAdmin = auth.data?.area === "administracion";
 
   const sessions = useQuery({
-    queryKey: qk.sessions(brandId),
-    queryFn: () => listSessions(brandId),
+    queryKey: [...qk.sessions(brandId), originFilter],
+    queryFn: () => listSessions(brandId, originFilter),
   });
   const archive = useQuery({
-    queryKey: qk.sessionArchive(2026, brandId),
-    queryFn: () => listSessionArchive(2026, brandId),
+    queryKey: [...qk.sessionArchive(2026, brandId), originFilter],
+    queryFn: () => listSessionArchive(2026, brandId, originFilter),
   });
   const archiveMonths = (archive.data ?? []).filter(
     (m) => m.year !== currentYear || m.month !== currentMonth,
@@ -146,6 +149,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   const createMutation = useMutation({
     mutationFn: () => createSession({ brandId }),
     onSuccess: (s) => {
+      if (brandId === "pirone") onOriginChange("pirone");
       queryClient.invalidateQueries({ queryKey: qk.sessions(brandId) });
       queryClient.invalidateQueries({ queryKey: qk.sessionArchive(2026, brandId) });
       onSelect(s.id);
@@ -241,7 +245,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
 
     let control: React.ReactNode = null;
     if (s.approval_status !== "approved") {
-      if (isRequestComplete(s) && allProductsApproved(s) && isAdmin && brandId === "casa") {
+      if (isRequestComplete(s) && allProductsApproved(s) && isAdmin && (brandId === "casa" || s.brand_id === "pirone")) {
         control = (
           <div className="flex gap-1">
             <button
@@ -257,7 +261,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </div>
         );
       }
-    } else if (!s.client_sent && brandId === "casa") {
+    } else if (!s.client_sent && (brandId === "casa" || s.brand_id === "pirone")) {
       control = (
         <div className="flex gap-1">
           <button
@@ -273,7 +277,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
         </div>
       );
     } else if (s.client_accepted === "pending") {
-      if (brandId === "casa") {
+      if ((brandId === "casa" || s.brand_id === "pirone")) {
         control = (
           <div className="flex gap-1">
             <button
@@ -312,7 +316,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </div>
         );
       }
-    } else if (s.client_accepted === "no" && brandId === "casa") {
+    } else if (s.client_accepted === "no" && (brandId === "casa" || s.brand_id === "pirone")) {
       control = (
         <button
           type="button"
@@ -325,7 +329,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           Reabrir
         </button>
       );
-    } else if (s.client_accepted === "yes" && !s.deposit_amount && brandId === "casa") {
+    } else if (s.client_accepted === "yes" && !s.deposit_amount && (brandId === "casa" || s.brand_id === "pirone")) {
       control = (
         <div className="flex items-center gap-1">
           <input
@@ -348,7 +352,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         </div>
       );
-    } else if (!s.order_number && brandId === "casa") {
+    } else if (!s.order_number && (brandId === "casa" || s.brand_id === "pirone")) {
       const value = orderDraft(s);
       control = (
         <div className="flex items-center gap-1">
@@ -386,7 +390,7 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
           </button>
         );
       }
-    } else if (!s.delivered && brandId === "casa") {
+    } else if (!s.delivered && (brandId === "casa" || s.brand_id === "pirone")) {
       control = (
         <div className="flex items-center gap-1">
           <input
@@ -442,14 +446,22 @@ export function SessionsSidebar({ activeId, onSelect }: SessionsSidebarProps) {
   return (
     <aside className="w-64 border-r bg-muted/30 flex flex-col">
       <div className="p-3 border-b">
+        {brandId === "pirone" && (
+          <div className="mb-3 grid gap-1" role="group" aria-label="Origen de las cotizaciones">
+            {([ ["casa", "De La Casa"], ["pirone", "Propias de Juan Pirone"] ] as const).map(([value, label]) => (
+              <Button key={value} type="button" size="sm" variant={origin === value ? "default" : "outline"} aria-pressed={origin === value} onClick={() => onOriginChange(value)}>{label}</Button>
+            ))}
+          </div>
+        )}
         <Button
-          className="w-full"
+          className="h-auto w-full whitespace-normal py-2"
           onClick={() => createMutation.mutate()}
           disabled={createMutation.isPending}
         >
           <Plus className="h-4 w-4 mr-1" />
-          {brandId === "pirone" ? "Nueva orden" : isAdmin ? "Nueva cotizacion" : "Solicitar cotizacion"}
+          {brandId === "pirone" ? "Nueva cotización Juan Pirone" : isAdmin ? "Nueva cotizacion" : "Solicitar cotizacion"}
         </Button>
+        {createMutation.error && <p className="mt-2 text-xs text-destructive" role="alert">{createMutation.error.message}</p>}
         <div className="relative mt-3">
           <Search aria-hidden="true" className="absolute left-2 top-2.5 size-4 text-muted-foreground" />
           <Input aria-label="Buscar cotizaciones por producto, madera, cliente o número" type="search" maxLength={200} value={search} onChange={(event) => { setSearch(event.target.value); setSearchLimit(50); }} placeholder="Producto, madera, cliente…" className="pl-8 pr-8" />

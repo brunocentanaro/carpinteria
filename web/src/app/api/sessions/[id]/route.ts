@@ -70,6 +70,7 @@ export async function PATCH(
     if (current.brand_id && current.brand_id !== auth.brandId && !auth.allAccess && !isFactoryVisible) {
       return NextResponse.json({ error: "No autorizado" }, { status: 403 });
     }
+    const isOwnPironeQuote = current.brand_id === "pirone" && (auth.brandId === "pirone" || auth.allAccess);
     const commercialFields = [
       "approval_status",
       "client_name",
@@ -115,7 +116,7 @@ export async function PATCH(
       if (("approved_quote_amounts" in body || "approved_quote_tax_modes" in body || "approved_quote_price_modes" in body || "approved_quote_quantities" in body || "approved_quote_notes" in body || "approved_quote_delivery_terms" in body) && auth.area !== "administracion") {
         return NextResponse.json({ error: "Solo administracion puede avalar precios definitivos" }, { status: 403 });
       }
-      if ("approval_status" in body && auth.brandId !== "casa") {
+      if ("approval_status" in body && auth.brandId !== "casa" && !isOwnPironeQuote) {
         return NextResponse.json({ error: "La aprobacion se gestiona desde La Casa del Carpintero" }, { status: 403 });
       }
       if (body.approval_status === "approved") {
@@ -131,7 +132,7 @@ export async function PATCH(
       const casaStepFields = ["client_sent", "client_accepted", "deposit_amount", "order_number", "delivered", "final_payment_amount"];
       const factoryStepFields = ["ready_to_deliver"];
       const resetsDownstream = "client_accepted" in body;
-      if (auth.brandId !== "casa" && casaStepFields.some((key) => key in body)) {
+      if (auth.brandId !== "casa" && !isOwnPironeQuote && casaStepFields.some((key) => key in body)) {
         return NextResponse.json({ error: "Este paso se gestiona desde La Casa del Carpintero" }, { status: 403 });
       }
       if (auth.brandId !== "pirone" && !resetsDownstream && factoryStepFields.some((key) => key in body)) {
