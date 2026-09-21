@@ -448,8 +448,18 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
       <div className="p-3 border-b">
         {brandId === "pirone" && (
           <div className="mb-3 grid gap-1" role="group" aria-label="Origen de las cotizaciones">
-            {([ ["casa", "De La Casa"], ["pirone", "Propias de Juan Pirone"] ] as const).map(([value, label]) => (
-              <Button key={value} type="button" size="sm" variant={origin === value ? "default" : "outline"} aria-pressed={origin === value} onClick={() => onOriginChange(value)}>{label}</Button>
+            {([ ["casa", "De La Casa Del Carpintero"], ["pirone", "Propias de Juan Pirone"] ] as const).map(([value, label]) => (
+              <Button
+                key={value}
+                type="button"
+                size="sm"
+                variant={value === "casa" || origin === value ? "default" : "outline"}
+                className={value === "casa" ? "h-auto min-h-7 whitespace-normal bg-[oklch(0.55_0.16_148)] py-1.5 text-white hover:bg-[oklch(0.49_0.16_148)] focus-visible:border-[oklch(0.55_0.16_148)] focus-visible:ring-[oklch(0.55_0.16_148)]/40 aria-pressed:ring-2 aria-pressed:ring-[oklch(0.55_0.16_148)]/40" : undefined}
+                aria-pressed={origin === value}
+                onClick={() => onOriginChange(value)}
+              >
+                {label}
+              </Button>
             ))}
           </div>
         )}
