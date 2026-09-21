@@ -3327,6 +3327,9 @@ def main() -> None:
             result = handle_session_get(data)
         elif action == "session_list":
             result = handle_session_list(data)
+        elif action in {"employee_calendar_list", "employee_calendar_save"}:
+            from carpinteria.employee_calendar import handle_calendar
+            result = handle_calendar(data)
         elif action == "crm_customers":
             result = handle_crm_customers(data)
         elif action == "session_archive":

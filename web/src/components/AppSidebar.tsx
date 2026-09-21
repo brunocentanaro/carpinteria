@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Calculator,
+  CalendarDays,
   ChartNoAxesColumnIncreasing,
   ContactRound,
   Factory,
@@ -38,6 +39,7 @@ const NAV: NavItem[] = [
   { href: "/", icon: Calculator, label: "Cotizador clasico" },
   { href: "/pliegos", icon: Files, label: "Pliegos" },
   { href: "/chat", icon: MessageSquare, label: "Chat" },
+  { href: "/calendario", icon: CalendarDays, label: "Calendario de empleados" },
   { href: "/lista-precios", icon: ListTree, label: "Lista de precios" },
   { href: "/noticiero", icon: Newspaper, label: "Noticiero comercial" },
   { href: "/contabilidad", icon: ReceiptText, label: "Contabilidad" },
@@ -86,7 +88,7 @@ export function AppSidebar() {
           <Hammer className="h-5 w-5" />
         )}
       </Link>
-      <nav className="flex flex-col gap-1 flex-1">
+      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
         {NAV.filter((item) => {
           if (item.href === "/usuarios" && area !== "administracion") return false;
           if (item.href === "/inventario" && area !== "administracion") return false;
@@ -106,7 +108,7 @@ export function AppSidebar() {
               href={item.href}
               title={item.label}
               className={cn(
-                "group relative h-10 w-10 rounded flex items-center justify-center transition-colors",
+                "group relative h-10 w-10 shrink-0 rounded flex items-center justify-center transition-colors",
                 active
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-muted hover:text-foreground",
