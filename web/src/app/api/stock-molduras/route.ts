@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
   const session = authenticatedSession(req);
   if (!session) return NextResponse.json({ error: "Sesión requerida" }, { status: 401 });
   const result = await callPython({
-    action: "molduras_stock_list",
+    action: session.brandId === "casa" ? "molduras_house_stock_list" : "molduras_stock_list",
     code: req.nextUrl.searchParams.get("code") || undefined,
   });
   if (session.brandId === "casa") {
@@ -51,7 +51,7 @@ export async function GET(req: NextRequest) {
         total_units: row.complete_quantity,
       })),
       locations: [],
-      movements: [],
+      movements: result.movements || [],
       reservations: [],
     });
   }

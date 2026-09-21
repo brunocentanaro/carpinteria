@@ -3058,6 +3058,11 @@ def handle_molduras_stock_list(data: dict) -> dict:
     return list_stock(str(data.get("code") or "") or None)
 
 
+def handle_molduras_house_stock_list(data: dict) -> dict:
+    from .molduras_stock import list_house_stock
+    return list_house_stock(str(data.get("code") or "") or None)
+
+
 def handle_molduras_stock_movement(data: dict) -> dict:
     from .molduras_stock import register_movement
     return register_movement(data.get("movement", {}), str(data.get("updated_by", "")))
@@ -3327,6 +3332,9 @@ def main() -> None:
             result = handle_session_get(data)
         elif action == "session_list":
             result = handle_session_list(data)
+        elif action in {"internal_requests_list", "internal_request_create", "internal_request_get", "internal_request_message", "internal_request_status"}:
+            from carpinteria.internal_requests import handle_internal_requests
+            result = handle_internal_requests(data)
         elif action in {"employee_calendar_list", "employee_calendar_save"}:
             from carpinteria.employee_calendar import handle_calendar
             result = handle_calendar(data)
@@ -3364,6 +3372,8 @@ def main() -> None:
             result = handle_auth_users_update(data)
         elif action == "molduras_stock_list":
             result = handle_molduras_stock_list(data)
+        elif action == "molduras_house_stock_list":
+            result = handle_molduras_house_stock_list(data)
         elif action == "molduras_stock_movement":
             result = handle_molduras_stock_movement(data)
         elif action == "molduras_stock_operation":

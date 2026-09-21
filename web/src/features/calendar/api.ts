@@ -16,6 +16,8 @@ export type TaskValues = z.infer<typeof taskValuesSchema>;
 const taskSchema = taskValuesSchema.safeExtend({ id: z.string(), brand_id: z.string() });
 export type CalendarTask = z.infer<typeof taskSchema>;
 export const calendarSchema = z.object({
+  can_view_team: z.boolean().default(false),
+  viewer_employee_id: z.string().default(""),
   employees: z.array(z.object({ id: z.string(), name: z.string() })),
   tasks: z.array(taskSchema),
 });

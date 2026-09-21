@@ -96,9 +96,9 @@ class CalendarTests(unittest.TestCase):
         self.assertEqual(self.coll.docs, [])
 
     def test_missing_task_and_validation_report_status(self):
-        result = calendar.handle_calendar({"action":"employee_calendar_save", "brand_id":"casa", "task_id":"missing", "values":{"status":"completed"}})
+        result = calendar.handle_calendar({"action":"employee_calendar_save", "brand_id":"casa", "actor":"admin", "actor_area":"administracion", "all_access":True, "task_id":"missing", "values":{"status":"completed"}})
         self.assertEqual(result["status"], 404)
-        result = calendar.handle_calendar({"action":"employee_calendar_list", "brand_id":"casa", "month":"2026-99"})
+        result = calendar.handle_calendar({"action":"employee_calendar_list", "brand_id":"casa", "actor":"admin", "actor_area":"administracion", "all_access":True, "month":"2026-99"})
         self.assertEqual(result["status"], 400)
 
 

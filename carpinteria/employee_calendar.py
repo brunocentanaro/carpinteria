@@ -109,13 +109,30 @@ def save_task(brand_id: str, actor: str, values: dict, task_id: str = "") -> dic
 
 def handle_calendar(data: dict) -> dict:
     try:
+        from carpinteria.team_access import calendar_access
         brand_id = str(data.get("brand_id") or "")
+        access = calendar_access(str(data.get("actor") or ""), brand_id, str(data.get("actor_area") or ""), bool(data.get("all_access")))
+        own_employee = access["viewer_employee_id"] if not access["can_view_team"] else ""
         if data["action"] == "employee_calendar_list":
-            return list_calendar(brand_id, str(data.get("month") or ""), str(data.get("employee_id") or ""))
+            requested = str(data.get("employee_id") or "")
+            if own_employee and requested and requested != own_employee:
+                raise PermissionError("Solo podés consultar tu propio calendario")
+            result = list_calendar(brand_id, str(data.get("month") or ""), own_employee or requested)
+            if own_employee:
+                result["employees"] = [employee for employee in result["employees"] if employee["id"] == own_employee]
+            return {**result, **access}
         values = data.get("values")
         if not isinstance(values, dict):
             raise ValueError("Faltan los datos de la tarea")
+        if own_employee:
+            if values.get("employee_id", own_employee) != own_employee:
+                raise PermissionError("Solo podés modificar tus propias tareas")
+            if data.get("task_id") and collection("employee_tasks").find_one({"id": str(data["task_id"]), "brand_id": brand_id, "employee_id": own_employee}) is None:
+                return {"error": "Tarea no encontrada", "status": 404}
+            values = {**values, "employee_id": own_employee}
         task = save_task(brand_id, str(data.get("actor") or ""), values, str(data.get("task_id") or ""))
         return {"task": task} if task else {"error": "Tarea no encontrada", "status": 404}
+    except PermissionError as error:
+        return {"error": str(error), "status": 403}
     except ValueError as error:
         return {"error": str(error), "status": 400}

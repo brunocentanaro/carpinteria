@@ -57,6 +57,8 @@ def _ensure_storage() -> None:
     collection("molduras_stock_movements").create_index([("code", 1), ("created_at", -1)])
     collection("molduras_stock_settings").create_index("code", unique=True)
     collection("molduras_stock_reservations").create_index([("code", 1), ("status", 1), ("created_at", -1)])
+    collection("molduras_casa_stock").create_index("code", unique=True)
+    collection("molduras_casa_stock_movements").create_index([("code", 1), ("created_at", -1)])
     locations = collection("molduras_stock_locations")
     locations.create_index([("wall", 1), ("block", 1)], unique=True)
     now = datetime.now(timezone.utc)
@@ -125,7 +127,7 @@ def list_stock(code: str | None = None) -> dict:
             "updated_at": saved.get("updated_at"),
         })
     movement_query = {"code": code} if code else {}
-    movements = list(collection("molduras_stock_movements").find(movement_query, {"_id": 0}).sort("created_at", -1).limit(250))
+    movements = list(collection("molduras_stock_movements").find(movement_query, {"_id": 0}).sort("created_at", -1).limit(1000))
     reservation_query = {"status": "ACTIVE"}
     if code:
         reservation_query["code"] = code
@@ -137,6 +139,28 @@ def list_stock(code: str | None = None) -> dict:
         "movements": movements,
         "reservations": reservations,
     }
+
+
+def list_house_stock(code: str | None = None) -> dict:
+    """Stock recibido por La Casa, separado del inventario de fábrica."""
+    _ensure_storage()
+    products = _catalog()
+    query = {"code": code} if code else {}
+    rows = []
+    for saved in collection("molduras_casa_stock").find(query, {"_id": 0}).sort("code", 1):
+        product = products.get(saved.get("code"))
+        if not product:
+            continue
+        complete = int(saved.get("complete_quantity", 0))
+        fraction = int(saved.get("fraction_quantity", 0))
+        if complete == 0 and fraction == 0:
+            continue
+        rows.append({**product, "complete_quantity": complete, "fraction_quantity": fraction,
+                     "total_units": complete + fraction, "location": "La Casa del Carpintero",
+                     "updated_at": saved.get("updated_at")})
+    movements = list(collection("molduras_casa_stock_movements").find(query, {"_id": 0}).sort("created_at", -1).limit(1000))
+    return {"products": list(products.values()), "locations": [], "stock": rows,
+            "movements": movements, "reservations": []}
 
 
 def set_jit_minimum(code: str, quantity: int, user: str) -> dict:
@@ -246,6 +270,16 @@ def register_movement(data: dict, user: str) -> dict:
         _increment(code, destination, complete, fraction, user, notes)
     elif movement_type in NEGATIVE_TYPES:
         _decrement(code, origin, complete, fraction, user, notes)
+        if movement_type == "ENVIO_CASA":
+            try:
+                collection("molduras_casa_stock").update_one(
+                    {"code": code},
+                    {"$inc": {"complete_quantity": complete, "fraction_quantity": fraction},
+                     "$set": {"updated_at": datetime.now(timezone.utc), "updated_by": user},
+                     "$setOnInsert": {"code": code}}, upsert=True)
+            except Exception:
+                _increment(code, origin, complete, fraction, user, "Reversión automática de envío a La Casa")
+                raise
     else:
         _decrement(code, origin, complete, fraction, user, notes)
         try:
@@ -270,5 +304,8 @@ def register_movement(data: dict, user: str) -> dict:
         "notes": notes,
     }
     collection("molduras_stock_movements").insert_one(movement)
+    if movement_type == "ENVIO_CASA":
+        house_movement = {**movement, "destination": "La Casa del Carpintero", "type": "RECEPCION_FABRICA"}
+        collection("molduras_casa_stock_movements").insert_one(house_movement)
     movement.pop("_id", None)
     return {"movement": movement}

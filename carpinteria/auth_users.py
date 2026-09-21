@@ -59,7 +59,7 @@ def ensure_default_users() -> None:
             "salt": salt,
             "password_hash": password_hash,
             "active": True,
-            "all_access": username == "juan pirone",
+            "all_access": username in {"juan pirone", "felipe ortiz"},
             "failed_attempts": 0,
             "locked": False,
             "must_change_password": bool(user.get("must_change_password", True)),
@@ -113,7 +113,7 @@ def _row(doc: dict[str, Any]) -> dict[str, Any]:
         "active": bool(doc.get("active", True)),
         "failed_attempts": int(doc.get("failed_attempts") or 0),
         "locked": bool(doc.get("locked", False)),
-        "all_access": bool(doc.get("all_access", False) or str(doc.get("username") or "").lower() == "juan pirone"),
+        "all_access": bool(doc.get("all_access", False) or str(doc.get("username") or "").strip().lower() in {"juan pirone", "felipe ortiz"}),
         "must_change_password": bool(doc.get("must_change_password", False)),
         "created_at": doc.get("created_at"),
         "updated_at": doc.get("updated_at"),
@@ -156,7 +156,7 @@ def create_user(
         "salt": salt,
         "password_hash": password_hash,
         "active": True,
-        "all_access": username == "juan pirone",
+        "all_access": username in {"juan pirone", "felipe ortiz"},
         "failed_attempts": 0,
         "locked": False,
         "must_change_password": bool(must_change_password),
@@ -223,7 +223,7 @@ def authenticate(*, username: str, password: str, brand_id: str, area: str) -> d
             "username": username,
             "area": area,
             "active": True,
-            "all_access": True,
+            "$or": [{"all_access": True}, {"username": {"$in": ["juan pirone", "felipe ortiz"]}}],
         })
     if doc:
         if bool(doc.get("locked", False)) or int(doc.get("failed_attempts") or 0) >= 5:
@@ -264,7 +264,7 @@ def authenticate(*, username: str, password: str, brand_id: str, area: str) -> d
             "active": True,
             "failed_attempts": 0,
             "locked": False,
-            "all_access": username == "juan pirone",
+            "all_access": username in {"juan pirone", "felipe ortiz"},
             "must_change_password": False,
             "bootstrap": True,
         }

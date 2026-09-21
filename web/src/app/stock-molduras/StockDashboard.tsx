@@ -84,6 +84,7 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
   for (const row of reservations) reservedByCode.set(row.code, (reservedByCode.get(row.code) || 0) + row.quantity);
 
   const sales = movements.filter((movement) => movement.type === "VENTA");
+  const internalShipments = movements.filter((movement) => movement.type === "ENVIO_CASA");
   const outflows = movements.filter((movement) => movement.type === "VENTA" || movement.type === "ENVIO_CASA");
   const validSaleDates = sales.map((sale) => new Date(sale.created_at)).filter((date) => !Number.isNaN(date.getTime()));
   const firstSale = validSaleDates.length ? new Date(Math.min(...validSaleDates.map((date) => date.getTime()))) : now;
@@ -182,10 +183,11 @@ export function StockDashboard({ products, stock, movements, reservations, mode 
       <strong>Alcance de los datos:</strong> ventas y facturación usan los {sales.length} movimientos de venta disponibles ({number(salesObservedMonths, 1)} meses observados). Rotación, cobertura y prioridad de fabricación también consideran los {outflows.length - sales.length} envíos a La Casa del Carpintero como salidas de fábrica. La facturación se estima con el precio de lista actual; no hay costo histórico para calcular margen real.
     </section>
 
-    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
       <Kpi icon={Banknote} label="Valor de inventario" value={money(totalValue)} detail="Precio público actual" />
       <Kpi icon={Boxes} label="Varillas contabilizadas" value={number(totalUnits)} detail={`${number(stocked.length)} productos con stock`} />
       <Kpi icon={TrendingUp} label="Venta mensual promedio" value={`${number(monthlySalesAverage, 1)} varillas`} detail={`${number(totalSold)} vendidas en el período`} />
+      <Kpi icon={ArrowUpRight} label="Envíos a La Casa" value={`${number(internalShipments.reduce((sum, item) => sum + item.complete_quantity + item.fraction_quantity, 0))} varillas`} detail={`${number(internalShipments.length)} movimientos internos`} />
       <Kpi icon={PackageX} label="Valor lento + muerto" value={money(slowValue + deadValue)} detail={`${number(slowStock.length + deadStock.length)} productos`} tone="warning" />
     </section>
 

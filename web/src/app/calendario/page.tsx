@@ -56,11 +56,11 @@ function EmployeeCalendar({ brandId, brandName }: { brandId: string; brandName: 
           <h1 className="mt-1 text-3xl font-semibold">Calendario de tareas</h1>
           <p className="mt-2 text-sm text-muted-foreground">Organizá el trabajo de cada empleado. Fechas y horarios de Uruguay.</p>
         </div>
-        <Button className="h-10" disabled={!employees.length || !!editor} onClick={() => setEditor({ date: selectedDay, employee })}><Plus /> Nueva tarea</Button>
+        <Button className="h-10" disabled={!employees.length || !!editor} onClick={() => setEditor({ date: selectedDay, employee: employee || query.data?.viewer_employee_id || "" })}><Plus /> Nueva tarea</Button>
       </header>
 
       <div className="flex flex-wrap gap-2" role="group" aria-label="Calendario por empleado">
-        <Button variant={!employee ? "default" : "outline"} aria-pressed={!employee} onClick={() => setEmployee("")}>Todo el equipo</Button>
+        {query.data?.can_view_team && <Button variant={!employee ? "default" : "outline"} aria-pressed={!employee} onClick={() => setEmployee("")}>Todo el equipo</Button>}
         {employees.map((person) => <Button key={person.id} variant={employee === person.id ? "default" : "outline"} aria-pressed={employee === person.id} onClick={() => setEmployee(person.id)}>{person.name}</Button>)}
       </div>
 
@@ -68,7 +68,7 @@ function EmployeeCalendar({ brandId, brandName }: { brandId: string; brandName: 
       <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
         <section className="min-w-0 rounded-xl border bg-card p-3 sm:p-5" aria-label="Calendario mensual">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <div><h2 className="text-xl font-semibold capitalize">{format(monthDate, "MMMM yyyy", { locale: es })}</h2><p className="text-sm text-muted-foreground">{selectedName || "Todo el equipo"}</p></div>
+            <div><h2 className="text-xl font-semibold capitalize">{format(monthDate, "MMMM yyyy", { locale: es })}</h2><p className="text-sm text-muted-foreground">{selectedName || (query.data?.can_view_team ? "Todo el equipo" : "Mis tareas")}</p></div>
             <div className="flex items-center gap-2">
               <Button variant="outline" size="icon" aria-label="Mes anterior" onClick={() => setSelectedDay(format(addMonths(parseISO(selectedDay), -1), "yyyy-MM-dd"))}><ChevronLeft /></Button>
               <Button variant="outline" onClick={() => setSelectedDay(today)}>Hoy</Button>
@@ -96,9 +96,9 @@ function EmployeeCalendar({ brandId, brandName }: { brandId: string; brandName: 
         <aside className="min-w-0 space-y-4">
           {editor && <TaskEditor key={editor.task?.id || "new"} brandId={brandId} employees={employees} task={editor.task} initialDate={editor.date} initialEmployee={editor.employee} onCancel={() => setEditor(null)} onSaved={(task) => { setEditor(null); setSelectedDay(task.date); setEmployee(task.employee_id); if (task.status === "cancelled") setShowCancelled(true); }} />}
           <section className="rounded-xl border bg-card p-4" aria-label="Tareas del día">
-            <div className="mb-4 flex items-start gap-2"><CalendarDays className="mt-0.5 size-5 text-primary" /><div><h2 className="font-semibold capitalize">{format(parseISO(selectedDay), "EEEE d 'de' MMMM", { locale: es })}</h2><p className="text-xs text-muted-foreground">{selectedName || "Todo el equipo"}</p></div></div>
+            <div className="mb-4 flex items-start gap-2"><CalendarDays className="mt-0.5 size-5 text-primary" /><div><h2 className="font-semibold capitalize">{format(parseISO(selectedDay), "EEEE d 'de' MMMM", { locale: es })}</h2><p className="text-xs text-muted-foreground">{selectedName || (query.data?.can_view_team ? "Todo el equipo" : "Mis tareas")}</p></div></div>
             {changeStatus.error && <p role="alert" className="mb-3 text-sm text-destructive">{changeStatus.error.message}</p>}
-            {query.isPending ? <p className="text-sm text-muted-foreground">Cargando tareas…</p> : !query.error && !dayTasks.length ? <div className="rounded-lg border border-dashed p-5 text-center"><p className="text-sm text-muted-foreground">Sin tareas para este día.</p><Button variant="outline" className="mt-3" disabled={!employees.length || !!editor} onClick={() => setEditor({ date: selectedDay, employee })}>Anotar una tarea</Button></div> : null}
+            {query.isPending ? <p className="text-sm text-muted-foreground">Cargando tareas…</p> : !query.error && !dayTasks.length ? <div className="rounded-lg border border-dashed p-5 text-center"><p className="text-sm text-muted-foreground">Sin tareas para este día.</p><Button variant="outline" className="mt-3" disabled={!employees.length || !!editor} onClick={() => setEditor({ date: selectedDay, employee: employee || query.data?.viewer_employee_id || "" })}>Anotar una tarea</Button></div> : null}
             <ul className="space-y-3">
               {dayTasks.map((task) => <li key={task.id} className="space-y-2 rounded-lg border p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold">{employees.find((person) => person.id === task.employee_id)?.name}</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${STATUS_CLASS[task.status]}`}>{STATUS[task.status]}</span></div>

@@ -30,8 +30,8 @@ async function handle(req: NextRequest) {
       }
       payload = { action: "employee_calendar_save", values, task_id: req.method === "PATCH" ? id : "" };
     }
-    const result = await callPython({ ...payload, brand_id: brandId, actor: auth.user });
-    return NextResponse.json(result, { status: result.error ? (result.status === 404 ? 404 : result.status === 400 ? 400 : 500) : 200 });
+    const result = await callPython({ ...payload, brand_id: brandId, actor: auth.user, actor_area: auth.area, all_access: !!auth.allAccess });
+    return NextResponse.json(result, { status: result.error ? (result.status === 403 ? 403 : result.status === 404 ? 404 : result.status === 400 ? 400 : 500) : 200 });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "No se pudo guardar o cargar el calendario";
     return NextResponse.json({ error: message }, { status: 500 });

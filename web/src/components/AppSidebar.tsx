@@ -14,6 +14,7 @@ import {
   ListTree,
   LogOut,
   MessageSquare,
+  MessagesSquare,
   Newspaper,
   PackageCheck,
   ReceiptText,
@@ -38,7 +39,8 @@ interface NavItem {
 const NAV: NavItem[] = [
   { href: "/", icon: Calculator, label: "Cotizador clasico" },
   { href: "/pliegos", icon: Files, label: "Pliegos" },
-  { href: "/chat", icon: MessageSquare, label: "Chat" },
+  { href: "/chat", icon: MessageSquare, label: "Chat cotizador" },
+  { href: "/chat-interno", icon: MessagesSquare, label: "Chat interno de productos" },
   { href: "/calendario", icon: CalendarDays, label: "Calendario de empleados" },
   { href: "/lista-precios", icon: ListTree, label: "Lista de precios" },
   { href: "/noticiero", icon: Newspaper, label: "Noticiero comercial" },
@@ -100,7 +102,7 @@ export function AppSidebar() {
           const active =
             item.href === "/"
               ? pathname === "/"
-              : pathname.startsWith(item.href);
+              : pathname === item.href || pathname.startsWith(`${item.href}/`);
           const Icon = item.icon;
           return (
             <Link
