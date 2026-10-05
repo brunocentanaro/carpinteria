@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field, field_validator
 
 from carpinteria.db import collection
+from carpinteria.quotation_overview import request_label, needs_pricing, pricing_status
 
 COLLECTION = "quotation_sessions"
 try:
@@ -324,6 +325,9 @@ def _session_row(doc: dict) -> dict:
         "client_name": doc.get("client_name") or "",
         "client_phone": doc.get("client_phone") or "",
         "order_summary": doc.get("order_summary") or "",
+        "request_label": request_label(doc),
+        "needs_pricing": needs_pricing(doc),
+        "pricing_status": pricing_status(doc),
         "payment_status": doc.get("payment_status") or "unknown",
         "payment_notes": doc.get("payment_notes") or "",
         "client_details_confirmed": bool(doc.get("client_details_confirmed") or False),
@@ -494,11 +498,12 @@ def list_sessions(
     user_id: str | None = None,
     brand_id: str | None = None,
     area: str | None = None,
-    limit: int = 30,
+    limit: int | None = 30,
     year: int | None = None,
     month: int | None = None,
     search: str = "",
     origin_brand: str | None = None,
+    pending_only: bool = False,
 ) -> list[dict]:
     q: dict = {}
     if brand_id is not None:
@@ -520,6 +525,8 @@ def list_sessions(
         q = {"$and": [q, origin_filter]}
     rows = []
     for doc in _coll().find(q, {"_id": 0, "messages": 0}).sort("created_at", -1):
+        if pending_only and not needs_pricing(doc):
+            continue
         if search and not _session_matches_search(doc, search):
             continue
         row = _session_row(doc)
@@ -528,7 +535,7 @@ def list_sessions(
         if month is not None and row["month"] != month:
             continue
         rows.append(row)
-        if len(rows) >= limit:
+        if limit is not None and len(rows) >= limit:
             break
     return rows
 

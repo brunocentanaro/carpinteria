@@ -29,6 +29,7 @@ import {
   type BrandEnvironmentId,
 } from "@/lib/brand-environments";
 import { cn } from "@/lib/utils";
+import { usePendingSessions } from "@/features/chat/usePendingSessions";
 
 interface NavItem {
   href: string;
@@ -56,6 +57,8 @@ export function AppSidebar() {
   const pathname = usePathname();
   const { brand, brandId, setBrandId } = useBrandEnvironment();
   const [area, setArea] = useState<string | null>(null);
+  const pending = usePendingSessions(brandId);
+  const pendingCount = pending.data?.pending_count ?? 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -105,9 +108,10 @@ export function AppSidebar() {
               : pathname === item.href || pathname.startsWith(`${item.href}/`);
           const Icon = item.icon;
           return (
+            <div key={item.href} className="relative shrink-0">
             <Link
-              key={item.href}
               href={item.href}
+              aria-label={item.label}
               title={item.label}
               className={cn(
                 "group relative h-10 w-10 shrink-0 rounded flex items-center justify-center transition-colors",
@@ -124,6 +128,8 @@ export function AppSidebar() {
                 {item.label}
               </span>
             </Link>
+            {item.href === "/chat" && pendingCount > 0 && <Link href="/chat?pending=1" aria-label={`${pendingCount} cotizaciones pendientes de precio`} title="Ver cotizaciones que faltan cotizar" className="absolute right-0 top-0 flex min-h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold leading-5 text-white focus-visible:outline-2 focus-visible:outline-offset-2">{pendingCount}</Link>}
+            </div>
           );
         })}
       </nav>

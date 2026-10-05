@@ -221,6 +221,7 @@ export function ChatColumn({ session, onSessionCreated, isOwner = false }: ChatC
         }
       }
       queryClient.invalidateQueries({ queryKey: qk.session(s.id) });
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setMessages((m) => {

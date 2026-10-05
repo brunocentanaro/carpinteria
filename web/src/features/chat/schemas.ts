@@ -206,6 +206,9 @@ export const SessionSchema = z.object({
 export type Session = z.infer<typeof SessionSchema>;
 
 export const SessionRowSchema = z.object({
+  request_label: z.string().default("Sin detalle aún"),
+  needs_pricing: z.boolean().default(false),
+  pricing_status: z.enum(["pending", "priced", "sent", "accepted", "rejected", "delivered", "draft", "tender", "historical"]).default("draft"),
   id: z.string(),
   title: z.string().default(""),
   created_at: z.string().optional(),

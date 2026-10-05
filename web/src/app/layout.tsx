@@ -37,9 +37,9 @@ export default function RootLayout({
       <body className="min-h-full">
         <BrandEnvironmentProvider>
           <AuthGate>
-            <AppSidebar />
             {/* Margin matches the fixed sidebar width (w-14 = 56px). */}
             <Providers>
+              <AppSidebar />
               <main className="ml-14 min-h-screen">{children}</main>
               <Toaster position="bottom-right" richColors closeButton />
             </Providers>

@@ -20,6 +20,7 @@ export async function GET(req: NextRequest) {
     const brandId = session.allAccess && selectedBrand ? selectedBrand : session.brandId;
     const result = await callPython({
       action: archive ? "session_archive" : "session_list",
+      pending_only: searchParams.get("pending") === "1",
       year: year ? Number(year) : undefined,
       month: month ? Number(month) : undefined,
       current_month: !archive && !year && !month && !search,

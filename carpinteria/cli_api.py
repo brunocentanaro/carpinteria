@@ -2105,6 +2105,16 @@ def handle_session_get(data: dict) -> dict:
 
 def handle_session_list(data: dict) -> dict:
     from carpinteria.quotation_session import current_year_month, list_sessions
+    if data.get("pending_only"):
+        rows = list_sessions(
+            user_id=data.get("user_id") or None,
+            brand_id=data.get("brand_id") or None,
+            area=data.get("area") or None,
+            limit=None,
+            pending_only=True,
+        )
+        limit = max(1, int(data.get("limit") or 50))
+        return {"sessions": rows[:limit], "has_more": len(rows) > limit, "pending_count": len(rows)}
     year = data.get("year")
     month = data.get("month")
     search = str(data.get("search") or "").strip()[:200]

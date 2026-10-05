@@ -62,6 +62,12 @@ export async function searchSessions(brandId: string, search: string, limit: num
     z.object({ sessions: z.array(SessionRowSchema), has_more: z.boolean() }));
 }
 
+export async function listPendingSessions(brandId: string, limit = 50) {
+  const params = new URLSearchParams({ brandId, pending: "1", limit: String(limit) });
+  return api(`/api/sessions?${params}`, undefined,
+    z.object({ sessions: z.array(SessionRowSchema), has_more: z.boolean(), pending_count: z.number() }));
+}
+
 export async function listSessionArchive(year = 2026, brandId?: string, origin?: string) {
   const params = new URLSearchParams({ archive: "1", year: String(year) });
   if (brandId) params.set("brandId", brandId);

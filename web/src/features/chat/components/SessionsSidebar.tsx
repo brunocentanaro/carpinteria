@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQueryState } from "nuqs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { es } from "date-fns/locale";
@@ -12,6 +13,8 @@ import { useBrandEnvironment } from "@/components/BrandEnvironmentProvider";
 import { createSession, searchSessions, listSessionArchive, listSessions, patchSession, qk } from "../api";
 import type { SessionRow } from "../schemas";
 import { MemoryPanel } from "./MemoryPanel";
+import { usePendingSessions } from "../usePendingSessions";
+import { PricingStatus } from "./PricingStatus";
 
 interface SessionsSidebarProps {
   activeId: string | null;
@@ -103,6 +106,11 @@ function allProductsApproved(s: SessionRow) {
 export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: SessionsSidebarProps) {
   const queryClient = useQueryClient();
   const { brandId } = useBrandEnvironment();
+  const [pendingParam, setPendingParam] = useQueryState("pending");
+  const pendingOnly = pendingParam === "1";
+  const [pendingLimit, setPendingLimit] = useState(50);
+  const pending = usePendingSessions(brandId, pendingLimit);
+  const pendingCount = pending.data?.pending_count;
   const originFilter = brandId === "pirone" ? origin : undefined;
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -111,11 +119,11 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => clearTimeout(timer);
   }, [search]);
-  const searching = Boolean(search.trim());
+  const searching = !pendingOnly && Boolean(search.trim());
   const searchResults = useQuery({
     queryKey: [...qk.sessions(brandId), "search", debouncedSearch, searchLimit, originFilter],
     queryFn: () => searchSessions(brandId, debouncedSearch, searchLimit, originFilter),
-    enabled: Boolean(debouncedSearch),
+    enabled: !pendingOnly && Boolean(debouncedSearch),
   });
   const waitingForSearch = searching && (search.trim() !== debouncedSearch || searchResults.isFetching);
   const [amountDrafts, setAmountDrafts] = useState<Record<string, string>>({});
@@ -456,7 +464,7 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
                 variant={value === "casa" || origin === value ? "default" : "outline"}
                 className={value === "casa" ? "h-auto min-h-7 whitespace-normal bg-[oklch(0.55_0.16_148)] py-1.5 text-white hover:bg-[oklch(0.49_0.16_148)] focus-visible:border-[oklch(0.55_0.16_148)] focus-visible:ring-[oklch(0.55_0.16_148)]/40 aria-pressed:ring-2 aria-pressed:ring-[oklch(0.55_0.16_148)]/40" : undefined}
                 aria-pressed={origin === value}
-                onClick={() => onOriginChange(value)}
+                onClick={() => { setPendingParam(null); onOriginChange(value); }}
               >
                 {label}
               </Button>
@@ -472,19 +480,35 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
           {brandId === "pirone" ? "Nueva cotización Juan Pirone" : isAdmin ? "Nueva cotizacion" : "Solicitar cotizacion"}
         </Button>
         {createMutation.error && <p className="mt-2 text-xs text-destructive" role="alert">{createMutation.error.message}</p>}
+        <div className="mt-3 grid grid-cols-2 gap-1" role="group" aria-label="Vista de cotizaciones">
+        <button type="button" aria-pressed={!pendingOnly} className={`min-h-10 rounded border px-2 text-xs font-semibold ${!pendingOnly ? "border-primary bg-primary/10 text-primary" : "hover:bg-muted"}`} onClick={() => { setPendingParam(null); setSearch(""); setDebouncedSearch(""); }}>Todas por mes</button>
+        <button
+          type="button"
+          aria-pressed={pendingOnly}
+          className={`flex min-h-10 w-full items-center justify-between gap-2 rounded border px-2 py-1 text-left text-xs font-semibold focus-visible:outline-2 focus-visible:outline-primary ${pendingOnly ? "border-red-300 bg-red-50 text-red-800" : "hover:bg-muted"}`}
+          onClick={() => { setPendingParam("1"); setSearch(""); setDebouncedSearch(""); }}
+        >
+          <span>Falta cotizar</span>
+          {pendingCount !== undefined && pendingCount > 0 && <span className="flex min-h-6 min-w-6 items-center justify-center rounded-full bg-red-600 px-1.5 font-bold text-white">{pendingCount}</span>}
+          {pendingCount === 0 && <span className="text-muted-foreground">0</span>}
+        </button>
+        </div>
+        <p className="mt-2 text-[11px] text-muted-foreground">{pendingOnly ? "Pedidos sin precio completo desde septiembre de 2026, sin licitaciones." : "Mes actual y archivo mensual. Cada pedido muestra su estado de precio."}</p>
+        {pending.error && <button type="button" className="mt-1 text-xs text-destructive underline" onClick={() => pending.refetch()}>No se pudieron cargar los pendientes. Reintentar</button>}
         <div className="relative mt-3">
           <Search aria-hidden="true" className="absolute left-2 top-2.5 size-4 text-muted-foreground" />
-          <Input aria-label="Buscar cotizaciones por producto, madera, cliente o número" type="search" maxLength={200} value={search} onChange={(event) => { setSearch(event.target.value); setSearchLimit(50); }} placeholder="Producto, madera, cliente…" className="pl-8 pr-8" />
+          <Input aria-label="Buscar cotizaciones por producto, madera, cliente o número" type="search" maxLength={200} value={search} onChange={(event) => { setPendingParam(null); setSearch(event.target.value); setSearchLimit(50); }} placeholder="Producto, madera, cliente…" className="pl-8 pr-8" />
           {search && <button type="button" aria-label="Limpiar búsqueda" className="absolute right-2 top-2.5" onClick={() => { setSearch(""); setDebouncedSearch(""); setSearchLimit(50); }}><X className="size-4" /></button>}
         </div>
       </div>
       <div className="flex-1 overflow-y-auto p-3">
         <div className="text-xs uppercase font-semibold text-muted-foreground mb-2">
-          {searching ? "Resultados en todo el historial" : monthLabel(currentYear, currentMonth)}
+          {pendingOnly ? "Pendientes desde septiembre de 2026" : searching ? "Resultados en todo el historial" : monthLabel(currentYear, currentMonth)}
         </div>
         <ul className="space-y-1">
-          {(searching ? (waitingForSearch ? [] : searchResults.data?.sessions) : sessions.data)?.map((s) => (
+          {(pendingOnly ? pending.data?.sessions : searching ? (waitingForSearch ? [] : searchResults.data?.sessions) : sessions.data)?.map((s, index, rows) => (
             <li key={s.id}>
+              {pendingOnly && (index === 0 || rows[index - 1].folder !== s.folder) && <h3 className="mb-2 mt-4 text-xs font-semibold uppercase text-muted-foreground">{monthLabel(s.year, s.month)}</h3>}
               <div
                 className={`w-full px-2 py-1.5 rounded text-sm transition-colors ${
                   activeId === s.id
@@ -496,6 +520,9 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate">{sessionLabel(s)}</span>
                   </div>
+                  <div className="text-xs font-medium text-foreground">{s.request_label}</div>
+                  <PricingStatus session={s} />
+                  {pendingOnly && brandId === "pirone" && <div className="text-[10px] text-muted-foreground">{s.brand_id === "pirone" ? "Juan Pirone" : "La Casa del Carpintero"}</div>}
                   <div className="text-[10px] text-muted-foreground truncate">
                     {s.factory_order ? `Pedido: ${s.title || s.requested_by}` : isAdmin ? `Solicita: ${s.requested_by}` : s.total > 0 ? `Importe: ${formatMoney(s.total)}` : "Importe pendiente"}
                   </div>
@@ -521,20 +548,26 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
             </li>
           ))}
         </ul>
-        {!searching && sessions.data?.length === 0 && (
+        {!pendingOnly && !searching && sessions.isPending && <p className="text-xs text-muted-foreground" role="status">Cargando cotizaciones del mes…</p>}
+        {!pendingOnly && !searching && sessions.error && <button type="button" className="text-xs text-destructive underline" onClick={() => sessions.refetch()}>No se pudo cargar el mes actual. Reintentar</button>}
+        {!pendingOnly && !searching && !sessions.error && sessions.data?.length === 0 && (
           <div className="rounded border border-dashed px-2 py-3 text-xs text-muted-foreground">
             Sin cotizaciones este mes.
           </div>
         )}
 
+        {pendingOnly && <div className="my-2 text-xs text-muted-foreground" role="status" aria-live="polite">
+          {pending.isPending ? "Cargando pendientes…" : pending.error ? "No se pudieron cargar los pendientes." : pendingCount === 0 ? "No hay cotizaciones pendientes de precio." : `${pendingCount} cotizaciones pendientes de precio`}
+        </div>}
+        {pendingOnly && pending.data?.has_more && <Button variant="outline" size="sm" onClick={() => setPendingLimit((limit) => limit + 50)}>Ver más pendientes</Button>}
         {searching && <div className="my-2 text-xs text-muted-foreground" role="status" aria-live="polite">
           {waitingForSearch ? "Buscando…" : searchResults.error ? "No se pudo buscar. Intentá nuevamente." : `${searchResults.data?.sessions.length ?? 0} cotizaciones encontradas`}
         </div>}
         {searching && searchResults.error && <Button variant="outline" size="sm" onClick={() => searchResults.refetch()}>Reintentar</Button>}
         {searching && !waitingForSearch && searchResults.data?.has_more && <Button variant="outline" size="sm" onClick={() => setSearchLimit((limit) => limit + 50)}>Ver más resultados</Button>}
-        {!searching && <>
+        {!pendingOnly && !searching && <>
         <div className="mt-5 text-xs uppercase font-semibold text-muted-foreground mb-2">
-          Archivo 2026
+          Archivo por meses
         </div>
         <div className="space-y-2">
           {archiveMonths.map((m) => (
@@ -556,6 +589,8 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
                       }`}
                     >
                       <div className="truncate">{sessionLabel(s)}</div>
+                      <div className="text-xs font-medium">{s.request_label}</div>
+                      <PricingStatus session={s} />
                       <div className="text-[10px] text-muted-foreground">
                         {s.folder}
                       </div>
@@ -565,7 +600,9 @@ export function SessionsSidebar({ activeId, onSelect, origin, onOriginChange }: 
               </ul>
             </details>
           ))}
-          {archiveMonths.length === 0 && (
+          {archive.isPending && <p className="text-xs text-muted-foreground" role="status">Cargando historial…</p>}
+          {archive.error && <button type="button" className="text-xs text-destructive underline" onClick={() => archive.refetch()}>No se pudo cargar el historial. Reintentar</button>}
+          {!archive.isPending && !archive.error && archiveMonths.length === 0 && (
             <div className="text-xs text-muted-foreground">
               Todavia no hay meses archivados.
             </div>
