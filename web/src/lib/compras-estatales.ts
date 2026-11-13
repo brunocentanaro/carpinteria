@@ -37,8 +37,11 @@ export function cleanHtml(value: string) {
     .replace(/\s+/g, " ").trim();
 }
 
-function parseCalls(html: string, category: string, group: PublicCall["group"]): PublicCall[] {
-  const pattern = /<h3><a href="([^"]*\/id\/(\d+))">([\s\S]*?)<span class="sr-only">([\s\S]*?)<\/span><\/a><\/h3>[\s\S]*?<p class="buy-object">([\s\S]*?)<\/p>[\s\S]*?Recepci&oacute;n de ofertas hasta:<\/span>&nbsp;<strong>([\s\S]*?)<\/strong>[\s\S]*?<span class="text-muted">Publicado:&nbsp;([\s\S]*?)<\/span>/g;
+export function parseCalls(html: string, category: string, group: PublicCall["group"]): PublicCall[] {
+  // ARCE agrega saltos de linea y espacios entre <h3> y <a>. No podemos
+  // depender del HTML minificado porque el portal cambia ese formato sin
+  // modificar el contenido de los llamados.
+  const pattern = /<h3[^>]*>\s*<a\s+href=["']([^"']*\/id\/(\d+))["'][^>]*>\s*([\s\S]*?)<span\s+class=["']sr-only["'][^>]*>([\s\S]*?)<\/span>\s*<\/a>\s*<\/h3>[\s\S]*?<p\s+class=["']buy-object["'][^>]*>([\s\S]*?)<\/p>[\s\S]*?Recepci(?:&oacute;|ó)n de ofertas hasta:<\/span>\s*(?:&nbsp;\s*)?<strong[^>]*>([\s\S]*?)<\/strong>[\s\S]*?<span\s+class=["']text-muted["'][^>]*>Publicado:(?:&nbsp;|\s)*([\s\S]*?)<\/span>/gi;
   return [...html.matchAll(pattern)].map((match) => ({
     href: `${BASE}${match[1]}`, id: match[2], title: cleanHtml(match[3]),
     organization: cleanHtml(match[4]), description: cleanHtml(match[5]),
@@ -53,12 +56,23 @@ function relevant(call: PublicCall, keywords?: string[]) {
 }
 
 export async function getPublicCalls(): Promise<PublicCall[]> {
-  const groups = await Promise.all(PURCHASE_SEARCHES.map(async ({ family, subfamily, classCode, category, group, keywords }) => {
+  const results = await Promise.allSettled(PURCHASE_SEARCHES.map(async ({ family, subfamily, classCode, category, group, keywords }) => {
     const path = `/consultas/buscar/tipo-pub/VIG/filtro-cat/CAT/familia/${family}/sub-familia/${subfamily}/clase/${classCode}/orden/ORD_ROF/tipo-orden/ASC`;
     const response = await fetch(`${BASE}${path}`, { headers: { "User-Agent": "Carpinteria-Juan-Pirone/1.0 (+consulta-publica)" }, cache: "no-store" });
     if (!response.ok) throw new Error(`ARCE respondió ${response.status}`);
-    return parseCalls(await response.text(), category, group as PublicCall["group"]).filter((call) => relevant(call, keywords));
+    const html = await response.text();
+    const calls = parseCalls(html, category, group as PublicCall["group"]);
+    if (!calls.length && html.includes('class="buy-object"')) {
+      throw new Error(`ARCE cambió el formato de resultados para ${category}`);
+    }
+    return calls.filter((call) => relevant(call, keywords));
   }));
+
+  const groups = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+  if (!groups.length) {
+    const failures = results.flatMap((result) => result.status === "rejected" ? [String(result.reason)] : []);
+    throw new Error(failures[0] || "No se pudo consultar Compras Estatales");
+  }
   const unique = new Map<string, PublicCall>();
   for (const call of groups.flat()) unique.set(call.id, call);
   return [...unique.values()];
